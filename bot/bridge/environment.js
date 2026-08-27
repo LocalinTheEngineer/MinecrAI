@@ -3,6 +3,7 @@
 const Vec3 = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { kutukMu, oduncuSay } = require('../skills/chopTree')
+const { aletKusan } = require('../skills/alet')
 const config = require('../config')
 
 const MAX_ADIM = 500
@@ -258,6 +259,8 @@ class MinecraftEnvironment {
         if (hedef && bot.canDigBlock(hedef)) {
           const kutuktu = kutukMu(hedef)
           try {
+            // Uygun alet varsa eline al — elle kesmek ~8 kat yavas
+            await aletKusan(bot, hedef)
             // Dikey nişan otomatik; sonra bakışı tekrar yatayda sabitliyoruz
             await bot.lookAt(hedef.position.offset(0.5, 0.5, 0.5), true)
             await bot.dig(hedef)

@@ -10,7 +10,8 @@
  *   kes          -> en yakın ağacı keser
  *   kes 3        -> 3 ağaç keser
  *   kes surekli  -> "dur" diyene kadar ağaç keser
- *   envanter     -> envanterini söyler
+ *   balta        -> envanterindeki oduna tahta balta yapar (yoksa)
+   envanter     -> envanterini söyler
  *   nerede       -> koordinatlarını söyler
  *   dur          -> yaptığı işi anında bırakır
  */
@@ -50,7 +51,11 @@ function botOlustur () {
     bot.pathfinder.setMovements(movements)
 
     log.basari(`Dünyaya girdim. Konum: ${bot.entity.position}`)
-    bot.chat('MinecrAI hazır. Komutlar: gel / kes / kes 3 / kes surekli / envanter / nerede / dur')
+    bot.chat('MinecrAI hazır. Komutlar: gel / kes / kes 3 / kes surekli / balta / envanter / nerede / dur')
+
+    const balta = skills.uygunAlet(bot, { name: 'oak_log' })
+    if (balta) bot.chat(`Elimde ${balta.name} var, onunla keseceğim.`)
+    else bot.chat('Baltam yok — elle keseceğim. Odun toplayınca "balta" yaz, kendim yaparım.')
   })
 
   bot.on('kicked', (sebep) => log.hata('Sunucudan atıldım:', sebep))
@@ -115,6 +120,15 @@ function botOlustur () {
       bot.chat(esyalar.length === 0
         ? 'Envanterim boş.'
         : esyalar.map((i) => `${i.name} x${i.count}`).join(', '))
+      return
+    }
+
+    if (komut === 'balta') {
+      await gorevCalistir('balta', async () => {
+        bot.chat('Balta yapmayı deniyorum...')
+        const sonuc = await skills.baltaYap(bot)
+        bot.chat(sonuc.mesaj)
+      })
       return
     }
 

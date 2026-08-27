@@ -4,6 +4,7 @@ const { goals } = require('mineflayer-pathfinder')
 const log = require('../utils/log')
 const config = require('../config')
 const { IptalEdildi, sinirli } = require('../utils/gorev')
+const { aletKusan } = require('./alet')
 
 /**
  * SKILL: Ağaç kes
@@ -172,6 +173,7 @@ async function chopTree (bot, kontrol) {
     if (!kutukMu(guncel)) continue // araya bir şey girmişse atla
 
     try {
+      await aletKusan(bot, guncel) // baltayla kesmek çok daha hızlı
       const mesafe = bot.entity.position.distanceTo(guncel.position)
 
       if (mesafe < 4.5 && bot.canDigBlock(guncel)) {
