@@ -66,6 +66,9 @@ function kopruyuBaslat (ayarlar = {}) {
             ws.send(JSON.stringify(await env.reset()))
           } else if (istek.cmd === 'step') {
             ws.send(JSON.stringify(await env.step(istek.action)))
+          } else if (istek.cmd === 'expert') {
+            // Milestone 3: "bu durumda uzman ne yapardi?"
+            ws.send(JSON.stringify(env.uzmanAksiyonu()))
           } else if (istek.cmd === 'close') {
             ws.send(JSON.stringify({ ok: true }))
             ws.close()

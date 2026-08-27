@@ -135,11 +135,35 @@ Gymnasium bu ikisini ayırmayı ister, çünkü "başardı" ile "vakit doldu" fa
 
 ## 7. Buradan sonrası
 
-**Milestone 3 — Imitation Learning (taklitle öğrenme):**
-Milestone 1'deki `chopTree` skill'i zaten görevi doğru yapıyor. Onu birkaç yüz
-kez çalıştırıp (gözlem, aksiyon) çiftlerini kaydedersek, bir sinir ağını
-"uzman gibi davranmayı" taklit etmesi için eğitebiliriz. Bu, RL'e sıfırdan
-başlamaktan çok daha hızlı sonuç verir.
+**Milestone 3 — Imitation Learning (taklitle öğrenme): TAMAMLANDI**
+
+`chopTree` görevi doğru yapıyor ama pathfinder çağırdığı için ajanın aksiyon
+uzayında ifade edilemiyordu — yani demo olarak kullanılamazdı.
+`bot/bridge/expert.js` aynı davranışı **sadece ajanın sahip olduğu 5 aksiyonla**
+yeniden yazıyor. Her adımda "burada uzman ne yapardı?" sorusuna cevap veriyor,
+bu (gözlem, aksiyon) çiftleri de eğitim verisi oluyor. Bu noktadan sonra iş RL
+değil, düz sınıflandırma.
+
+Üç hata çıktı ve üçü de öğreticiydi:
+
+1. **Uzman fazla iyi.** Bölümler ağaca yakın başladığı için kayıtların %80'i
+   "kır" aksiyonu oldu, "sola dön" hiç geçmedi. Ağ "hep kır"ı öğrendi, önünde
+   ağaç olmayınca çakıldı. Çözüm: bölüm başlangıç yönünü rastgeleleştirmek ve
+   toplama sırasında gürültü eklemek — bazen rastgele aksiyon uygula, ama
+   etiket olarak yine uzmanın aksiyonunu kaydet. Böylece "işler ters gittiğinde
+   ne yapmalı" örnekleri oluşuyor.
+
+2. **Bölüm bazlı sayım.** Bitiş koşulu envanterin toplamına bakıyordu. Envanter
+   bölümler arasında sıfırlanmadığı için ilk başarılı bölümden sonra her yeni
+   bölüm 1 adımda bitiyor, eğitim verisinin %90'ı sessizce kayboluyordu.
+
+3. **Hedef titremesi.** `findBlock` en yakını garanti etmiyor ve hedef her adım
+   yeniden seçilince gözlemdeki "ağaç yönü" iki ağaç arasında zıplıyordu. Her
+   adım değişen bir girdiyle ne uzman ne ajan tutarlı davranabilir; hedef artık
+   kilitleniyor.
+
+Bunların hiçbiri egzotik değil — bir oyunu RL ortamına çevirirken karşılaşılan
+sıradan hatalar. İşin büyük kısmı da zaten bunları bulmak.
 
 **Milestone 4 — PPO:**
 Taklitle öğrenmiş ağı başlangıç noktası alıp Stable-Baselines3 ile PPO

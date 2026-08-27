@@ -21,15 +21,19 @@ from gymnasium import spaces
 from .bridge import BridgeClient
 
 # Gozlem vektorunun boyutu — bot/bridge/environment.js ile AYNI olmali
-GOZLEM_BOYUTU = 12
+GOZLEM_BOYUTU = 13
 
-# Aksiyonlar — bot/bridge/protocol.md ile ayni sirada
+# Aksiyonlar — bot/bridge/protocol.md ile ayni sirada.
+#
+# NOT: Eskiden bir "agaca_yaklas" aksiyonu vardi; pathfinder'i cagirip
+# navigasyonun tamamini tek adimda yapiyordu. Ajan bunu kesfettigi anda
+# yurumeyi ogrenmeyi birakip hep ona basacagi icin kaldirildi. Ayrintili
+# gerekce: docs/architecture.md
 AKSIYONLAR = [
     "ileri_yuru",
     "saga_don",
     "sola_don",
     "blogu_kir",
-    "agaca_yaklas",
     "bekle",
 ]
 
@@ -62,6 +66,14 @@ class MinecraftEnv(gym.Env):
         cevap = self.bridge.reset()
         self._son_info = cevap.get("info", {})
         return self._obs(cevap["obs"]), self._son_info
+
+    def uzman_aksiyonu(self) -> int:
+        """Uzman politikanin bu durumda sececeği aksiyon (Milestone 3).
+
+        Ogrenme yok — elle yazilmis kurallar. Amaci taklit edilecek ornegi
+        uretmek. Bkz. bot/bridge/expert.js
+        """
+        return int(self.bridge.expert()["action"])
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         cevap = self.bridge.step(int(action))

@@ -151,3 +151,8 @@ models/
 runs/
 logs/
 data/demonstrations/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/

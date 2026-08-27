@@ -54,21 +54,26 @@ The RL ecosystem (Gymnasium, Stable-Baselines3, PyTorch) is Python. Rather than
 reimplementing either side, the bridge keeps each in its own language and defines
 one narrow contract between them — documented in [`bot/bridge/protocol.md`](bot/bridge/protocol.md).
 
-### Action space — `Discrete(6)`
+### Action space — `Discrete(5)`
 
 | # | Action |
 |---|--------|
 | 0 | Walk forward (0.5 s) |
-| 1 | Turn right (45°) |
-| 2 | Turn left (45°) |
-| 3 | Break the block being looked at |
-| 4 | Pathfind one step toward the nearest log |
-| 5 | No-op |
+| 1 | Turn right (22.5°) |
+| 2 | Turn left (22.5°) |
+| 3 | Break the block in front — the log if there is one, otherwise whatever blocks the way (leaves) |
+| 4 | No-op |
 
-### Observation space — `Box(12,)`
+An earlier version had a "pathfind to the nearest tree" action. It was removed:
+it performed the entire navigation in one step, so an agent that discovered it
+would never learn to navigate. Removing it is what makes the learning curve
+mean something.
 
-Relative direction and distance to the nearest log, yaw/pitch, wood in inventory,
-health, hunger, whether the targeted block is a log, ground contact, episode progress.
+### Observation space — `Box(13,)`
+
+Relative direction and distance to the target log, yaw/pitch, wood gathered this
+episode, health, hunger, whether a log is in front, ground contact, episode
+progress, and whether a breakable block is blocking the way.
 
 ### Reward
 
@@ -87,7 +92,7 @@ Episode terminates at 5 logs collected, truncates at 500 steps.
 |---|---|---|
 | **1** | Rule-based bot: connect, pathfind, chop trees, collect drops, cancellable tasks | ✅ Done |
 | **2** | Node↔Python bridge + Gymnasium environment + random-agent baseline | ✅ Done |
-| **3** | Behaviour cloning from scripted demonstrations | ⬜ Planned |
+| **3** | Behaviour cloning from scripted demonstrations | ✅ Done |
 | **4** | PPO training, learning curve, before/after comparison | ⬜ Planned |
 | **5** | Extended task set: mining, simple crafting | ⬜ Planned |
 
@@ -148,8 +153,21 @@ npm run bridge                        # terminal A
 cd python && python random_agent.py   # terminal B
 ```
 
-Rewards will be negative — the baseline agent acts randomly and does not learn yet.
-Learning starts at Milestone 3.
+Rewards will be negative — this baseline acts randomly and does not learn.
+
+### 4. Learning from demonstrations (Milestone 3)
+
+```bash
+npm run bridge                        # terminal A
+# terminal B:
+cd python
+python collect_demos.py --bolum 40    # record the scripted expert
+python train_bc.py --epoch 60         # train a policy to imitate it
+python eval_agent.py --bolum 10       # random vs learned vs expert
+```
+
+`train_bc.py` writes a loss/accuracy plot and `eval_agent.py` writes the
+random-vs-learned-vs-expert comparison to `models/`.
 
 > Türkçe okuyanlar için mimari notları: [`docs/mimari.md`](docs/mimari.md)
 
@@ -164,12 +182,17 @@ bot/                  Node.js — everything that touches Minecraft
   bridge/
     server.js           WebSocket server exposing reset/step to Python
     environment.js      observation, reward and episode logic
+    expert.js           scripted expert expressed in the agent's action space
     protocol.md         the Node↔Python contract
 python/
   minecrai/
     bridge.py           WebSocket client
     env.py              gymnasium.Env implementation
   random_agent.py       baseline: random actions, proves the loop works
+  collect_demos.py      Milestone 3: record the scripted expert
+  train_bc.py           Milestone 3: behaviour cloning + training plots
+  eval_agent.py         Milestone 3: random vs learned vs expert comparison
+  minecrai/policy.py    the imitation network (PyTorch MLP)
   requirements.txt
 docs/
   architecture.md       design rationale — read this first

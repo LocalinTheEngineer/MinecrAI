@@ -97,7 +97,7 @@ Contents (see `gozlem()` in `bot/bridge/environment.js`):
 | 0-2 | Unit vector toward nearest log | "Which way is the tree?" |
 | 3 | Distance to that log, normalized | "How far?" |
 | 4-5 | Bot yaw and pitch | "Where am I looking?" |
-| 6 | Logs in inventory | "How much progress have I made?" |
+| 6 | Logs gathered **this episode** | "How much progress have I made?" |
 | 7-8 | Health and hunger | "Am I still alive?" |
 | 9 | Is the targeted block a log? | "Is mining here useful?" |
 | 10 | On ground? | "Am I falling?" |
@@ -170,13 +170,41 @@ cannot be reset cleanly, and a bad reset silently corrupts training data.
 
 ---
 
-## 8. What comes next
+## 8. Milestone 3 — imitation learning, and what it taught us
 
-**Milestone 3 — Imitation learning.**
-The scripted `chopTree` skill already performs the task correctly. Running it a
-few hundred times and recording `(observation, action)` pairs gives a supervised
-dataset; a network trained to imitate that policy reaches competence far faster
-than RL from scratch.
+The scripted `chopTree` skill solves the task, but it calls the pathfinder
+directly — it cannot be expressed in the agent's action space, so it cannot
+serve as a demonstration. `bot/bridge/expert.js` reimplements the same
+behaviour using **only the five actions the agent has**. Every step it answers
+"what would the expert do here?", and those `(observation, action)` pairs form
+a supervised dataset. At that point this is no longer RL — it is classification.
+
+Three failures showed up, and each one is worth knowing:
+
+**The expert is too good.** Because episodes start near a tree, over 80% of the
+recorded actions were "break block" and "turn left" never appeared at all. The
+network learned "always mine", which does nothing when no tree is in front. The
+fix is twofold: randomise the starting yaw so the demonstrations contain turning
+and walking, and inject action noise during collection — execute a random action
+sometimes, but still label the state with what the expert *would* have done.
+That produces exactly the recovery states the learner needs, and is the standard
+answer to covariate shift in behaviour cloning.
+
+**Episode-relative counting.** Termination originally compared total inventory
+against the goal. Inventory does not reset between episodes, so after the first
+successful episode every later one ended on step 1. Roughly 90% of the training
+data silently vanished. Counts are now taken relative to the episode start.
+
+**Target flicker.** `findBlock` does not reliably return the nearest match, and
+re-selecting a target each step made the "direction to tree" observation jump
+between two trees at similar distance. Neither the expert nor a learner can act
+coherently on an input that flips every step, so the target is now locked for as
+long as it exists.
+
+None of these are exotic. They are the ordinary failure modes of turning a game
+into an RL environment, and finding them is most of the work.
+
+## 9. What comes next
 
 **Milestone 4 — PPO.**
 Use the imitation-trained network as the initial policy and continue with PPO via

@@ -14,7 +14,8 @@ const config = {
   bridgePort: parseInt(process.env.BRIDGE_PORT || '8765', 10),
 
   // Botun davranış ayarları
-  searchRadius: 64,   // kaynak ararken kaç blok uzağa bakılsın
+  searchRadius: 32,   // kaynak ararken kaç blok uzağa bakılsın
+                      // (64 idi: yüklenmemiş chunk'lardaki ağaçları buluyordu)
   maxLogsPerTree: 12  // tek seferde en fazla kaç kütük kesilsin
 }
 

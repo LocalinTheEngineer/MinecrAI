@@ -65,6 +65,9 @@ class BridgeClient:
     def step(self, action: int) -> Dict[str, Any]:
         return self._cagir({"cmd": "step", "action": int(action)})
 
+    def expert(self) -> Dict[str, Any]:
+        return self._cagir({"cmd": "expert"})
+
     def close(self) -> None:
         if self._ws is None:
             return

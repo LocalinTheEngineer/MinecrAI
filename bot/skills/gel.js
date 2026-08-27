@@ -11,9 +11,23 @@ const { IptalEdildi, sinirli } = require('../utils/gorev')
 async function gel (bot, kontrol, oyuncuAdi, mesafe = 2) {
   const oyuncu = bot.players[oyuncuAdi]
 
-  if (!oyuncu || !oyuncu.entity) {
-    log.uyari(`${oyuncuAdi} görüş alanımda değil.`)
+  // Oyuncu uzaktaysa mineflayer onun "entity"sini takip etmiyor ve konumunu
+  // bilemiyoruz. Eskiden burada sessizce vazgeciyordu — bot hicbir sey
+  // yapmiyor gibi gorunuyordu. Artik sebebini soyluyor.
+  if (!oyuncu) {
+    bot.chat(`${oyuncuAdi} diye birini gormuyorum.`)
+    return { basarili: false, hata: 'oyuncu_yok' }
+  }
+
+  if (!oyuncu.entity) {
+    bot.chat('Çok uzaktasın, seni göremiyorum — biraz yaklaş, tekrar "gel" yaz.')
+    log.uyari(`${oyuncuAdi} görüş alanımda değil (entity yok).`)
     return { basarili: false, hata: 'oyuncu_gorunmuyor' }
+  }
+
+  // Ucuyorsan tam altindaki zemine gelsin, havada asili kalmaya calismasin
+  if (!oyuncu.entity.onGround) {
+    bot.chat('Havadasın, altındaki zemine geliyorum.')
   }
 
   const { x, y, z } = oyuncu.entity.position
@@ -31,6 +45,7 @@ async function gel (bot, kontrol, oyuncuAdi, mesafe = 2) {
     bot.pathfinder.stop()
     if (err instanceof IptalEdildi) throw err
     log.hata(`Yol bulamadım: ${err.message}`)
+    bot.chat(`Yanına yol bulamadım (${err.message}).`)
     return { basarili: false, hata: err.message }
   }
 }
