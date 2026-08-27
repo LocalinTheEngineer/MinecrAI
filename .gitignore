@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# ---- MinecrAI ----
+.env
+.venv/
+mc-server/
+*.jar
+models/
+runs/
+logs/
+data/demonstrations/
