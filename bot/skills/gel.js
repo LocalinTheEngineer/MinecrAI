@@ -25,6 +25,15 @@ const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla } = require('.
 
 const DENEME_TOLERANSLARI = [2, 4, 6]
 
+// Dikey mesafe yatayla aynı şey değil: 6 blok yanındaki bota "geldim" denir
+// ama 6 blok altındaki bota denmez — arada duvar, tavan, uçurum vardır.
+// Bu yüzden yatay ve dikey toleransı ayrı tutuyoruz.
+const DIKEY_TOLERANS = 3
+
+// Bu kadar dikey fark varsa pathfinder sana ulaşmak için tünel kazmaya
+// kalkışabilir; dakikalar sürer ve araziyi mahveder. Önce uyarıyoruz.
+const TUNEL_ESIGI = 12
+
 /** Verilen noktanın altındaki ilk sağlam zemini bul (uçan oyuncu için) */
 function altindakiZemin (bot, konum, maksDusus = 40) {
   const x = Math.floor(konum.x)
@@ -72,13 +81,20 @@ async function gel (bot, kontrol, oyuncuAdi) {
       nokta = zemin
     }
 
-    const mesafe = bot.entity.position.distanceTo(nokta)
-    if (mesafe <= tolerans) {
+    const yatay = bot.entity.position.xzDistanceTo(nokta)
+    const dikey = Math.abs(bot.entity.position.y - nokta.y)
+
+    // "Zaten yanındayım" demek için HEM yatayda yakın HEM aynı seviyede olmalı
+    if (yatay <= tolerans && dikey <= DIKEY_TOLERANS) {
       bot.chat('Zaten yanındayım.')
       return { basarili: true }
     }
 
-    log.bilgi(`Deneme (tolerans ${tolerans}): ${nokta.x.toFixed(0)},${nokta.y.toFixed(0)},${nokta.z.toFixed(0)} — ${mesafe.toFixed(1)} blok`)
+    if (dikey > TUNEL_ESIGI && tolerans === DENEME_TOLERANSLARI[0]) {
+      bot.chat(`Aramızda ${dikey.toFixed(0)} blok yükseklik farkı var — ulaşmam uzun sürebilir.`)
+    }
+
+    log.bilgi(`Deneme (tolerans ${tolerans}): ${nokta.x.toFixed(0)},${nokta.y.toFixed(0)},${nokta.z.toFixed(0)} — yatay ${yatay.toFixed(1)}, dikey ${dikey.toFixed(1)}`)
 
     try {
       pathfinderHazirla(bot) // önceki komuttan mandal kalmış olabilir
@@ -87,7 +103,20 @@ async function gel (bot, kontrol, oyuncuAdi) {
         30000,
         kontrol
       )
-      log.basari('Geldim.')
+      // Ulaştığını iddia etmeden ÖNCE gerçekten nerede olduğuna bak.
+      // Pathfinder hedefe "yeterince yakın" sayabilir ama arada dikey fark
+      // kalmış olabilir — bunu gizlemek yerine söylüyoruz.
+      const sonYatay = bot.entity.position.xzDistanceTo(nokta)
+      const sonDikey = bot.entity.position.y - nokta.y
+
+      if (Math.abs(sonDikey) > DIKEY_TOLERANS) {
+        const yon = sonDikey > 0 ? 'yukarıdayım' : 'aşağıdayım'
+        log.uyari(`Yaklaştım ama ${Math.abs(sonDikey).toFixed(0)} blok ${yon}.`)
+        bot.chat(`Yaklaştım ama senden ${Math.abs(sonDikey).toFixed(0)} blok ${yon} — tam yanına çıkamadım.`)
+        return { basarili: false, hata: 'dikey_fark', dikey: sonDikey }
+      }
+
+      log.basari(`Geldim (yatay ${sonYatay.toFixed(1)}, dikey ${sonDikey.toFixed(1)}).`)
       bot.chat('Geldim.')
       return { basarili: true }
     } catch (err) {
