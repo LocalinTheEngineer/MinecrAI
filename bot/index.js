@@ -29,6 +29,7 @@ const config = require('./config')
 const log = require('./utils/log')
 const skills = require('./skills')
 const koruma = require('./utils/koruma')
+const { renkliListe } = require('./utils/chat')
 const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
 
 /**
@@ -39,34 +40,37 @@ const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
  * sapar ve kimse fark etmez.
  */
 const KOMUTLAR = [
-  { ad: 'gel', aciklama: 'Yanına yürür' },
-  { ad: 'kes', aciklama: 'En yakın doğal ağacı keser, odunları toplar' },
-  { ad: 'kes 3', aciklama: '3 ağaç keser (1-64 arası sayı verebilirsin)' },
-  { ad: 'kes surekli', aciklama: '"dur" diyene kadar ağaç kesmeye devam eder' },
-  { ad: 'balta', aciklama: 'Envanterindeki odundan tahta balta yapar' },
-  { ad: 'koru', aciklama: 'Durduğun yerin 24 blok çevresinde asla kesmez' },
-  { ad: 'koru 40', aciklama: 'Koruma yarıçapını sen belirlersin (4-200)' },
-  { ad: 'korumalar', aciklama: 'İşaretli koruma bölgelerini listeler' },
-  { ad: 'korumasil', aciklama: 'Bütün koruma bölgelerini kaldırır' },
-  { ad: 'envanter', aciklama: 'Envanterindekileri söyler' },
-  { ad: 'nerede', aciklama: 'Koordinatlarını söyler' },
-  { ad: 'dur', aciklama: 'Yaptığı işi anında bırakır (meşgulken bile çalışır)' },
-  { ad: 'komut', aciklama: 'Bu listeyi gösterir' }
+  { ad: 'gel', aciklama: 'yanına yürür' },
+  { ad: 'kes', aciklama: 'en yakın doğal ağacı keser' },
+  { ad: 'kes 3', aciklama: '3 ağaç keser (1-64)' },
+  { ad: 'kes surekli', aciklama: 'dur diyene kadar keser' },
+  { ad: 'takip', aciklama: 'peşinden gelir' },
+  { ad: 'takibi birak', aciklama: 'takibi bırakır' },
+  { ad: 'ver odun', aciklama: 'eşya atar (tahta/balta/kazma...)' },
+  { ad: 'ver odun 10', aciklama: 'adet belirtirsin' },
+  { ad: 'balta', aciklama: 'odundan tahta balta yapar' },
+  { ad: 'koru', aciklama: 'durduğun yeri korur, orada kesmez' },
+  { ad: 'koru 40', aciklama: 'koruma yarıçapı (4-200)' },
+  { ad: 'korumalar', aciklama: 'koruma bölgelerini listeler' },
+  { ad: 'korumasil', aciklama: 'korumaları kaldırır' },
+  { ad: 'envanter', aciklama: 'envanterini söyler' },
+  { ad: 'nerede', aciklama: 'koordinatlarını söyler' },
+  { ad: 'dur', aciklama: 'işi anında bırakır' },
+  { ad: 'komut', aciklama: 'bu liste' }
 ]
 
 /**
  * Komut listesini chat'e yazar.
  *
- * Minecraft chat satırı ~256 karakterle sınırlı, ayrıca çok hızlı mesaj
- * göndermek sunucudan atılmaya sebep olabiliyor — o yüzden satır satır ve
- * araya kısa gecikme koyarak gönderiyoruz.
+ * Renk için `/tellraw` gerekiyor, o da op yetkisi istiyor. utils/chat.js bunu
+ * bir kez deniyor; bot op değilse otomatik olarak düz metne düşüyor.
+ *
+ * Not: vanilla sunucunun spam filtresi mesaj SAYISINA bakıyor. Her komutu ayrı
+ * mesaj yapmak botu "disconnect.spam" ile attırıyordu — çözüm gecikmeyi
+ * uzatmak değil, mesaj sayısını azaltmak.
  */
 async function komutlariYaz (bot) {
-  bot.chat('--- MinecrAI komutları ---')
-  for (const k of KOMUTLAR) {
-    await new Promise((r) => setTimeout(r, 300))
-    bot.chat(`${k.ad} - ${k.aciklama}`)
-  }
+  await renkliListe(bot, '=== MinecrAI komutları ===', KOMUTLAR)
 }
 
 function botOlustur () {
@@ -145,6 +149,7 @@ function botOlustur () {
     // "dur" her zaman çalışır — meşgulken bile
     if (komut === 'dur') {
       kontrol.durdur()
+      skills.takipBirak(bot)
       pathfinderDurdur(bot)
       bot.stopDigging()
       bot.clearControlStates()
@@ -170,6 +175,24 @@ function botOlustur () {
       bot.chat(esyalar.length === 0
         ? 'Envanterim boş.'
         : esyalar.map((i) => `${i.name} x${i.count}`).join(', '))
+      return
+    }
+
+    if (komut === 'takip') {
+      if (kontrol.calisiyor) { bot.chat('Önce "dur" yaz.'); return }
+      skills.takipBaslat(bot, username)
+      return
+    }
+
+    if ((komut === 'takibi' && arguman === 'birak') || komut === 'takipbirak') {
+      bot.chat(skills.takipBirak(bot) ? 'Takibi bıraktım.' : 'Zaten takip etmiyordum.')
+      return
+    }
+
+    if (komut === 'ver') {
+      const adet = parcalar[2] && !isNaN(parseInt(parcalar[2], 10))
+        ? parseInt(parcalar[2], 10) : null
+      await gorevCalistir('ver', () => skills.ver(bot, username, arguman, adet))
       return
     }
 

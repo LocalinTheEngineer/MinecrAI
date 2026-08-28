@@ -69,11 +69,24 @@ it performed the entire navigation in one step, so an agent that discovered it
 would never learn to navigate. Removing it is what makes the learning curve
 mean something.
 
-### Observation space — `Box(13,)`
+### Observation space — `Box(19,)`
 
 Relative direction and distance to the target log, yaw/pitch, wood gathered this
 episode, health, hunger, whether a log is in front, ground contact, episode
-progress, and whether a breakable block is blocking the way.
+progress, and four local obstacle sensors: blocked ahead / left / right, and
+whether a jumpable step is in front.
+
+Node sends 16 raw numbers; the Python side derives three more — the target's
+bearing **in the bot's own frame** (angle, sin, cos) — before the network sees
+them. The raw vector gives direction in world coordinates and yaw separately, so
+"is the target on my left" requires an `atan2` the network would have to learn.
+Handing it over directly makes the turn decision readable from one number's sign.
+Nothing new is measured; it is a change of frame, which is why it applies
+retroactively to already-recorded demonstrations.
+
+The obstacle sensors and this reframing both exist so the expert's decisions are
+**realizable from the observation**. See `docs/architecture.md` — measured, not
+assumed.
 
 ### Reward
 
@@ -93,7 +106,7 @@ Episode terminates at 5 logs collected, truncates at 500 steps.
 | **1** | Rule-based bot: connect, pathfind, chop trees, collect drops, cancellable tasks | ✅ Done |
 | **2** | Node↔Python bridge + Gymnasium environment + random-agent baseline | ✅ Done |
 | **3** | Behaviour cloning from scripted demonstrations | ✅ Done |
-| **4** | PPO training, learning curve, before/after comparison | ⬜ Planned |
+| **4** | PPO training warm-started from the cloned policy, learning curve | ✅ Done |
 | **5** | Extended task set: mining, simple crafting | ⬜ Planned |
 
 Each milestone stands on its own — the repo is presentable at any point.
@@ -144,6 +157,10 @@ Then type in the in-game chat:
 | `kes 3` | Chop 3 trees (1-64) |
 | `kes surekli` | Keep chopping until told to stop |
 | `envanter` / `nerede` | Report inventory / coordinates |
+| `takip` | Follow the player until told to stop |
+| `ver odun 10` | Toss items from the bot's inventory |
+| `koru` | Mark a no-dig zone around you — the bot never breaks blocks there |
+| `komut` | List every command |
 | `dur` | Abort the current task immediately |
 
 ### 3. The RL loop (Milestone 2)
@@ -169,6 +186,28 @@ python eval_agent.py --bolum 10       # random vs learned vs expert
 `train_bc.py` writes a loss/accuracy plot and `eval_agent.py` writes the
 random-vs-learned-vs-expert comparison to `models/`.
 
+### 5. Reinforcement learning (Milestone 4)
+
+```bash
+cd python
+python pretrain_ppo.py --epoch 80              # hand the cloned policy to PPO (offline)
+# terminal A: npm run bridge
+python train_ppo.py --baslangic ../models/ppo_pretrained.zip --adim 20000
+python plot_ogrenme.py                         # learning curve, safe to run mid-training
+```
+
+**On wall-clock cost.** A step in live Minecraft takes roughly 0.4 s, so 20k steps
+is about two hours. Training is therefore built to be interrupted: every episode is
+appended to `models/ppo_gecmis.csv`, a checkpoint is written every 1000 steps, and
+`Ctrl+C` exits cleanly. `--devam` resumes from the last checkpoint, and
+`plot_ogrenme.py` will draw the curve from a partial run.
+
+**Why warm-start rather than train from scratch?** A fresh PPO policy acts randomly,
+and at 0.4 s per step it would take many hours before the first useful behaviour
+appears. `pretrain_ppo.py` trains Stable-Baselines3's own policy object with a
+supervised loss on the demonstration data, so PPO starts from a policy that already
+solves the task and spends its budget improving rather than discovering.
+
 > Türkçe okuyanlar için mimari notları: [`docs/mimari.md`](docs/mimari.md)
 
 ## Repository layout
@@ -177,8 +216,9 @@ random-vs-learned-vs-expert comparison to `models/`.
 bot/                  Node.js — everything that touches Minecraft
   index.js              Milestone 1 entry point (chat-controlled bot)
   config.js             all settings, read from .env
-  skills/               reusable behaviours (chopTree, gel)
-  utils/gorev.js        cooperative cancellation for long-running tasks
+  skills/               reusable behaviours (chopTree, gel, alet, takip, ver)
+  utils/gorev.js        cooperative cancellation + safe pathfinder stop
+  utils/koruma.js       player-marked no-dig zones
   bridge/
     server.js           WebSocket server exposing reset/step to Python
     environment.js      observation, reward and episode logic
@@ -193,6 +233,9 @@ python/
   train_bc.py           Milestone 3: behaviour cloning + training plots
   eval_agent.py         Milestone 3: random vs learned vs expert comparison
   minecrai/policy.py    the imitation network (PyTorch MLP)
+  pretrain_ppo.py       Milestone 4: warm-start SB3's policy from demonstrations
+  train_ppo.py          Milestone 4: PPO with checkpointing and CSV logging
+  plot_ogrenme.py       Milestone 4: the learning curve
   requirements.txt
 docs/
   architecture.md       design rationale — read this first

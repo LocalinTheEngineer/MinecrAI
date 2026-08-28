@@ -160,3 +160,6 @@ __pycache__/
 # Claude aktarim artiklari
 _to_delete/
 *.tar.gz
+
+# kisisel not, repoya girmesin
+BASLAT.md

@@ -44,7 +44,24 @@ ve bot sağa-sola salınır.
 **Bakış yatayda sabit.** Ajanın yukarı-aşağı bakma aksiyonu yok; "kır"
 aksiyonunun dikey nişanı otomatik yapılır, yatay hizalama ajanın işidir.
 
-## Gözlem uzayı (Box, 13 boyut)
+## Gözlem uzayı
+
+Node **16 sayı** gönderir. Python tarafı bunlara 3 türetilmiş sayı ekleyip
+ağa **19 boyut** verir (`minecrai/env.py` → `zenginlestir`):
+
+| # | Türetilmiş |
+|---|---|
+| 16 | Hedefin egosentrik açısı / π (işaretli: sol pozitif) |
+| 17 | sin(açı) |
+| 18 | cos(açı) — 1 = tam önümde |
+
+Neden: ham gözlem hedefin yönünü *dünya* koordinatlarında, bakış açısını ayrı
+veriyor. "Sağımda mı solumda mı" sorusu bu ikisinden `atan2` ile hesaplanıyor —
+küçük bir ağ için zor. Açıyı hazır verince dönüş kararı tek sayının işaretinden
+okunuyor. Bu bilgi ham gözlemde zaten var, o yüzden eski kayıtlara da geriye
+dönük uygulanabiliyor.
+
+## Ham gözlem (Node → Python, 16 boyut)
 
 | # | Değer |
 |---|-------|
@@ -57,7 +74,16 @@ aksiyonunun dikey nişanı otomatik yapılır, yatay hizalama ajanın işidir.
 | 9   | Önünde kırılabilir kütük var mı (0/1) |
 | 10  | Ayakları yerde mi (0/1) |
 | 11  | Adım sayısı / maxAdim |
-| 12  | Yolumu kapatan kırılabilir blok var mı (0/1) |
+| 12  | Önüm kapalı mı (0/1) |
+| 13  | Solum kapalı mı (0/1) |
+| 14  | Sağım kapalı mı (0/1) |
+| 15  | Önümde zıplanabilir basamak var mı (0/1) |
+
+13-15 numaralı sayılar uzmanın kararlarını **açıklanabilir** kılmak için var.
+Uzman tıkandığında bir yöne dönmek zorunda; o yön rastgele seçilirse karar
+hiçbir gözlemden öğrenilemez. Ölçtük: doğrulama başarısı %88'den %52'ye
+düşüyor. Yön "açık olan taraf" diye tanımlanınca gözlemden türetilebilir
+hale geliyor.
 
 ## Ödül fonksiyonu
 

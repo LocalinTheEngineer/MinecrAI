@@ -204,7 +204,67 @@ long as it exists.
 None of these are exotic. They are the ordinary failure modes of turning a game
 into an RL environment, and finding them is most of the work.
 
-## 9. What comes next
+## 9. The expert must be realizable from the observation
+
+Behaviour cloning learns a mapping from observation to action. If the expert's
+action depends on information the observation does not contain, the network
+cannot fit it — not because it is too small, but because the target is not a
+function of the input.
+
+We ran into this twice, and both times the number told us before the video did.
+
+**The planner mistake.** The scripted expert was upgraded to call the A*
+pathfinder and steer toward the next waypoint. Its demonstrations looked better
+in the game — the bot stopped getting wedged against terrain. But validation
+accuracy on the cloned policy fell from ~88% to 52%, and crucially *training*
+loss plateaued at the same value as validation loss. That signature is not
+overfitting; it is a target the network cannot represent. The agent's
+observation contains "direction to the target tree", not "the plan routes left
+around this hill", so identical observations carried contradictory labels.
+
+The general rule: an expert may be smarter than the learner, but it must not act
+on information the learner cannot perceive.
+
+**The random-tiebreak mistake.** The same defect in miniature: when blocked, the
+expert picked a turn direction at random. A random choice is by construction
+unlearnable. Replacing it with "turn toward whichever side is open" makes the
+decision a function of the observation — provided the observation reports which
+side is open, which is why indices 13-15 exist.
+
+The fix in both cases was the same shape: either remove the privileged
+information from the expert, or add the missing perception to the observation.
+We did both — the expert is reactive again, and the agent gained local obstacle
+sensors.
+
+## 10. Benchmarking inside a world that changes
+
+Two measurement bugs cost more time than any code bug, and both produced
+confident, wrong numbers.
+
+**Contamination.** After ninety episodes of chopping, the test area was full of
+dropped logs and empty of trees. A random policy wandering for 150 steps walks
+over those piles and "collects" 4.6 wood — no skill involved. Meanwhile the
+expert, which had scored 4.7 wood per episode during collection, scored 0,
+because there was nothing left to chop. The policies had not changed; the world
+had. Evaluating in a fresh area with `/kill @e[type=item]` first is now part of
+the procedure.
+
+**Ordering bias.** Running policies in blocks — all of A, then all of B — gives
+the first one the freshest forest and the last one the stripped remains. The
+evaluation now interleaves them round-robin so depletion falls on everyone
+equally.
+
+Neither of these is exotic. They are the environment-side analogue of a leaked
+test set: the measurement apparatus quietly encoding information that has
+nothing to do with what you meant to measure.
+
+**A third, smaller one:** the cloned policy was evaluated with `argmax`, which is
+deterministic. When it entered a state whose best action did not change the
+state, it repeated that action until the episode timed out — three of five
+episodes ended at exactly the stagnation cutoff. Sampling from the policy's
+distribution breaks the loop, and is what PPO does during training anyway.
+
+## 11. What comes next
 
 **Milestone 4 — PPO.**
 Use the imitation-trained network as the initial policy and continue with PPO via

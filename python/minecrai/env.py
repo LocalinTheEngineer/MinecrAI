@@ -20,8 +20,44 @@ from gymnasium import spaces
 
 from .bridge import BridgeClient
 
-# Gozlem vektorunun boyutu — bot/bridge/environment.js ile AYNI olmali
-GOZLEM_BOYUTU = 13
+# Node tarafindan gelen HAM gozlem boyutu — environment.js ile AYNI olmali
+HAM_BOYUTU = 16
+
+# Aga verilen gozlem: ham + turetilmis ozellikler (asagiya bak)
+GOZLEM_BOYUTU = HAM_BOYUTU + 3
+
+
+def zenginlestir(ham: np.ndarray) -> np.ndarray:
+    """Ham gozleme EGOSENTRIK hedef acisi ekler.
+
+    Ham gozlem hedefin yonunu DUNYA koordinatlarinda veriyor (dx, dy, dz) ve
+    botun bakis acisini (yaw) ayri bir sayi olarak. "Hedef sagimda mi solumda
+    mi?" sorusunun cevabi bu ikisini birlestirip atan2 hesaplamayi gerektiriyor
+    — kucuk bir MLP icin zor bir dogrusal olmayan islem.
+
+    Uzmanin donme karari DOGRUDAN bu aciya bagli. Aciyi hazir verince karar
+    tek bir sayinin isaretinden okunabilir hale geliyor. Olctuk: taklit
+    dogrulugu belirgin sekilde artiyor.
+
+    Bu bilgi ham gozlemin icinde zaten var; yeni bir sey olcmuyoruz, sadece
+    agin kolay kullanabilecegi bicime ceviriyoruz. Bu yuzden eski kayitli
+    veriye de geriye donuk uygulanabiliyor.
+
+    Eklenen 3 sayi:
+      - aci / pi        : isaretli fark, -1..1 (sol pozitif)
+      - sin(aci)        : acinin surekli gosterimi (±pi sinirinda sicrama yok)
+      - cos(aci)        : 1 = tam onumde, -1 = tam arkamda
+    """
+    ham = np.asarray(ham, dtype=np.float32)
+    dx, dz = ham[..., 0], ham[..., 2]
+    yaw = ham[..., 4] * np.pi
+
+    hedef_yaw = np.arctan2(-dx, -dz)
+    fark = hedef_yaw - yaw
+    fark = (fark + np.pi) % (2 * np.pi) - np.pi  # -pi..pi araligina indirge
+
+    ek = np.stack([fark / np.pi, np.sin(fark), np.cos(fark)], axis=-1)
+    return np.concatenate([ham, ek.astype(np.float32)], axis=-1)
 
 # Aksiyonlar — bot/bridge/protocol.md ile ayni sirada.
 #
@@ -53,6 +89,8 @@ class MinecraftEnv(gym.Env):
 
         self.bridge = BridgeClient(url)
         self._son_info: Dict[str, Any] = {}
+        self.son_uzman_sebep = "?"
+        self.son_uzman_tani: Dict[str, Any] = {}
 
     # ------------------------------------------------------------ Gym API
 
@@ -73,7 +111,10 @@ class MinecraftEnv(gym.Env):
         Ogrenme yok — elle yazilmis kurallar. Amaci taklit edilecek ornegi
         uretmek. Bkz. bot/bridge/expert.js
         """
-        return int(self.bridge.expert()["action"])
+        cevap = self.bridge.expert()
+        self.son_uzman_sebep = cevap.get("sebep", "?")
+        self.son_uzman_tani = cevap.get("tani", {})
+        return int(cevap["action"])
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         cevap = self.bridge.step(int(action))
@@ -99,9 +140,9 @@ class MinecraftEnv(gym.Env):
     @staticmethod
     def _obs(ham) -> np.ndarray:
         dizi = np.asarray(ham, dtype=np.float32)
-        if dizi.shape != (GOZLEM_BOYUTU,):
+        if dizi.shape != (HAM_BOYUTU,):
             raise ValueError(
-                f"Gozlem boyutu {dizi.shape}, beklenen ({GOZLEM_BOYUTU},). "
+                f"Ham gozlem boyutu {dizi.shape}, beklenen ({HAM_BOYUTU},). "
                 "environment.js ile env.py uyusmuyor olabilir."
             )
-        return np.clip(dizi, -1.0, 1.0)
+        return np.clip(zenginlestir(dizi), -1.0, 1.0)

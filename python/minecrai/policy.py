@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-GOZLEM_BOYUTU = 13
+from .env import GOZLEM_BOYUTU  # ham + turetilmis
 AKSIYON_SAYISI = 5
 
 

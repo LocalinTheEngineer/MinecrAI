@@ -68,7 +68,11 @@ function kopruyuBaslat (ayarlar = {}) {
             ws.send(JSON.stringify(await env.step(istek.action)))
           } else if (istek.cmd === 'expert') {
             // Milestone 3: "bu durumda uzman ne yapardi?"
-            ws.send(JSON.stringify(env.uzmanAksiyonu()))
+            // Cevap {action, sebep} — sebep tani icin kritik: uzman hicbir
+            // sey yapmiyorsa NEDEN yapmadigini bilmeden tahmin yurutuyoruz.
+            const cevap = env.uzmanAksiyonu()
+            cevap.tani = env.taniBilgisi()
+            ws.send(JSON.stringify(cevap))
           } else if (istek.cmd === 'close') {
             ws.send(JSON.stringify({ ok: true }))
             ws.close()

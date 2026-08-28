@@ -19,6 +19,7 @@ import torch.nn as nn
 
 from minecrai.policy import PolitikaAgi, kaydet
 from minecrai.env import AKSIYONLAR
+from minecrai import zenginlestir
 
 KOK = Path(__file__).parent.parent
 VARSAYILAN_VERI = KOK / "data" / "demonstrations" / "demos.npz"
@@ -62,7 +63,10 @@ def main() -> None:
         )
 
     d = np.load(args.veri)
-    X, y = d["gozlemler"], d["aksiyonlar"]
+    # Kayitli veri HAM gozlem iceriyor; agin gordugu bicime cevir.
+    # Turetilmis ozellikler ham veriden hesaplanabildigi icin eski kayitlar
+    # yeniden toplanmadan kullanilabiliyor.
+    X, y = zenginlestir(d["gozlemler"]), d["aksiyonlar"]
     print(f"{len(X)} ornek yuklendi, gozlem boyutu {X.shape[1]}")
 
     Xe, ye, Xd, yd = veriyi_bol(X, y)

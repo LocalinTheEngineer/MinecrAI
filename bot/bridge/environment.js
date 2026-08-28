@@ -21,6 +21,13 @@ const DONUS_ACISI = Math.PI / 8  // 22.5 derece
 const YUMUSAK = /_leaves$|vine|_sapling$|bamboo|cobweb|azalea|moss_|snow|sugar_cane|cactus|_mushroom_block$|shroomlight|_wart_block$/
 const HEDEF_ODUN = 5
 
+// Ölüm cezası. Envanter kaybını ödüle yazmak yerine sabit bir ceza:
+// ajan uçurumdan kaçınmayı öğrensin ama tek olay bütün eğitimi bozmasın.
+const OLUM_CEZASI = -5
+
+// Ortak sabitler (expert.js de aynılarını kullanıyor)
+const { DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI, HEDEF_SABIR } = require('./sabitler')
+
 /**
  * Botu bir RL "environment"ına çeviren katman.
  *
@@ -35,6 +42,26 @@ class MinecraftEnvironment {
     this.oncekiMesafe = null
     this.hedefKonum = null      // kilitli hedef ağaç
     this.bolumBaslangicOdun = 0 // bölüm başındaki envanter — aşağıya bak
+    this.takilmaSayaci = 0      // üst üste kaç adımdır ilerleyemiyoruz
+    this.durgunlukSayaci = 0    // üst üste kaç adımdır hiçbir ilerleme yok
+    this.kacinmaAdimi = 0       // engelden kaçınma modunda kalan adım
+    this.kacinmaYonu = 1        // 1 = sağa, 2 = sola
+    this.karaListe = new Set()  // ulaşılamadığı anlaşılan hedefler
+    this.yol = []               // uzmanın planladığı yol (ara noktalar)
+    this.yolZamani = 0
+    this.yolHedefi = null
+    this.hedefDenemesi = 0      // mevcut hedefte kaç adımdır ilerleme yok
+    this.oldu = false           // bu bölümde öldü mü
+
+    // ÖLÜM TAKİBİ
+    //
+    // Minecraft'ta ölünce envanterdeki her şey yere düşüyor. Bunu ele
+    // almadığımız için bir bölümde "-451 odun" ve "-452 ödül" gördük:
+    // bot 451 kütükle başlamış, uçurumdan düşüp ölmüş, envanteri sıfırlanmış
+    // ve biz bunu "451 odun kaybetti" diye ödüle yazmışız.
+    //
+    // PPO'da böyle bir aykırı değer politikayı tek güncellemede mahvedebilir.
+    this.bot.on('death', () => { this.oldu = true })
   }
 
   // ---------------------------------------------------------------- gözlem
@@ -73,11 +100,21 @@ class MinecraftEnvironment {
       a.distanceTo(this.bot.entity.position) - b.distanceTo(this.bot.entity.position))
 
     for (const konum of adaylar) {
+      const anahtar = `${konum.x},${konum.y},${konum.z}`
+      if (this.karaListe.has(anahtar)) continue
+
       const blok = this.bot.blockAt(konum)
-      if (dogalAgacMi(this.bot, blok)) {
-        this.hedefKonum = konum
-        return blok
-      }
+      if (!dogalAgacMi(this.bot, blok)) continue
+
+      // Gövdenin DİBİNİ hedefle, bulduğumuz kütüğü değil.
+      //
+      // Ormanda 3 boyutlu en yakın kütük çoğu zaman tepedeki bir daldır.
+      // Ona kilitlenen bot ulaşamadığı bir noktaya doğru arazide dolanıp
+      // duruyordu. Dibi hedefleyince yanına gidip yukarı doğru kırarak
+      // çıkabiliyor — insan oyuncunun yaptığı da bu.
+      const dip = this.govdeninDibi(konum)
+      this.hedefKonum = dip
+      return this.bot.blockAt(dip)
     }
     return null
   }
@@ -96,7 +133,7 @@ class MinecraftEnvironment {
    * yaklaşmayı öğrenmek zorunda; sadece "başını kaldırmayı" öğrenmesi
    * gerekmiyor.
    */
-  onundekiKutuk (menzil = 4.5, koniKosinusu = 0.82) {
+  onundekiKutuk (menzil = 4.4, koniKosinusu = 0.82) {
     const bot = this.bot
     const goz = bot.entity.position.offset(0, bot.entity.height, 0)
     const bakis = new Vec3(-Math.sin(bot.entity.yaw), 0, -Math.cos(bot.entity.yaw))
@@ -114,21 +151,118 @@ class MinecraftEnvironment {
       const yatay = new Vec3(fark.x, 0, fark.z)
       const uzaklik = yatay.norm()
 
-      if (uzaklik > menzil || uzaklik < 0.01) continue
-      if (Math.abs(fark.y) > 2.5) continue // ulaşamayacağı kadar yukarıda/aşağıda
+      // Minecraft'ta menzil GÖZDEN itibaren 3 boyutlu mesafedir. Eskiden
+      // sadece yatay mesafeye bakıp dikey farkı 2.5 ile sınırlıyorduk; bu,
+      // hemen yanı başındaki gövdenin üst katlarını "erişilemez" sayıyordu.
+      // Bot da kıracağı yerde o seviyeye tırmanmanın yolunu arıyordu.
+      if (fark.norm() > menzil) continue
 
-      const hiza = yatay.scaled(1 / uzaklik).dot(bakis) // 1 = tam önümde
-      if (hiza < koniKosinusu) continue
+      // Tam tepemizdeki bloğa yatay hizalama anlamsız — doğrudan kırılabilir
+      if (uzaklik > 0.9) {
+        const hiza = yatay.scaled(1 / uzaklik).dot(bakis) // 1 = tam önümde
+        if (hiza < koniKosinusu) continue
+      }
 
       const aday = bot.blockAt(konum)
       if (!dogalAgacMi(bot, aday)) continue // oyuncunun yapısını kırma
 
-      const skor = hiza - uzaklik * 0.1 // hem hizalı hem yakın olanı seç
+      // Alttan üste kesmek daha verimli: alçak olana öncelik ver
+      const skor = -fark.norm() - Math.max(0, fark.y) * 0.3
       if (skor > enIyiSkor) { enIyiSkor = skor; enIyi = aday }
     }
 
     return enIyi
   }
+
+  /**
+   * Önümde tek bloklu bir basamak var mı?
+   *
+   * Ayak hizasında katı blok + baş hizasında boşluk = zıplayarak çıkılabilir
+   * basamak. İki blok yüksekse zıplamak işe yaramaz, oraya girmiyoruz.
+   */
+  onumdeBasamakVar () {
+    const bot = this.bot
+    const bakis = new Vec3(-Math.sin(bot.entity.yaw), 0, -Math.cos(bot.entity.yaw))
+    const p = bot.entity.position
+
+    const ayakHizasi = bot.blockAt(p.offset(bakis.x * 0.8, 0.1, bakis.z * 0.8))
+    const basHizasi = bot.blockAt(p.offset(bakis.x * 0.8, 1.2, bakis.z * 0.8))
+    const ustu = bot.blockAt(p.offset(bakis.x * 0.8, 2.2, bakis.z * 0.8))
+
+    if (!ayakHizasi || ayakHizasi.boundingBox !== 'block') return false
+    if (basHizasi && basHizasi.boundingBox === 'block') return false // 2 blok, zıplanmaz
+    if (ustu && ustu.boundingBox === 'block') return false           // tavan var
+
+    return true
+  }
+
+  /**
+   * Önümü kapatan HERHANGİ bir katı blok var mı? (kırılabilir olmasa da)
+   *
+   * `onumuKapatan` sadece kırılabilir yumuşak blokları (yaprak vb.) sayıyor,
+   * çünkü "kır" aksiyonu onları hedefliyor. Ama toprak duvara toslamak da
+   * ilerlemeyi engelliyor ve ajanın bunu GÖREBİLMESİ lazım — göremezse
+   * duvara toslamayı bırakmayı öğrenemez.
+   *
+   * Zıplanabilir tek bloklu basamak engel sayılmaz, oradan geçebiliyoruz.
+   */
+  onumdeEngelVar () {
+    if (this.onumdeBasamakVar()) return false
+
+    const bot = this.bot
+    const bakis = new Vec3(-Math.sin(bot.entity.yaw), 0, -Math.cos(bot.entity.yaw))
+    const p = bot.entity.position
+
+    for (const yukseklik of [0.1, 1.2]) {
+      const blok = bot.blockAt(p.offset(bakis.x * 0.8, yukseklik, bakis.z * 0.8))
+      if (blok && blok.boundingBox === 'block') return true
+    }
+    return false
+  }
+
+  /** Verilen kütükten aşağı inerek gövdenin en alt kütüğünü bulur */
+  govdeninDibi (konum) {
+    let en_alt = konum
+    for (let i = 0; i < 24; i++) {
+      const alt = en_alt.offset(0, -1, 0)
+      if (!kutukMu(this.bot.blockAt(alt))) break
+      en_alt = alt
+    }
+    return en_alt
+  }
+
+  /**
+   * Verilen yaw yönünde engel var mı?
+   *
+   * Ajanın SOLUNU ve SAĞINI görebilmesi kritik. Uzman tıkandığında bir yöne
+   * dönmek zorunda; o yönü rastgele seçersek karar hiçbir gözlemden
+   * öğrenilemez hale gelir. "Sağım kapalı olduğu için sola döndüm" ise
+   * gözlemden anlaşılır bir karardır.
+   *
+   * Taklitle öğrenmenin temel kuralı: uzman, öğrencinin göremediği bilgiye
+   * dayanmamalı. Bu yordamlar o kuralı sağlamak için var.
+   */
+  yondeEngelVar (yawFarki) {
+    const bot = this.bot
+    const yaw = bot.entity.yaw + yawFarki
+    const bakis = new Vec3(-Math.sin(yaw), 0, -Math.cos(yaw))
+    const p = bot.entity.position
+
+    // Ayak hizası dolu ama baş hizası boşsa: zıplanabilir basamak, engel değil
+    const ayak = bot.blockAt(p.offset(bakis.x * 0.8, 0.1, bakis.z * 0.8))
+    const bas = bot.blockAt(p.offset(bakis.x * 0.8, 1.2, bakis.z * 0.8))
+
+    if (bas && bas.boundingBox === 'block') return true
+    if (ayak && ayak.boundingBox === 'block') {
+      const ust = bot.blockAt(p.offset(bakis.x * 0.8, 2.2, bakis.z * 0.8))
+      if (ust && ust.boundingBox === 'block') return true // zıplanamaz
+      return false // tek bloklu basamak, geçilebilir
+    }
+    return false
+  }
+
+  solumKapali () { return this.yondeEngelVar(Math.PI / 2) }
+  sagimKapali () { return this.yondeEngelVar(-Math.PI / 2) }
 
   /** Yerdeki en yakın eşya (kırılan kütükten düşen odun) */
   yakinEsya (yaricap = 8) {
@@ -203,7 +337,10 @@ class MinecraftEnvironment {
       kutukMu(baktigi) ? 1 : 0,
       bot.entity.onGround ? 1 : 0,
       this.adim / MAX_ADIM,
-      this.onumuKapatan() ? 1 : 0 // yolum kapali mi
+      this.onumdeEngelVar() ? 1 : 0, // önüm kapalı mı
+      this.solumKapali() ? 1 : 0,    // solum kapalı mı
+      this.sagimKapali() ? 1 : 0,    // sağım kapalı mı
+      this.onumdeBasamakVar() ? 1 : 0 // önümde zıplanabilir basamak var mı
     ]
   }
 
@@ -230,25 +367,36 @@ class MinecraftEnvironment {
 
   async aksiyonUygula (action) {
     const bot = this.bot
+    const oncekiKonum = bot.entity.position.clone()
     let kirilanKutuk = 0
 
     switch (action) {
       case 0: { // ileri yürü
-        // Tek bloklu basamaklarda takılmasın diye kısa bir zıplama desteği.
-        // Bu bir "makro" değil, oyunun fiziği — insan oyuncu da yürürken
-        // önündeki tek bloğa zıplar.
-        const oncekiKonum = bot.entity.position.clone()
+        // Tek bloklu basamaklarda takılmasın diye zıplama desteği.
+        //
+        // Eskiden bu "yürü, 250ms sonra ilerledim mi diye bak, ilerlemediysen
+        // zıpla" şeklindeydi — zamanlamaya dayalı olduğu için güvenilmezdi:
+        // bot ilk yarıda biraz ilerleyip ikinci yarıda takılırsa kontrol hiç
+        // tetiklenmiyor, bot duvara sürtüp yan yan kayıyordu.
+        //
+        // Artık tahmin etmek yerine ÖNCEDEN bakıyoruz: önümdeki blok katı ve
+        // üstü boşsa bu bir basamaktır, zıplamayı baştan basılı tutuyoruz.
+        // Bu bir makro değil, oyunun fiziği — Bedrock sürümünde "auto jump"
+        // diye bir ayar olarak zaten var.
+        const basamakVar = this.onumdeBasamakVar()
+
         bot.setControlState('forward', true)
-        await this.bekle(250)
+        if (basamakVar) bot.setControlState('jump', true)
+        await this.bekle(280)
 
-        const ilerleme = bot.entity.position.xzDistanceTo(oncekiKonum)
-        if (ilerleme < 0.05 && bot.entity.onGround) {
+        // Yine de takıldıysak (öngöremediğimiz bir engel) bir kez daha zıpla
+        if (!basamakVar && bot.entity.onGround &&
+            bot.entity.position.xzDistanceTo(oncekiKonum) < 0.08) {
           bot.setControlState('jump', true)
-          await this.bekle(150)
-          bot.setControlState('jump', false)
         }
+        await this.bekle(280)
 
-        await this.bekle(250)
+        bot.setControlState('jump', false)
         bot.setControlState('forward', false)
         break
       }
@@ -292,7 +440,16 @@ class MinecraftEnvironment {
   async reset () {
     this.adim = 0
     this.hedefKonum = null
-    this.pathfinderDurdur(bot)
+    this.takilmaSayaci = 0
+    this.durgunlukSayaci = 0
+    this.kacinmaAdimi = 0
+    this.karaListe.clear()
+    this.hedefDenemesi = 0
+    this.yol = []
+    this.yolZamani = 0
+    this.yolHedefi = null
+    this.oldu = false
+    pathfinderDurdur(this.bot)
     this.bot.clearControlStates()
 
     // Ajanin yukari-asagi bakma aksiyonu yok. Bakisi yatayda sabitliyoruz ki
@@ -319,6 +476,8 @@ class MinecraftEnvironment {
     // Aksi halde agaclar kesildikce bot ormanin ortasinda kalip bos
     // bolumler uretiyor ve egitim verisi bozuluyor.
     await this.baslangicaTasi()
+    // Ölümden sonra envanter sıfırlanmış olabilir; başlangıcı GÜNCEL
+    // envanterden alıyoruz ki fark hep bu bölümde toplananı göstersin.
     this.oncekiOdun = oduncuSay(this.bot)
     this.bolumBaslangicOdun = this.oncekiOdun
     this.oncekiMesafe = this.hamMesafe()
@@ -387,7 +546,7 @@ class MinecraftEnvironment {
       ])
       return true
     } catch (err) {
-      this.pathfinderDurdur(bot)
+      pathfinderDurdur(this.bot)
       return false
     } finally {
       this.hedefKonum = null
@@ -398,12 +557,23 @@ class MinecraftEnvironment {
 
   async step (action) {
     this.adim++
+    const oncekiKonum = this.bot.entity.position.clone()
 
     const kirilanKutuk = await this.aksiyonUygula(action)
 
+    // İlerleyebildik mi? "İleri yürü" dedik ama yerimizden kıpırdamadıysak
+    // bir engele toslamışız demektir.
+    const ilerleme = this.bot.entity.position.xzDistanceTo(oncekiKonum)
+    if (action === 0 && ilerleme < 0.08) this.takilmaSayaci++
+    else if (action === 0) this.takilmaSayaci = 0
+
     // --- ödül hesabı ---
     const odun = oduncuSay(this.bot)
-    const yeniOdun = odun - this.oncekiOdun
+
+    // Envanter AZALDIYSA bu toplama değil kayıptır (ölüm, dolu envanter).
+    // Ajanın öğrenmesi gereken şey odun toplamak; envanter kaybını ödüle
+    // yazmak devasa negatif aykırı değerler üretiyor.
+    const yeniOdun = Math.max(0, odun - this.oncekiOdun)
     this.oncekiOdun = odun
 
     const mesafe = this.hamMesafe()
@@ -413,22 +583,80 @@ class MinecraftEnvironment {
     }
     this.oncekiMesafe = mesafe
 
-    const reward =
+    let reward =
       1.00 * yeniOdun +
       0.20 * kirilanKutuk +
       0.05 * yaklasma -
       0.01
 
-    const bolumOdun = this.bolumOdunu()
-    const terminated = bolumOdun >= HEDEF_ODUN || this.bot.health <= 0
-    const truncated = this.adim >= MAX_ADIM
+    // Ölüm: sabit ve makul bir ceza. Envanter kaybı kadar değil — ajan
+    // uçurumdan kaçınmayı öğrenmeli, travma geçirmemeli.
+    if (this.oldu) reward += OLUM_CEZASI
+
+    // Hiçbir ilerleme yoksa (ne odun, ne yaklaşma) sayacı artır.
+    // Bölümün 300 adımını duvara toslayarak geçirmek hem veriyi bozuyor hem
+    // de PPO eğitiminde saatler yiyor — 2 dakikalık bir bölüm hiçbir şey
+    // öğretmeden bitiyor.
+    if (yeniOdun <= 0 && kirilanKutuk === 0 && Math.abs(yaklasma) < 0.05) {
+      this.durgunlukSayaci++
+    } else {
+      this.durgunlukSayaci = 0
+    }
+
+    // Hedefe yakınız ama bir şey kıramıyorsak o hedef ulaşılamıyordur
+    // (tepede, suyun ortasında, uçurumun ardında). Kara listeye alıp
+    // başkasına geç — yoksa bölümün tamamını orada geçiriyor.
+    if (this.hedefKonum) {
+      const yakin = this.hedefKonum.xzDistanceTo(this.bot.entity.position) < 4
+      if (yakin && kirilanKutuk === 0 && yeniOdun <= 0) this.hedefDenemesi++
+      else this.hedefDenemesi = 0
+
+      if (this.hedefDenemesi >= HEDEF_SABIR) {
+        this.karaListe.add(
+          `${this.hedefKonum.x},${this.hedefKonum.y},${this.hedefKonum.z}`)
+        this.hedefKonum = null
+        this.hedefDenemesi = 0
+      }
+    }
+
+    const bolumOdun = Math.max(0, this.bolumOdunu())
+    const terminated = bolumOdun >= HEDEF_ODUN || this.oldu
+    const truncated = this.adim >= MAX_ADIM || this.durgunlukSayaci >= DURGUNLUK_SINIRI
 
     return {
       obs: this.gozlem(),
       reward,
       terminated,
       truncated,
-      info: { odun: bolumOdun, envanter: odun, adim: this.adim, yeniOdun, kirilanKutuk }
+      info: {
+        odun: bolumOdun, envanter: odun, adim: this.adim, yeniOdun, kirilanKutuk,
+        takildi: this.takilmaSayaci, durgun: this.durgunlukSayaci, oldu: this.oldu
+      }
+    }
+  }
+
+  /**
+   * Tanı bilgisi: uzman neden o kararı verdi, ortamda ne var?
+   *
+   * "Uzman hiçbir şey yapmıyor" gözlemiyle karşılaşınca sebebini bilmeden
+   * tahmin yürütmek zorunda kaldık. Bu yordam ortamın uzmana nasıl
+   * göründüğünü tek bakışta veriyor.
+   */
+  taniBilgisi () {
+    const hedef = this.enYakinKutuk()
+    const esya = this.yakinEsya()
+    const p = this.bot.entity.position
+
+    return {
+      konum: [Math.round(p.x), Math.round(p.y), Math.round(p.z)],
+      hedefVar: !!hedef,
+      hedefMesafe: hedef ? +hedef.position.distanceTo(p).toFixed(1) : null,
+      menzildeKutuk: !!this.onundekiKutuk(),
+      yerdeEsya: !!esya,
+      esyaMesafe: esya ? +esya.position.distanceTo(p).toFixed(1) : null,
+      onumKapali: this.onumdeEngelVar(),
+      karaListe: this.karaListe.size,
+      envanterOdun: oduncuSay(this.bot)
     }
   }
 
@@ -452,4 +680,7 @@ class MinecraftEnvironment {
   }
 }
 
-module.exports = { MinecraftEnvironment, MAX_ADIM, HEDEF_ODUN, DONUS_ACISI }
+module.exports = {
+  MinecraftEnvironment, MAX_ADIM, HEDEF_ODUN, DONUS_ACISI, OLUM_CEZASI,
+  DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI
+}
