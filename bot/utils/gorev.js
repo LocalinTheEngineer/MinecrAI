@@ -73,4 +73,36 @@ async function sinirli (soz, ms, kontrol) {
   ])
 }
 
-module.exports = { GorevKontrol, IptalEdildi, sinirli }
+/**
+ * pathfinder.stop() GÜVENLİ HÂLİ.
+ *
+ * mineflayer-pathfinder'da `stop()` yolu hemen kesmiyor, sadece `stopPathing`
+ * diye kalıcı bir MANDAL kaldırıyor. Mandal ancak bir sonraki `resetPath`
+ * çağrısında tüketiliyor — ve `goto()` işe tam olarak `setGoal -> resetPath`
+ * ile başlıyor.
+ *
+ * Sonuç: bir yerde `stop()` çağırıp mandalı bırakırsan, BİR SONRAKİ `goto()`
+ * daha yol hesabına başlamadan "Path was stopped before it could be completed"
+ * diye reddediliyor. Hata mesajı sanki arazi sorunuymuş gibi görünüyor ama
+ * sebebi tamamen bizim önceki çağrımız.
+ *
+ * Bu yüzden her `stop()` sonrası `setGoal(null)` ile mandalı tüketiyoruz.
+ */
+function pathfinderDurdur (bot) {
+  try {
+    bot.pathfinder.stop()
+    bot.pathfinder.setGoal(null) // mandalı tüket, yoksa sonraki goto ölür
+  } catch (err) { /* pathfinder yüklü değilse önemsiz */ }
+}
+
+/**
+ * Yeni bir `goto()` öncesi çağrılır: başka bir yerde bırakılmış mandal varsa
+ * temizler. Savunma amaçlı — mandalın kaynağını her zaman bilemiyoruz.
+ */
+function pathfinderHazirla (bot) {
+  try {
+    bot.pathfinder.setGoal(null)
+  } catch (err) { /* önemsiz */ }
+}
+
+module.exports = { GorevKontrol, IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla }

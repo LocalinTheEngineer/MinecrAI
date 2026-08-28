@@ -3,7 +3,7 @@
 const { goals } = require('mineflayer-pathfinder')
 const log = require('../utils/log')
 const config = require('../config')
-const { IptalEdildi, sinirli } = require('../utils/gorev')
+const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
 const { aletKusan } = require('./alet')
 
 /**
@@ -107,6 +107,7 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
 
       try {
         const p = esya.position
+        pathfinderHazirla(bot)
         await sinirli(
           bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 0)),
           6000,
@@ -114,8 +115,8 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
         )
         toplanan++
       } catch (err) {
-        if (err instanceof IptalEdildi) { bot.pathfinder.stop(); throw err }
-        bot.pathfinder.stop() // ulaşamadık, diğerine geç
+        if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
+        pathfinderDurdur(bot) // ulaşamadık, diğerine geç
       }
     }
 
@@ -153,14 +154,15 @@ async function chopTree (bot, kontrol) {
   // --- 3) Ağacın dibine yürü ---
   const dip = kutukler[0].position
   try {
+    pathfinderHazirla(bot)
     await sinirli(
       bot.pathfinder.goto(new goals.GoalNear(dip.x, dip.y, dip.z, 2)),
       20000,
       kontrol
     )
   } catch (err) {
-    if (err instanceof IptalEdildi) { bot.pathfinder.stop(); throw err }
-    bot.pathfinder.stop()
+    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
+    pathfinderDurdur(bot)
     log.uyari('Ağacın dibine tam yürüyemedim — yine de deneyeceğim.')
   }
 
@@ -193,7 +195,7 @@ async function chopTree (bot, kontrol) {
       kesilen++
     } catch (err) {
       if (err instanceof IptalEdildi) {
-        bot.pathfinder.stop()
+        pathfinderDurdur(bot)
         bot.stopDigging()
         throw err
       }

@@ -4,6 +4,7 @@ const Vec3 = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { kutukMu, oduncuSay } = require('../skills/chopTree')
 const { aletKusan } = require('../skills/alet')
+const { pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
 const config = require('../config')
 
 const MAX_ADIM = 500
@@ -285,7 +286,7 @@ class MinecraftEnvironment {
   async reset () {
     this.adim = 0
     this.hedefKonum = null
-    this.bot.pathfinder.stop()
+    this.pathfinderDurdur(bot)
     this.bot.clearControlStates()
 
     // Ajanin yukari-asagi bakma aksiyonu yok. Bakisi yatayda sabitliyoruz ki
@@ -348,13 +349,14 @@ class MinecraftEnvironment {
       if (orta.name !== 'air' || ust.name !== 'air') continue
 
       try {
+        pathfinderHazirla(bot)
         await Promise.race([
           bot.pathfinder.goto(new goals.GoalBlock(p.x, y, p.z)),
           new Promise((_, red) => setTimeout(() => red(new Error('zaman_asimi')), zamanAsimi))
         ])
         return true
       } catch (err) {
-        bot.pathfinder.stop()
+        pathfinderDurdur(bot)
         return false
       }
     }
@@ -370,6 +372,7 @@ class MinecraftEnvironment {
     if (mesafe <= idealMesafe + 5) return false
 
     try {
+      pathfinderHazirla(this.bot)
       await Promise.race([
         this.bot.pathfinder.goto(new goals.GoalNear(
           hedef.position.x, hedef.position.y, hedef.position.z, idealMesafe
@@ -378,7 +381,7 @@ class MinecraftEnvironment {
       ])
       return true
     } catch (err) {
-      this.bot.pathfinder.stop()
+      this.pathfinderDurdur(bot)
       return false
     } finally {
       this.hedefKonum = null

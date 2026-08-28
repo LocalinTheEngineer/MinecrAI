@@ -24,7 +24,7 @@ const collectBlock = require('mineflayer-collectblock').plugin
 const config = require('./config')
 const log = require('./utils/log')
 const skills = require('./skills')
-const { GorevKontrol, IptalEdildi } = require('./utils/gorev')
+const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
 
 function botOlustur () {
   log.bilgi(`Bağlanılıyor: ${config.host}:${config.port} (sürüm ${config.version})`)
@@ -86,7 +86,7 @@ function botOlustur () {
       }
     } finally {
       kontrol.bitir()
-      bot.pathfinder.stop()
+      pathfinderDurdur(bot) // mandalı bırakma, sonraki goto'yu öldürür
       bot.clearControlStates()
     }
   }
@@ -102,7 +102,7 @@ function botOlustur () {
     // "dur" her zaman çalışır — meşgulken bile
     if (komut === 'dur') {
       kontrol.durdur()
-      bot.pathfinder.stop()
+      pathfinderDurdur(bot)
       bot.stopDigging()
       bot.clearControlStates()
       if (!kontrol.calisiyor) bot.chat('Zaten boştaydım.')
