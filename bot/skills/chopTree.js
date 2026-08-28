@@ -5,6 +5,7 @@ const log = require('../utils/log')
 const config = require('../config')
 const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
 const { aletKusan } = require('./alet')
+const koruma = require('../utils/koruma')
 
 /**
  * SKILL: Ağaç kes
@@ -27,6 +28,74 @@ function kutukMu (block) {
 }
 
 /**
+ * Bu kütük DOĞAL bir ağacın parçası mı, yoksa oyuncunun yaptığı bir yapı mı?
+ *
+ * Bot kullanıcının kütükten yaptığı EVİ kesmeye başlamıştı. Sebep: kod bir
+ * bloğun ağaç olup olmadığını sadece ADINA bakarak anlıyordu, ev de aynı
+ * bloktan yapıldığı için aynı kontrolden geçiyordu.
+ *
+ * Üç işarete birden bakıyoruz:
+ *
+ *  1) `stripped_` ile başlayan kütükler doğada oluşmaz — kesinlikle insan işi.
+ *  2) Ağaç gövdesi en fazla 2x2'dir. Aynı seviyede etrafında bir sürü kütük
+ *     varsa bu bir DUVAR demektir.
+ *  3) Doğal ağacın yaprakları vardır. Yakınında hiç yaprak yoksa şüphelen.
+ *
+ * Pahalı bir kontrol (çok blok okuyor), o yüzden her bloğa değil sadece
+ * aday kütüklere uygulanıyor.
+ */
+function dogalAgacMi (bot, blok) {
+  if (!kutukMu(blok)) return false
+
+  // 0) Oyuncunun işaretlediği koruma bölgesi — sezgisellerden ÖNCE gelir
+  if (koruma.korumaliMi(blok.position)) return false
+
+  // 1) Soyulmuş kütük doğada bulunmaz
+  if (blok.name.startsWith('stripped_')) return false
+
+  const p = blok.position
+
+  // 2) Duvar testi: aynı yükseklikte etrafta kaç kütük var?
+  //    Meşe/huş/ladin 1x1, koyu meşe/orman 2x2. Fazlası duvardır.
+  let ayniSeviye = 0
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dz = -2; dz <= 2; dz++) {
+      if (dx === 0 && dz === 0) continue
+      if (kutukMu(bot.blockAt(p.offset(dx, 0, dz)))) ayniSeviye++
+    }
+  }
+  if (ayniSeviye > 3) return false
+
+  // 3) Yaprak testi: doğal ağacın tepesi vardır
+  for (let dy = 0; dy <= 6; dy++) {
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        const b = bot.blockAt(p.offset(dx, dy, dz))
+        if (b && /_leaves$/.test(b.name)) return true
+      }
+    }
+  }
+  return false
+}
+
+/** En yakın DOĞAL ağacı bul (oyuncunun yapılarını atlar) */
+function enYakinDogalAgac (bot, yaricap) {
+  const adaylar = bot.findBlocks({
+    matching: (b) => kutukMu(b), maxDistance: yaricap, count: 96
+  })
+  if (adaylar.length === 0) return null
+
+  adaylar.sort((a, b) =>
+    a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position))
+
+  for (const konum of adaylar) {
+    const blok = bot.blockAt(konum)
+    if (dogalAgacMi(bot, blok)) return blok
+  }
+  return null
+}
+
+/**
  * Verilen kütüğe bağlı bütün kütükleri bulur (ağacın gövdesi).
  * 3x3x3 komşulukta yayılır — dallı ağaçlarda da çalışır.
  */
@@ -43,6 +112,7 @@ function agaciTopla (bot, baslangic, limit) {
 
     const block = bot.blockAt(pos)
     if (!kutukMu(block)) continue
+    if (block.name.startsWith('stripped_')) continue // insan yapımı, dokunma
     bulunan.push(block)
 
     for (let dx = -1; dx <= 1; dx++) {
@@ -134,14 +204,11 @@ async function chopTree (bot, kontrol) {
   const baslangicOdun = oduncuSay(bot)
   kontrol.kontrolEt()
 
-  // --- 1) En yakın kütüğü bul ---
-  const hedef = bot.findBlock({
-    matching: (block) => kutukMu(block),
-    maxDistance: config.searchRadius
-  })
+  // --- 1) En yakın DOĞAL ağacı bul (oyuncunun yapıları hariç) ---
+  const hedef = enYakinDogalAgac(bot, config.searchRadius)
 
   if (!hedef) {
-    log.uyari(`${config.searchRadius} blok içinde ağaç bulamadım.`)
+    log.uyari(`${config.searchRadius} blok içinde doğal ağaç bulamadım.`)
     return { basarili: false, kesilen: 0, kazanilanOdun: 0, hata: 'agac_yok' }
   }
 
@@ -243,4 +310,7 @@ async function chopTrees (bot, kontrol, adet = 1) {
   return { agac, kesilen: toplamKesilen, kazanilanOdun: toplamOdun }
 }
 
-module.exports = { chopTree, chopTrees, oduncuSay, kutukMu, agaciTopla, dusenleriTopla }
+module.exports = {
+  chopTree, chopTrees, oduncuSay, kutukMu, dogalAgacMi, enYakinDogalAgac,
+  agaciTopla, dusenleriTopla
+}

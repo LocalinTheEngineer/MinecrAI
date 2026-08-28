@@ -2,7 +2,7 @@
 
 const Vec3 = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
-const { kutukMu, oduncuSay } = require('../skills/chopTree')
+const { kutukMu, oduncuSay, dogalAgacMi } = require('../skills/chopTree')
 const { aletKusan } = require('../skills/alet')
 const { pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
 const config = require('../config')
@@ -68,15 +68,18 @@ class MinecraftEnvironment {
     })
     if (adaylar.length === 0) return null
 
-    let enIyi = null
-    let enIyiMesafe = Infinity
-    for (const konum of adaylar) {
-      const mesafe = konum.distanceTo(this.bot.entity.position)
-      if (mesafe < enIyiMesafe) { enIyiMesafe = mesafe; enIyi = konum }
-    }
+    // Yakından uzağa sırala, oyuncunun yapılarını atlayarak ilk DOĞAL ağacı seç
+    adaylar.sort((a, b) =>
+      a.distanceTo(this.bot.entity.position) - b.distanceTo(this.bot.entity.position))
 
-    this.hedefKonum = enIyi
-    return this.bot.blockAt(enIyi)
+    for (const konum of adaylar) {
+      const blok = this.bot.blockAt(konum)
+      if (dogalAgacMi(this.bot, blok)) {
+        this.hedefKonum = konum
+        return blok
+      }
+    }
+    return null
   }
 
   /**
@@ -117,8 +120,11 @@ class MinecraftEnvironment {
       const hiza = yatay.scaled(1 / uzaklik).dot(bakis) // 1 = tam önümde
       if (hiza < koniKosinusu) continue
 
+      const aday = bot.blockAt(konum)
+      if (!dogalAgacMi(bot, aday)) continue // oyuncunun yapısını kırma
+
       const skor = hiza - uzaklik * 0.1 // hem hizalı hem yakın olanı seç
-      if (skor > enIyiSkor) { enIyiSkor = skor; enIyi = bot.blockAt(konum) }
+      if (skor > enIyiSkor) { enIyiSkor = skor; enIyi = aday }
     }
 
     return enIyi

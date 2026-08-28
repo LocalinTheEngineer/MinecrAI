@@ -11,6 +11,10 @@
  *   kes 3        -> 3 ağaç keser
  *   kes surekli  -> "dur" diyene kadar ağaç keser
  *   balta        -> envanterindeki oduna tahta balta yapar (yoksa)
+   koru         -> bulunduğun yerin 24 blok çevresini kesinlikle kesmez
+   koru 40      -> yarıçapı sen belirlersin
+   korumalar    -> işaretli bölgeleri sayar
+   korumasil    -> bütün koruma bölgelerini kaldırır
    envanter     -> envanterini söyler
  *   nerede       -> koordinatlarını söyler
  *   dur          -> yaptığı işi anında bırakır
@@ -24,6 +28,7 @@ const collectBlock = require('mineflayer-collectblock').plugin
 const config = require('./config')
 const log = require('./utils/log')
 const skills = require('./skills')
+const koruma = require('./utils/koruma')
 const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
 
 function botOlustur () {
@@ -120,6 +125,34 @@ function botOlustur () {
       bot.chat(esyalar.length === 0
         ? 'Envanterim boş.'
         : esyalar.map((i) => `${i.name} x${i.count}`).join(', '))
+      return
+    }
+
+    if (komut === 'koru') {
+      const yaricap = arguman && !isNaN(parseInt(arguman, 10))
+        ? Math.max(4, Math.min(parseInt(arguman, 10), 200))
+        : 24
+      const oyuncu = bot.players[username]
+      if (!oyuncu || !oyuncu.entity) {
+        bot.chat('Seni göremiyorum, yaklaş da neresini koruyacağımı bileyim.')
+        return
+      }
+      const adet = koruma.ekle(oyuncu.entity.position, yaricap, username)
+      bot.chat(`Burayı ${yaricap} blok çapında koruyorum, asla kesmem. (toplam ${adet} bölge)`)
+      return
+    }
+
+    if (komut === 'korumalar') {
+      const l = koruma.liste()
+      bot.chat(l.length === 0
+        ? 'Hiç koruma bölgesi yok.'
+        : l.map((b) => `(${b.x},${b.y},${b.z}) r=${b.r}`).join(' | '))
+      return
+    }
+
+    if (komut === 'korumasil') {
+      const adet = koruma.temizle()
+      bot.chat(`${adet} koruma bölgesi kaldırıldı.`)
       return
     }
 
