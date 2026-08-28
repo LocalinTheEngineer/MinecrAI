@@ -156,3 +156,7 @@ data/demonstrations/
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Claude aktarim artiklari
+_to_delete/
+*.tar.gz
