@@ -5,7 +5,7 @@
  *
  * Çalıştırma:  npm run bot
  *
- * Oyun içinden chat'e yazarak kontrol edersin:
+ * Oyun içinden chat'e yazarak kontrol edersin (tam liste için oyunda "komut" yaz):
  *   gel          -> yanına gelir
  *   kes          -> en yakın ağacı keser
  *   kes 3        -> 3 ağaç keser
@@ -30,6 +30,44 @@ const log = require('./utils/log')
 const skills = require('./skills')
 const koruma = require('./utils/koruma')
 const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
+
+/**
+ * Komut listesi — TEK DOĞRULUK KAYNAĞI.
+ *
+ * Hem "komut" komutunun çıktısı hem de açılış mesajı buradan üretiliyor.
+ * Yeni bir komut eklerken buraya da satır ekle, yoksa yardım metni koddan
+ * sapar ve kimse fark etmez.
+ */
+const KOMUTLAR = [
+  { ad: 'gel', aciklama: 'Yanına yürür' },
+  { ad: 'kes', aciklama: 'En yakın doğal ağacı keser, odunları toplar' },
+  { ad: 'kes 3', aciklama: '3 ağaç keser (1-64 arası sayı verebilirsin)' },
+  { ad: 'kes surekli', aciklama: '"dur" diyene kadar ağaç kesmeye devam eder' },
+  { ad: 'balta', aciklama: 'Envanterindeki odundan tahta balta yapar' },
+  { ad: 'koru', aciklama: 'Durduğun yerin 24 blok çevresinde asla kesmez' },
+  { ad: 'koru 40', aciklama: 'Koruma yarıçapını sen belirlersin (4-200)' },
+  { ad: 'korumalar', aciklama: 'İşaretli koruma bölgelerini listeler' },
+  { ad: 'korumasil', aciklama: 'Bütün koruma bölgelerini kaldırır' },
+  { ad: 'envanter', aciklama: 'Envanterindekileri söyler' },
+  { ad: 'nerede', aciklama: 'Koordinatlarını söyler' },
+  { ad: 'dur', aciklama: 'Yaptığı işi anında bırakır (meşgulken bile çalışır)' },
+  { ad: 'komut', aciklama: 'Bu listeyi gösterir' }
+]
+
+/**
+ * Komut listesini chat'e yazar.
+ *
+ * Minecraft chat satırı ~256 karakterle sınırlı, ayrıca çok hızlı mesaj
+ * göndermek sunucudan atılmaya sebep olabiliyor — o yüzden satır satır ve
+ * araya kısa gecikme koyarak gönderiyoruz.
+ */
+async function komutlariYaz (bot) {
+  bot.chat('--- MinecrAI komutları ---')
+  for (const k of KOMUTLAR) {
+    await new Promise((r) => setTimeout(r, 300))
+    bot.chat(`${k.ad} - ${k.aciklama}`)
+  }
+}
 
 function botOlustur () {
   log.bilgi(`Bağlanılıyor: ${config.host}:${config.port} (sürüm ${config.version})`)
@@ -56,7 +94,7 @@ function botOlustur () {
     bot.pathfinder.setMovements(movements)
 
     log.basari(`Dünyaya girdim. Konum: ${bot.entity.position}`)
-    bot.chat('MinecrAI hazır. Komutlar: gel / kes / kes 3 / kes surekli / balta / envanter / nerede / dur')
+    bot.chat(`MinecrAI hazır. ${KOMUTLAR.length} komutum var — hepsini görmek için "komut" yaz.`)
 
     const balta = skills.uygunAlet(bot, { name: 'oak_log' })
     if (balta) bot.chat(`Elimde ${balta.name} var, onunla keseceğim.`)
@@ -111,6 +149,13 @@ function botOlustur () {
       bot.stopDigging()
       bot.clearControlStates()
       if (!kontrol.calisiyor) bot.chat('Zaten boştaydım.')
+      return
+    }
+
+    // Yardım her zaman çalışır — meşgulken bile
+    if (komut === 'komut' || komut === 'komutlar' || komut === 'yardim' ||
+        komut === 'yardım' || komut === 'help' || komut === '?') {
+      await komutlariYaz(bot)
       return
     }
 
@@ -201,4 +246,4 @@ if (require.main === module) {
   botOlustur()
 }
 
-module.exports = { botOlustur }
+module.exports = { botOlustur, KOMUTLAR }
