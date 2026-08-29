@@ -99,6 +99,67 @@ r = 1.00 · (wood gained)
 
 Episode terminates at 5 logs collected, truncates at 500 steps.
 
+## Results
+
+### Training (Milestone 4)
+
+PPO, warm-started from the cloned policy, ran for **20,234 steps / 150 episodes**
+(~59 min of live Minecraft) against the real server.
+
+| | start | end | change |
+|---|---|---|---|
+| Mean reward | +4.46 | +4.61 | +0.15 |
+| Episode length | 152 steps | 123 steps | **−19%** |
+
+Reward is close to flat, and that is expected rather than disappointing: the episode
+**terminates at 5 logs**, so reward is capped by construction. Once a policy reliably
+reaches the cap, the only place improvement can still show up is *how fast* it gets
+there — and that is exactly the column that moved. A learning curve that reports only
+reward would have shown nothing here.
+
+![learning curve](docs/images/ogrenme_egrisi.png)
+
+### Evaluation
+
+Four policies, **20 episodes each**, round-robin ordering (policy 1, 2, 3, 4, 1, 2, …)
+so a forest that thins out over the session penalises everyone equally rather than
+whoever ran last. `±` is the standard error of the mean.
+
+| policy | reward | wood | steps |
+|---|---|---|---|
+| **ppo** | **+4.07 ± 0.77** | **3.5** | 91 |
+| bc | +2.84 ± 0.67 | 2.6 | 98 |
+| random | +1.14 ± 0.74 | 2.4 | 129 |
+| scripted expert | +0.55 ± 0.55 | 1.1 | 88 |
+
+Per-episode variance is large (sd ≈ 3.3), so the honest reading is pairwise rather
+than a leaderboard. Taking "difference greater than the sum of the two standard
+errors" as the bar:
+
+- **ppo > random** — 2.93 vs 1.51. Significant. This is the headline: the trained
+  agent beats the random baseline.
+- **ppo > scripted expert** — 3.52 vs 1.32. Significant.
+- **bc > random** — 1.70 vs 1.41. Significant, narrowly.
+- **ppo > bc** — 1.23 vs 1.44. **Not significant.** PPO leads on all three columns
+  (reward, wood, steps), which is suggestive, but 20 episodes cannot separate it from
+  behaviour cloning. Claiming otherwise would be reading noise.
+
+`eval_agent.py` prints all pairs and estimates how many episodes the top pair would
+actually need, instead of comparing only the top two and calling it a ranking.
+
+### Why the scripted expert scores last
+
+It is deterministic. When it faces a situation its priority list handles badly —
+a log wedged behind leaves, a two-block ledge — it makes the same wrong decision
+every step until the stagnation cutoff fires. The learned policies sample their
+actions, so they jitter out of the same trap within a few steps. The expert is still
+good enough to be worth imitating (it produced the demonstrations both learned
+policies came from); it just has no escape hatch.
+
+The same effect appeared inside behaviour cloning: evaluating the cloned policy with
+`argmax` froze it in 3 of 5 episodes, and switching to sampling raised it from 1.6 to
+5.0 logs per episode without retraining anything.
+
 ## Roadmap
 
 | Milestone | What | Status |
@@ -241,6 +302,7 @@ docs/
   architecture.md       design rationale — read this first
   mimari.md             same notes in Turkish
 test/
+  smoke.js              fast runtime test with a fake bot — no Minecraft needed
   e2e.js                automated test against a local flying-squid server
 ```
 
@@ -253,6 +315,17 @@ No manual Minecraft client needed.
 
 ```bash
 node test/e2e.js
+```
+
+`test/smoke.js` is the fast one (~1 s, no server at all): it drives the environment,
+the expert and the skills against a fake bot object. It exists because of a real bug —
+a careless search-and-replace produced `this.pathfinderDurdur(bot)`, which is valid
+syntax and passes every `require()` check, then throws `bot is not defined` only once
+that line actually runs, mid-episode. Import checks cannot catch that class of bug;
+executing the code can.
+
+```bash
+node test/smoke.js
 ```
 
 ## License
