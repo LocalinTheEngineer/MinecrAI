@@ -3,6 +3,7 @@
 const Vec3 = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { kutukMu, oduncuSay, dogalAgacMi } = require('../skills/chopTree')
+const log = require('../utils/log')
 const { aletKusan } = require('../skills/alet')
 const { pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
 const config = require('../config')
@@ -24,6 +25,10 @@ const HEDEF_ODUN = 5
 // Ölüm cezası. Envanter kaybını ödüle yazmak yerine sabit bir ceza:
 // ajan uçurumdan kaçınmayı öğrensin ama tek olay bütün eğitimi bozmasın.
 const OLUM_CEZASI = -5
+
+// Bölüm başında bu yarıçaptaki düşmüş eşyalar silinir.
+// Her bölüm aynı temiz koşullardan başlasın diye.
+const TEMIZLIK_YARICAPI = 100
 
 // Ortak sabitler (expert.js de aynılarını kullanıyor)
 const { DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI, HEDEF_SABIR } = require('./sabitler')
@@ -468,6 +473,13 @@ class MinecraftEnvironment {
     // Yer altina/magaraya dustuyse once yuzeye cik.
     await this.yuzeyeCik()
 
+    // Etrafta agac kalmadiysa taze bir bolgeye isinlan.
+    // Ajan ogrendigi ormani kesiyor; ortam sabit kalmazsa ogrenme egrisi
+    // olculemez hale geliyor.
+    if (!this.enYakinKutuk()) {
+      await this.tazeAlanaIsinla()
+    }
+
     // Bolum baslangicini agaca makul bir mesafeye tasi.
     //
     // Bu pathfinder cagrisi ajanin AKSIYONU DEGIL, bolum kurulumu. Ayrimi
@@ -476,9 +488,46 @@ class MinecraftEnvironment {
     // Aksi halde agaclar kesildikce bot ormanin ortasinda kalip bos
     // bolumler uretiyor ve egitim verisi bozuluyor.
     await this.baslangicaTasi()
-    // Ölümden sonra envanter sıfırlanmış olabilir; başlangıcı GÜNCEL
-    // envanterden alıyoruz ki fark hep bu bölümde toplananı göstersin.
-    this.oncekiOdun = oduncuSay(this.bot)
+    // ENVANTERİ BOŞALT.
+    //
+    // Bölümler arasında odun birikiyor ve envanter (36 slot × 64) eninde
+    // sonunda doluyor. Dolduğunda kırılan kütükler envantere GİRMİYOR:
+    // "odun = 0" ama ödül hâlâ pozitif çıkıyor, çünkü ödülün içinde
+    // 0.2×kırılan-kütük terimi var. Ölçtük: ~110. bölümden sonra bütün
+    // bölümler 0 odunla ve 500 adımda bitiyordu.
+    //
+    // Sonuç: hedefe (5 odun) asla ulaşılamıyor, bölümler hiç bitmiyor ve
+    // ödülün asıl kaynağı kalıcı olarak sıfırlanıyor. PPO bozuk bir
+    // dünyadan öğreniyor.
+    //
+    // `#minecraft:logs` etiketi bütün kütük türlerini kapsıyor; balta ve
+    // diğer aletler envanterde kalıyor.
+    this.bot.chat(`/clear ${this.bot.username} #minecraft:logs`)
+
+    // YERDEKİ EŞYALARI DA TEMİZLE.
+    //
+    // Envanteri temizleyip yeri bırakmak yetmiyor: her bölüm bir öncekinin
+    // çöpünün üstüne biniyor. İlerleyen bölümlerde ajan eski yığınların
+    // üstünden geçip bedava ödül topluyor — kendi becerisiyle alakasız.
+    //
+    // Ajan bundan yanlış şeyi öğreniyor ("yürürsem odun geliyor"), ölçümler
+    // de şişiyor: değerlendirmede rastgele ajan bu yüzden 4.6 odun
+    // "toplamıştı".
+    //
+    // Her bölüm aynı temiz koşullardan başlasın.
+    this.bot.chat(`/kill @e[type=item,distance=..${TEMIZLIK_YARICAPI}]`)
+    await this.bekle(500)
+
+    const kalanOdun = oduncuSay(this.bot)
+    if (kalanOdun > 0) {
+      // Bot op değilse /clear çalışmaz — sessizce bozulmaktansa uyar
+      log.uyari(
+        `Envanter temizlenemedi (${kalanOdun} kütük kaldı). ` +
+        `Bot op mu? Sunucu konsoluna: op ${this.bot.username}`
+      )
+    }
+
+    this.oncekiOdun = kalanOdun
     this.bolumBaslangicOdun = this.oncekiOdun
     this.oncekiMesafe = this.hamMesafe()
 
@@ -524,6 +573,45 @@ class MinecraftEnvironment {
         pathfinderDurdur(bot)
         return false
       }
+    }
+    return false
+  }
+
+  /**
+   * Yakında ağaç kalmadıysa taze bir bölgeye ışınlan.
+   *
+   * NEDEN GEREKLİ: ajan öğrendiği ormanı kesiyor. Eğitim ilerledikçe ağaçlar
+   * bitiyor, bot daha uzağa yürümek zorunda kalıyor, bölümler uzuyor ve ödül
+   * düşüyor. Ölçtük: ilk bölümler 30-120 adım, 50. bölümden sonra 280-320.
+   *
+   * Bu, RL'in temel varsayımını ihliyor — algoritma ortamın SABİT kaldığını
+   * varsayar. Ortam kendiliğinden zorlaşırken öğrenme eğrisi ölçülemez hale
+   * geliyor: düz bir çizgi bile aslında iyileşme olabilir ama ayırt edemeyiz.
+   *
+   * `/spreadplayers` kullanıyoruz: rastgele bir noktaya, KATI ZEMİN ÜSTÜNE
+   * güvenle yerleştiriyor. Bot op olduğu için komutu çalıştırabiliyor.
+   *
+   * Bu bir ajan aksiyonu değil, bölüm kurulumu — tıpkı başlangıç konumunu
+   * ayarlamak gibi.
+   */
+  async tazeAlanaIsinla (deneme = 4) {
+    const bot = this.bot
+
+    for (let i = 0; i < deneme; i++) {
+      const p = bot.entity.position
+      // Merkezden uzaklaş ki hep aynı bölgeyi tüketmeyelim
+      const menzil = 120 + i * 80
+
+      bot.chat(`/spreadplayers ${Math.round(p.x)} ${Math.round(p.z)} 40 ${menzil} false ${bot.username}`)
+
+      // Işınlanma + chunk yüklenmesi
+      await this.bekle(2500)
+      this.hedefKonum = null
+      this.karaListe.clear()
+
+      if (this.enYakinKutuk()) return true
+      await this.bekle(1500) // chunk'lar geç geldiyse bir şans daha
+      if (this.enYakinKutuk()) return true
     }
     return false
   }

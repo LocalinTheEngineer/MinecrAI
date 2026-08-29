@@ -33,7 +33,9 @@ KOK = Path(__file__).parent.parent
 VARSAYILAN_VERI = KOK / "data" / "demonstrations" / "demos.npz"
 VARSAYILAN_CIKTI = KOK / "models" / "ppo_pretrained.zip"
 
-# PPO ile BC ayni mimariyi kullanmali ki agirliklar anlamli olsun
+# PPO ile BC ayni mimariyi kullanmali ki agirliklar anlamli olsun.
+# SB3'un varsayilan aktivasyonu Tanh; train_bc.py ReLU kullaniyor —
+# karsilastirmalarin anlamli olmasi icin ikisini esitliyoruz.
 AG_MIMARISI = dict(pi=[128, 128], vf=[128, 128])
 
 
@@ -86,7 +88,7 @@ def main() -> None:
     model = PPO(
         "MlpPolicy",
         SahteEnv(),
-        policy_kwargs=dict(net_arch=AG_MIMARISI),
+        policy_kwargs=dict(net_arch=AG_MIMARISI, activation_fn=nn.ReLU),
         verbose=0,
         device="cpu",
     )
@@ -95,8 +97,26 @@ def main() -> None:
     iyilestirici = torch.optim.Adam(politika.parameters(), lr=args.ogrenme_orani)
     kayip_fn = nn.CrossEntropyLoss(weight=sinif_agirliklari(d["aksiyonlar"]))
 
+    # KARISTIRARAK bol.
+    #
+    # Onceden ilk %80 egitim, son %20 dogrulama aliniyordu — sirayi bozmadan.
+    # Veri bolum bolum kaydedildigi icin son %20 tamamen farkli turlardan
+    # olusuyor ve o turlar ormanin tukenmis kisminda gecmis olabiliyor.
+    # Ag bir dagilimda egitilip baska bir dagilimda sinaniyordu: ayni veriyle
+    # train_bc.py %61 alirken burasi %33 aliyordu.
+    olcut = torch.Generator().manual_seed(0)
+    sira = torch.randperm(len(X), generator=olcut)
+    X, y = X[sira], y[sira]
+
     kesme = int(len(X) * 0.8)
     Xe, ye, Xd, yd = X[:kesme], y[:kesme], X[kesme:], y[kesme:]
+
+    # EN IYI agirliklari sakla.
+    # Dogrulama basarisi 20-40. epoch'ta tepe yapip sonra dusuyor (ezberleme).
+    # Son epoch'un agirliklarini almak, en iyi noktayi kacirmak demek.
+    import copy
+    en_iyi_basari = -1.0
+    en_iyi_agirlik = None
 
     for epoch in range(1, args.epoch + 1):
         politika.set_training_mode(True)
@@ -113,18 +133,34 @@ def main() -> None:
             kayip.backward()
             iyilestirici.step()
 
+        # Her epoch'ta olc — en iyiyi kacirmamak icin
+        politika.set_training_mode(False)
+        with torch.no_grad():
+            ozellik = politika.extract_features(Xd)
+            gizli, _ = politika.mlp_extractor(ozellik)
+            skor = politika.action_net(gizli)
+            basari = (skor.argmax(1) == yd).float().mean().item()
+
+        # Isinma: ilk epoch'lar kucuk dogrulama kumesinde sansa yuksek skor
+        # alabiliyor ama ag henuz egitilmemis oluyor. En iyiyi ancak makul
+        # bir egitimden sonra aramaya basla.
+        isinma = max(10, args.epoch // 5)
+        if epoch >= isinma and basari > en_iyi_basari:
+            en_iyi_basari = basari
+            en_iyi_agirlik = copy.deepcopy(politika.state_dict())
+            en_iyi_epoch = epoch
+
         if epoch % 20 == 0 or epoch == 1:
-            politika.set_training_mode(False)
-            with torch.no_grad():
-                ozellik = politika.extract_features(Xd)
-                gizli, _ = politika.mlp_extractor(ozellik)
-                skor = politika.action_net(gizli)
-                basari = (skor.argmax(1) == yd).float().mean().item()
             print(f"epoch {epoch:3d}  dogrulama basarisi {basari * 100:.1f}%")
+
+    if en_iyi_agirlik is not None:
+        politika.load_state_dict(en_iyi_agirlik)
+        print(f"\nEn iyi agirliklar geri yuklendi "
+              f"(epoch {en_iyi_epoch}, %{en_iyi_basari * 100:.1f})")
 
     args.cikti.parent.mkdir(parents=True, exist_ok=True)
     model.save(args.cikti)
-    print(f"\nOn-egitilmis PPO modeli kaydedildi -> {args.cikti}")
+    print(f"On-egitilmis PPO modeli kaydedildi -> {args.cikti}")
     print("Simdi:  python train_ppo.py --baslangic models/ppo_pretrained.zip")
 
 
