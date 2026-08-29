@@ -5,6 +5,7 @@ const log = require('../utils/log')
 const config = require('../config')
 const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
 const { aletKusan } = require('./alet')
+const { sutunaCik, sutundanIn } = require('./sutun')
 const koruma = require('../utils/koruma')
 
 /**
@@ -96,13 +97,31 @@ function enYakinDogalAgac (bot, yaricap) {
 }
 
 /**
+ * Bir kütükten aşağı inerek gövdenin DİBİNİ bulur.
+ *
+ * Neden gerekli: yayılma (flood fill) nereden başlarsa oraya yakın blokları
+ * önce buluyor. Ortadaki bir kütükten başlayınca ve limite takılınca hem
+ * kök hem tepe listenin dışında kalıyordu. Dipten başlayınca yayılma
+ * ağacın tabanından yukarı doğru ilerliyor.
+ */
+function govdeninDibi (bot, blok) {
+  let p = blok.position
+  for (let i = 0; i < 24; i++) {
+    const alt = bot.blockAt(p.offset(0, -1, 0))
+    if (!kutukMu(alt)) break
+    p = alt.position
+  }
+  return bot.blockAt(p) || blok
+}
+
+/**
  * Verilen kütüğe bağlı bütün kütükleri bulur (ağacın gövdesi).
  * 3x3x3 komşulukta yayılır — dallı ağaçlarda da çalışır.
  */
 function agaciTopla (bot, baslangic, limit) {
   const bulunan = []
   const gorulen = new Set()
-  const kuyruk = [baslangic.position]
+  const kuyruk = [govdeninDibi(bot, baslangic).position]
 
   while (kuyruk.length > 0 && bulunan.length < limit) {
     const pos = kuyruk.shift()
@@ -234,41 +253,141 @@ async function chopTree (bot, kontrol) {
   }
 
   // --- 4) Kütükleri kır ---
+  //
+  // Üç kademeli deneme. Eskiden sadece ilk ikisi vardı ve üçüncüsü
+  // olmadığı için ağacın TEPESİ hep ayakta kalıyordu:
+  //
+  //   a) Kolumun altındaysa doğrudan kır          (en hızlı)
+  //   b) Değilse yürüyerek yanına git, kır        (pathfinder)
+  //   c) O da olmuyorsa ve blok YUKARIDAYSA:      (yeni)
+  //      altıma blok koya koya yukarı çık, sonra kır
+  //
+  // Sonra ikinci bir tur atıyoruz: ilk turda ulaşılamayan bloklar,
+  // aradaki kütükler kırıldıktan sonra çoğu zaman ulaşılabilir hale
+  // geliyor (görüş açılıyor, dallar iniyor).
+
+  const zeminY = Math.floor(bot.entity.position.y)
   let kesilen = 0
+  let sutunKuruldu = false
+
+  /** Göz hizasından bloğun MERKEZİNE olan gerçek uzaklık */
+  function erisimMesafesi (blok) {
+    const goz = bot.entity.position.offset(0, bot.entity.height || 1.62, 0)
+    return goz.distanceTo(blok.position.offset(0.5, 0.5, 0.5))
+  }
+
+  function elimdeMi (blok) {
+    return erisimMesafesi(blok) <= 4.4 && bot.canDigBlock(blok)
+  }
+
+  async function kutuguKir (konum, sutunaIzinVar) {
+    const guncel = bot.blockAt(konum)
+    if (!kutukMu(guncel)) return 'zaten_yok'
+
+    await aletKusan(bot, guncel) // baltayla kesmek ~8 kat hızlı
+
+    // (a) elimizin altında
+    if (elimdeMi(guncel)) {
+      await bot.lookAt(guncel.position.offset(0.5, 0.5, 0.5), true)
+      await sinirli(bot.dig(guncel), 15000, kontrol)
+      return 'kirildi'
+    }
+
+    // (b) yürüyerek yaklaş
+    //
+    // Blok 3+ blok yukarıdaysa pathfinder'a KISA süre veriyoruz. Sebebi:
+    // havada duracak zemin olmadığı için orada zaten yol bulamayacak, ama
+    // aramayı 12 saniye boyunca sürdürüyor. Test kaydında 7 kütüklük bir
+    // ağaç 54 saniye sürmüştü — süre bu boşa aramalarda gidiyordu.
+    // Kısa deneyip (c)'ye, yani sütuna geçmek hem daha hızlı hem doğru.
+    const yukarida = konum.y - Math.floor(bot.entity.position.y) >= 3
+    try {
+      pathfinderHazirla(bot)
+      await sinirli(
+        bot.pathfinder.goto(new goals.GoalLookAtBlock(konum, bot.world, { range: 4 })),
+        yukarida ? 4000 : 12000,
+        kontrol
+      )
+      kontrol.kontrolEt()
+      const b = bot.blockAt(konum)
+      if (kutukMu(b) && bot.canDigBlock(b)) {
+        await sinirli(bot.dig(b), 15000, kontrol)
+        return 'kirildi'
+      }
+    } catch (err) {
+      if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
+      pathfinderDurdur(bot)
+    }
+
+    // (c) yukarıdaysa sütun ör
+    if (sutunaIzinVar && konum.y - Math.floor(bot.entity.position.y) >= 2) {
+      // Kütüğün 2 blok altına çıkarsak göz hizası tam ona bakar
+      const cikis = await sutunaCik(bot, konum.y - 2, kontrol)
+      if (cikis.cikilan > 0) sutunKuruldu = true
+
+      const b = bot.blockAt(konum)
+      if (kutukMu(b) && elimdeMi(b)) {
+        await bot.lookAt(b.position.offset(0.5, 0.5, 0.5), true)
+        await sinirli(bot.dig(b), 15000, kontrol)
+        return 'kirildi'
+      }
+      if (!cikis.ok) return `sutun_olmadi:${cikis.sebep || '?'}`
+    }
+
+    return 'ulasilamadi'
+  }
+
+  const kacirilan = []
+
   for (const kutuk of kutukler) {
     kontrol.kontrolEt()
-
-    const guncel = bot.blockAt(kutuk.position)
-    if (!kutukMu(guncel)) continue // araya bir şey girmişse atla
-
     try {
-      await aletKusan(bot, guncel) // baltayla kesmek çok daha hızlı
-      const mesafe = bot.entity.position.distanceTo(guncel.position)
-
-      if (mesafe < 4.5 && bot.canDigBlock(guncel)) {
-        // Elimizin altında: doğrudan kır (hızlı yol)
-        await bot.lookAt(guncel.position.offset(0.5, 0.5, 0.5), true)
-        await sinirli(bot.dig(guncel), 15000, kontrol)
-      } else {
-        // Uzakta: önce yaklaş, sonra kır
-        await sinirli(
-          bot.pathfinder.goto(new goals.GoalLookAtBlock(guncel.position, bot.world, { range: 4 })),
-          15000,
-          kontrol
-        )
-        kontrol.kontrolEt()
-        await sinirli(bot.dig(bot.blockAt(guncel.position)), 15000, kontrol)
-      }
-      kesilen++
+      const sonuc = await kutuguKir(kutuk.position, true)
+      if (sonuc === 'kirildi') kesilen++
+      else if (sonuc !== 'zaten_yok') kacirilan.push(kutuk.position)
     } catch (err) {
       if (err instanceof IptalEdildi) {
-        pathfinderDurdur(bot)
-        bot.stopDigging()
-        throw err
+        pathfinderDurdur(bot); bot.stopDigging(); throw err
       }
       log.uyari(`Bir kütüğü kesemedim (${err.message}) — devam ediyorum.`)
+      kacirilan.push(kutuk.position)
     }
   }
+
+  // Sütun örmüşsek in — hem blokları geri alıyoruz hem de ikinci turu
+  // yerden yapmak daha güvenli
+  if (sutunKuruldu) {
+    try { await sutundanIn(bot, zeminY, kontrol) } catch (err) {
+      if (err instanceof IptalEdildi) throw err
+    }
+    sutunKuruldu = false
+  }
+
+  // --- 4b) İKİNCİ TUR: ilk turda ulaşılamayanlar ---
+  // Bu tur olmadan botun ağacın ortasını kesip kökü ve tepesini
+  // bırakması normaldi: ilk denemede görüş kapalıydı, sonra açıldı.
+  const halaDuran = kacirilan.filter((p) => kutukMu(bot.blockAt(p)))
+  if (halaDuran.length > 0) {
+    log.bilgi(`${halaDuran.length} kütüğe ilk turda ulaşamadım, tekrar deniyorum.`)
+    for (const konum of halaDuran) {
+      kontrol.kontrolEt()
+      try {
+        if (await kutuguKir(konum, true) === 'kirildi') kesilen++
+      } catch (err) {
+        if (err instanceof IptalEdildi) {
+          pathfinderDurdur(bot); bot.stopDigging(); throw err
+        }
+      }
+    }
+    if (sutunKuruldu) {
+      try { await sutundanIn(bot, zeminY, kontrol) } catch (err) {
+        if (err instanceof IptalEdildi) throw err
+      }
+    }
+  }
+
+  const kalan = kutukler.filter((k) => kutukMu(bot.blockAt(k.position))).length
+  if (kalan > 0) log.uyari(`${kalan} kütüğe hiç ulaşamadım.`)
 
   // --- 5) Düşen odunları topla ---
   if (kesilen > 0) {
@@ -312,5 +431,5 @@ async function chopTrees (bot, kontrol, adet = 1) {
 
 module.exports = {
   chopTree, chopTrees, oduncuSay, kutukMu, dogalAgacMi, enYakinDogalAgac,
-  agaciTopla, dusenleriTopla
+  agaciTopla, dusenleriTopla, govdeninDibi
 }

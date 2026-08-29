@@ -16,7 +16,10 @@ const config = {
   // Botun davranış ayarları
   searchRadius: 32,   // kaynak ararken kaç blok uzağa bakılsın
                       // (64 idi: yüklenmemiş chunk'lardaki ağaçları buluyordu)
-  maxLogsPerTree: 12  // tek seferde en fazla kaç kütük kesilsin
+  maxLogsPerTree: 40  // tek seferde en fazla kaç kütük kesilsin
+  // (12'ydi: koyu meşe/orman ağaçları 20+ kütük, yayılma ortada kesiliyor,
+  //  kök ve tepe listeye hiç girmiyordu — botun ağacın ortasını kesip
+  //  gitmesinin asıl sebebi buydu)
 }
 
 module.exports = config

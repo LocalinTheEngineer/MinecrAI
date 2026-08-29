@@ -125,6 +125,51 @@ async function main () {
   await dene('ver() - esya yok', () => skills.ver(bot, 'Biri', 'odun'))
   await dene('uygunAlet()', () => skills.uygunAlet(bot, { name: 'oak_log' }))
 
+  console.log('\nSutun (agacin tepesine cikma)')
+  const sutun = require('../bot/skills/sutun')
+
+  await dene('sutunBlogu() - envanter bos ise null', () => {
+    if (sutun.sutunBlogu(bot) !== null) throw new Error('bos envanterde blok buldu')
+  })
+
+  await dene('sutunBlogu() - topragi odundan once secer', () => {
+    const b = sahteBot()
+    b.inventory = { items: () => [
+      { name: 'oak_log', count: 5, type: 1 },
+      { name: 'dirt', count: 3, type: 2 }
+    ] }
+    const secilen = sutun.sutunBlogu(b)
+    if (!secilen || secilen.name !== 'dirt') {
+      throw new Error(`odun yerine toprak secmeliydi, secti: ${secilen && secilen.name}`)
+    }
+  })
+
+  await dene('sutunaCik() - blok yoksa cokmeden doner', async () => {
+    const r = await sutun.sutunaCik(bot, 70, k)
+    if (r.cikilan !== 0) throw new Error('bloksuz yukseldigini iddia etti')
+    if (r.sebep !== 'blok_yok') throw new Error(`beklenmedik sebep: ${r.sebep}`)
+  })
+
+  await dene('sutundanIn() - zeminde ise hic kazmaz', async () => {
+    const inilen = await sutun.sutundanIn(bot, 64, k)
+    if (inilen !== 0) throw new Error(`zeminde ${inilen} kat indigini iddia etti`)
+  })
+
+  await dene('govdeninDibi() - govdenin altina yuruyor', () => {
+    // y=64..67 arasi kutuk, y=63 toprak. Ortadaki kutukten baslayip
+    // 64'e inmeli — "agacin ortasini kesip gitme" bugunun testi.
+    const b = sahteBot()
+    b.blockAt = (p) => {
+      const y = Math.floor(p.y)
+      const isim = (y >= 64 && y <= 67) ? 'oak_log' : 'dirt'
+      return { name: isim, position: new Vec3(0, y, 0), boundingBox: 'block' }
+    }
+    const orta = b.blockAt(new Vec3(0, 66, 0))
+    const dip = skills.govdeninDibi ? skills.govdeninDibi(b, orta)
+      : require('../bot/skills/chopTree').govdeninDibi(b, orta)
+    if (dip.position.y !== 64) throw new Error(`dip y=${dip.position.y}, 64 olmaliydi`)
+  })
+
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)
   process.exit(hata === 0 ? 0 : 1)
 }
