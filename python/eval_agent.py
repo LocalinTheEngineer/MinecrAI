@@ -22,6 +22,7 @@ from minecrai import MinecraftEnv
 
 KOK = Path(__file__).parent.parent
 VARSAYILAN_MODEL = KOK / "models" / "bc_policy.pt"
+VARSAYILAN_PPO = KOK / "models" / "ppo_son.zip"
 VARSAYILAN_GRAFIK = KOK / "models" / "karsilastirma.png"
 
 
@@ -77,6 +78,8 @@ def main() -> None:
     ap.add_argument("--bolum", type=int, default=10)
     ap.add_argument("--maks-adim", type=int, default=300)
     ap.add_argument("--model", type=Path, default=VARSAYILAN_MODEL)
+    ap.add_argument("--ppo", type=Path, default=VARSAYILAN_PPO,
+                    help="egitilmis PPO modeli (train_ppo.py ciktisi)")
     ap.add_argument("--grafik", type=Path, default=VARSAYILAN_GRAFIK)
     ap.add_argument("--url", default="ws://localhost:8765")
     ap.add_argument("--argmax", action="store_true",
@@ -106,6 +109,23 @@ def main() -> None:
     else:
         print(f"UYARI: {args.model} yok — bc atlaniyor. Once train_bc.py calistir.")
 
+    # PPO — Milestone 4'un urunu. README'deki "before/after" tablosunun
+    # "after" sutunu bu.
+    if args.ppo.exists():
+        from stable_baselines3 import PPO
+        ppo_model = PPO.load(args.ppo, device="cpu")
+
+        def ppo_politika(obs, e):
+            # deterministic=False: PPO da egitim sirasinda ornekleyerek
+            # davraniyor; argmax ile calistirmak ajani kilitleyebiliyor
+            # (bc politikasinda tam olarak bu oldu)
+            aksiyon, _ = ppo_model.predict(obs, deterministic=False)
+            return int(aksiyon)
+
+        politikalar.append(("ppo", ppo_politika))
+    else:
+        print(f"UYARI: {args.ppo} yok — ppo atlaniyor.")
+
     politikalar.append(("uzman", lambda obs, e: e.uzman_aksiyonu()))
 
     # Uzmanin gerekcelerini say — "hicbir sey yapmiyor" durumunda
@@ -118,15 +138,68 @@ def main() -> None:
     finally:
         env.close()
 
-    print("\n" + "=" * 58)
-    print(f"{'politika':<10} {'ortalama odul':>15} {'ortalama odun':>15} {'adim':>8}")
-    print("-" * 58)
-    for s in sonuclar:
+    n = len(sonuclar[0]["oduller"])
+    print("\n" + "=" * 72)
+    print(f"{'politika':<10} {'odul (ort ± sd)':>22} {'odun':>16} {'adim':>8}   n={n}")
+    print("-" * 72)
+    for r in sonuclar:
+        o, w = r["oduller"], r["odunlar"]
+        # Ortalamanin standart hatasi: sd / sqrt(n)
+        hata = o.std(ddof=1) / np.sqrt(len(o)) if len(o) > 1 else 0.0
         print(
-            f"{s['ad']:<10} {s['oduller'].mean():>+15.2f} "
-            f"{s['odunlar'].mean():>15.1f} {s['adimlar'].mean():>8.0f}"
+            f"{r['ad']:<10} {o.mean():>+12.2f} ± {hata:>5.2f} (sd {o.std(ddof=1):>4.1f})"
+            f" {w.mean():>8.1f} ± {w.std(ddof=1) / np.sqrt(len(w)):>4.1f}"
+            f" {r['adimlar'].mean():>8.0f}"
         )
-    print("=" * 58)
+    print("=" * 72)
+
+    # FARK GURULTUNUN ICINDE MI?
+    #
+    # Bu gorevde bolumler arasi degiskenlik cok yuksek: ayni politika bir
+    # bolumde +8, digerinde -2 alabiliyor. Az orneklem ile ortalamalari
+    # siralamak, olmayan bir sonucu iddia etmek olur.
+    #
+    # Olcut: iki politikanin farki, ikisinin standart hatalarinin
+    # toplamindan buyuk mu? (kaba ama okunakli bir anlamlilik testi)
+    #
+    # ONEMLI: sadece ilk ikiyi karsilastirmak sonucu EKSIK raporlar.
+    # "ppo vs bc" gurultude olabilir ama "ppo vs rastgele" anlamli olabilir --
+    # ve asil rapor edilecek sonuc odur. O yuzden butun ciftlere bakiyoruz.
+    sirali = sorted(sonuclar, key=lambda r: -r["oduller"].mean())
+    if len(sirali) >= 2 and n > 1:
+        def _hata(r):
+            return r["oduller"].std(ddof=1) / np.sqrt(n)
+
+        print("\nIkili karsilastirmalar (fark > hata toplami ise anlamli):")
+        anlamli = []
+        for i in range(len(sirali)):
+            for j in range(i + 1, len(sirali)):
+                a, b = sirali[i], sirali[j]
+                fark = a["oduller"].mean() - b["oduller"].mean()
+                esik = _hata(a) + _hata(b)
+                ok = fark > esik
+                isaret = "ANLAMLI" if ok else "gurultude"
+                print(f"  {a['ad']:<9} > {b['ad']:<9} fark {fark:+5.2f}  esik {esik:4.2f}   {isaret}")
+                if ok:
+                    anlamli.append((a["ad"], b["ad"], fark))
+
+        if anlamli:
+            print("\n  >> Rapor edilebilir sonuclar:")
+            for x, y, f in anlamli:
+                print(f"     {x} politikasi {y} politikasindan {f:+.2f} odul daha iyi.")
+        else:
+            print("\n  >> Hicbir cift ayrisMIyor: bu veriyle siralama yapma.")
+
+        # Kac bolum gerekirdi? Gozlenen sd'den hesapla, sabit sayi uydurma.
+        # Iki ortalamanin farkinin ayrismasi icin kabaca: n >= 2*(sd/fark)^2
+        a, b = sirali[0], sirali[1]
+        fark12 = a["oduller"].mean() - b["oduller"].mean()
+        sd_ort = (a["oduller"].std(ddof=1) + b["oduller"].std(ddof=1)) / 2
+        if fark12 > 0.01:
+            gerek = int(np.ceil(2 * (sd_ort / fark12) ** 2))
+            if gerek > n:
+                print(f"\n  Ilk iki ({a['ad']} vs {b['ad']}) ayrismasi icin kabaca "
+                      f"{gerek} bolum gerekir (su an {n}, sd~{sd_ort:.1f}).")
 
     if sebepler:
         print("\nUzmanin gerekce dagilimi:")
@@ -157,13 +230,12 @@ def _grafik_ciz(sonuclar, yol: Path) -> None:
 
     ortalama = [s["oduller"].mean() for s in sonuclar]
     hata = [s["oduller"].std() for s in sonuclar]
-    sol.bar(adlar, ortalama, yerr=hata, capsize=5,
-            color=["tab:gray", "tab:blue", "tab:green"][: len(adlar)])
+    renkler = ["tab:gray", "tab:blue", "tab:red", "tab:green"][: len(adlar)]
+    sol.bar(adlar, ortalama, yerr=hata, capsize=5, color=renkler)
     sol.set_ylabel("bolum odulu"); sol.set_title("Ortalama bolum odulu")
     sol.axhline(0, color="black", lw=0.8); sol.grid(axis="y", alpha=0.3)
 
-    sag.bar(adlar, [s["odunlar"].mean() for s in sonuclar],
-            color=["tab:gray", "tab:blue", "tab:green"][: len(adlar)])
+    sag.bar(adlar, [s["odunlar"].mean() for s in sonuclar], color=renkler)
     sag.set_ylabel("odun"); sag.set_title("Bolum basina toplanan odun")
     sag.grid(axis="y", alpha=0.3)
 
