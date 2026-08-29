@@ -905,6 +905,132 @@ async function main () {
     if (sonuc) throw new Error('envanterde yokken koydugunu iddia etti')
   })
 
+  await dene('pathfinderGit() TAKILMAYI yakaliyor (sonsuza kadar beklemiyor)', async () => {
+    // Gercek olay: bot bir cikintinin kenarinda "kosuyor ama
+    // ilerlemiyor" durumuna girdi. Pathfinder yol bulmus, tuslara
+    // basiyor, ama bot fiziksel olarak takili. Sadece sure siniri
+    // yetmiyordu: 15 saniyeyi beklemek hem uzun, hem de bunu "yol yok"
+    // gibi gosteriyor -- oysa yol var, bot sikismis.
+    const gorev = require('../bot/utils/gorev')
+    const b = sahteBot()
+    let tuslarTemizlendi = false
+    b.clearControlStates = () => { tuslarTemizlendi = true }
+    // goto hic bitmiyor, bot hic kimildamiyor: klasik takilma
+    b.pathfinder = { ...b.pathfinder, goto: () => new Promise(() => {}) }
+
+    const t = Date.now()
+    const r = await gorev.pathfinderGit(b, {}, k, { zamanAsimi: 30000, durgunlukMs: 1000 })
+    const sure = Date.now() - t
+
+    if (r.ok) throw new Error('takilirken basarili dedi')
+    if (r.sebep !== 'takildim') throw new Error(`sebep: ${r.sebep}`)
+    if (sure > 5000) throw new Error(`${sure}ms bekledi — zaman asimini bekledi, takilmayi gormedi`)
+    if (!tuslarTemizlendi) throw new Error('tuslari birakmadi, bot kosmaya devam eder')
+  })
+
+  console.log('\nSikismadan kurtulma')
+  const kurtarModul = require('../bot/utils/kurtar')
+
+  await dene('kurtar() acik yon varsa ziplayarak cikiyor', async () => {
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    // +x yonu acik, digerleri kapali
+    b.blockAt = (p) => {
+      const acik = (p.x >= 1)
+      return { name: acik ? 'air' : 'stone', boundingBox: acik ? 'empty' : 'block', position: p }
+    }
+    const basildi = []
+    b.setControlState = (ad, deger) => { if (deger) basildi.push(ad) }
+    // Ziplayinca gercekten yer degistirsin
+    b.lookAt = async () => { b.entity.position = new Vec3(1.5, 64, 0) }
+
+    const r = await kurtarModul.kurtar(b, k)
+    if (!r) throw new Error('acik yon varken kurtulamadi')
+    if (!basildi.includes('jump')) throw new Error('ziplamadi')
+  })
+
+  await dene('kurtar() her yon kapaliysa KENDINE YOL KAZIYOR', async () => {
+    // Gercek durum: bot kendi kazdigi 1 blokluk kuyuda sikismis.
+    // Ziplayacak yer yok; kazmasi var, yol acmali.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    b.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', position: p })
+    b.canDigBlock = () => true
+    let kazildi = 0
+    b.dig = async () => { kazildi++ }
+
+    const r = await kurtarModul.kurtar(b, k)
+    if (!r) throw new Error('her yon kapaliyken pes etti')
+    if (kazildi === 0) throw new Error('hic kazmadan kurtuldugunu iddia etti')
+  })
+
+  await dene('kurtar() LAVA dogru kazmiyor', async () => {
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    b.blockAt = (p) => ({ name: 'lava', boundingBox: 'block', position: p })
+    b.canDigBlock = () => true
+    let kazildi = 0
+    b.dig = async () => { kazildi++ }
+
+    await kurtarModul.kurtar(b, k)
+    if (kazildi > 0) throw new Error('lavi kazdi — kendini oldururdu')
+  })
+
+  await dene('tedarikci BASARISIZ denemeyi de hatirliyor (48 kez agac aramiyor)', async () => {
+    // Gercek log: aynı saniyede 48 kez "64 blok icinde dogal agac
+    // bulamadim". Sebep: sadece BASARILI toplamalar not ediliyordu.
+    // Bot yeraltindayken agac bulamiyor, not dusulmuyor, ve uret bir
+    // sonraki agac turu icin tekrar soruyordu (~11 tur x tekrar).
+    const skills = require('../bot/skills')
+    let cagri = 0
+
+    // Gercek tedarikciYap()'i kullaniyoruz ama chopTrees'i sayacakla
+    // degistiremiyoruz; bunun yerine AYNI SINIFTAN cok kez isteyip
+    // ikinciden sonra false donmesini bekliyoruz.
+    const tedarikci = skills.tedarikciYap()
+    const b = sahteBot()
+    b.findBlocks = () => { cagri++; return [] } // hic agac yok
+
+    const r1 = await tedarikci(b, k, 'oak_log', 1)
+    const r2 = await tedarikci(b, k, 'birch_log', 1)
+    const r3 = await tedarikci(b, k, 'spruce_log', 1)
+
+    if (r1 || r2 || r3) throw new Error('agac yokken buldugunu iddia etti')
+    if (cagri > 1) throw new Error(`${cagri} kez agac aradi — bir kez yeterliydi`)
+  })
+
+  await dene('kaz() YIPRANMIS kazmayla calismaya devam ediyor', async () => {
+    // Gercek ekran goruntusu: elinde demir kazma, ONUNDE elmas, ama
+    // "0 elmas kirdim, sonra kazmam bitti" deyip yukari dondu.
+    // Sebep: 20 vuruşluk esigin altina dusunce "bitti" sayiliyordu.
+    // 15 vurusluk bir kazmayla birkac elmas rahat kirilir.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, -58, 0)
+    // 15 vurus kalmis demir kazma: esigin (20) ALTINDA ama BITMIS DEGIL
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 235, type: 1 }] }
+    b.registry = { blocksByName: { diamond_ore: { id: 1 }, deepslate_diamond_ore: { id: 2 } } }
+    b.canDigBlock = () => true
+
+    const kirilanlar = new Set()
+    b.findBlocks = () => (kirilanlar.has('2,-58,0') ? [] : [new Vec3(2, -58, 0)])
+    b.blockAt = (p) => {
+      const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
+      const elmas = anahtar === '2,-58,0' && !kirilanlar.has(anahtar)
+      return {
+        name: elmas ? 'diamond_ore' : 'deepslate',
+        boundingBox: 'block',
+        position: new Vec3(p.x, Math.floor(p.y), p.z)
+      }
+    }
+    b.dig = async (blok) => {
+      kirilanlar.add(`${blok.position.x},${blok.position.y},${blok.position.z}`)
+    }
+
+    const hizli = { kontrolEt () {}, bekle: async () => {} }
+    const r = await kazModul.kaz(b, hizli, 'elmas', 1)
+    if (r.kirilan === 0) throw new Error(`yipranmis kazmayla calismayi reddetti: ${r.mesaj}`)
+  })
+
   console.log('\nKomut yonlendirme')
   await dene('KOMUTLAR listesindeki her komut gercekten yonlendiriliyor', () => {
     // NEDEN BU TEST VAR:

@@ -3,7 +3,7 @@
 const Vec3 = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const log = require('../utils/log')
-const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
+const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderGit } = require('../utils/gorev')
 const { uygunAlet } = require('./alet')
 const { uret } = require('./uret')
 const { dusenleriTopla } = require('./chopTree')
@@ -325,17 +325,9 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
   }
 
   // Açtığımız boşluğa yürü
-  try {
-    pathfinderHazirla(bot)
-    await sinirli(
-      bot.pathfinder.goto(new goals.GoalBlock(onAlt.x, onAlt.y, onAlt.z)),
-      8000, kontrol
-    )
-  } catch (err) {
-    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-    pathfinderDurdur(bot)
-    return { ok: false, sebep: 'yuruyemedim' }
-  }
+  const git = await pathfinderGit(bot, new goals.GoalBlock(onAlt.x, onAlt.y, onAlt.z),
+    kontrol, { zamanAsimi: 8000, durgunlukMs: 3000 })
+  if (!git.ok) return { ok: false, sebep: git.sebep }
   return { ok: true }
 }
 
@@ -367,17 +359,9 @@ async function birAdimIlerle (bot, kontrol, gerekliSeviye = null) {
     }
   }
 
-  try {
-    pathfinderHazirla(bot)
-    await sinirli(
-      bot.pathfinder.goto(new goals.GoalBlock(onAyak.x, onAyak.y, onAyak.z)),
-      8000, kontrol
-    )
-  } catch (err) {
-    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-    pathfinderDurdur(bot)
-    return { ok: false, sebep: 'yuruyemedim' }
-  }
+  const git = await pathfinderGit(bot, new goals.GoalBlock(onAyak.x, onAyak.y, onAyak.z),
+    kontrol, { zamanAsimi: 8000, durgunlukMs: 3000 })
+  if (!git.ok) return { ok: false, sebep: git.sebep }
   return { ok: true }
 }
 
@@ -419,13 +403,8 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
     // 10 bloklu parçalar halinde iniyoruz: 50 bloğun tamamını tek seferde
     // istemek pathfinder'a devasa bir arama uzayı veriyor.
     const araHedef = Math.max(hedefY, oncekiY - 10)
-    try {
-      pathfinderHazirla(bot)
-      await sinirli(bot.pathfinder.goto(new goals.GoalY(araHedef)), 20000, kontrol)
-    } catch (err) {
-      if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-      pathfinderDurdur(bot)
-    }
+    await pathfinderGit(bot, new goals.GoalY(araHedef), kontrol,
+      { zamanAsimi: 20000, durgunlukMs: 5000 })
 
     if (Math.floor(bot.entity.position.y) < oncekiY) {
       basamak++
@@ -540,7 +519,21 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   // Yanımıza yedek kazma ve bir tezgah alıyoruz; tezgah sayesinde
   // aşağıda, kazdığımız taştan yerinde yeni kazma yapabiliyoruz.
   if (cevher.y !== null && Math.floor(bot.entity.position.y) > cevher.y + 8) {
-    await kazmaStokla(bot, kontrol, cevher.seviye, gerekenVurus(bot, cevher.y, adet), secenekler)
+    // NEDEN ODUN ARADIĞINI SÖYLE.
+    //
+    // Kullanıcı "kaz elmas" dedi ve bot ağaç aramaya başladı; haklı
+    // olarak "bu ne yapıyor?" diye sordu. Sebep görünmüyordu: elindeki
+    // kazma bu iş için yetersizdi ve yedek yapmaya çalışıyordu — yedek
+    // kazma da odun istiyor. Doğru davranış ama sessiz olması yanlıştı.
+    const hedefVurus = gerekenVurus(bot, cevher.y, adet)
+    const eldeki = kazmaGucu(bot, cevher.seviye)
+    if (eldeki.toplam < hedefVurus) {
+      log.bilgi(
+        `Bu iş ~${hedefVurus} vuruş tutar, elimde ${eldeki.toplam} var — ` +
+        'yedek kazma yapmayı deniyorum (odun/taş gerekebilir).'
+      )
+    }
+    await kazmaStokla(bot, kontrol, cevher.seviye, hedefVurus, secenekler)
     await uret(bot, kontrol, 'tezgah', 1, secenekler) // olmazsa olsun, sadece deniyoruz
     const g = kazmaGucu(bot, cevher.seviye)
     log.bilgi(`${g.adet} kazma, toplam ${g.toplam} vuruş ile iniyorum.`)
@@ -602,13 +595,26 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
     const turBasiKirilan = kirilan
     const turBasiKara = karaListe.size
 
-    // Kazarken de bitebilir — yerinde yenisini yapmayı dene
+    // KAZMA AZALDI ≠ KAZMA BİTTİ.
+    //
+    // Burası "elinde demir kazma, önünde elmas, ama kazmıyor"un sebebiydi.
+    // Eşiğin altına düşünce (20 vuruş) bot "kazmam bitti" deyip yüzeye
+    // dönüyordu — oysa 15 vuruşluk bir kazmayla birkaç elmas rahat kırılır.
+    //
+    // Eşik iki farklı iş için kullanılıyordu ve biri yanlıştı:
+    //   - İNİŞTE eşik doğru: yeraltında aletsiz kalmak mahsur kalmaktır,
+    //     yedeği önceden hazırlamak gerekir.
+    //   - KAZARKEN eşik yanlış: önündeki cevheri kırmak için yedeğe
+    //     ihtiyacın yok, elindeki kazmaya ihtiyacın var.
+    //
+    // Artık eşik sadece "yenisini yapmayı DENE" diyor. Durmak için
+    // kazmanın gerçekten sıfırlanması gerekiyor.
     if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
       await kazmaStokla(bot, kontrol, cevher.seviye, gerekenVurus(bot, null, adet - kirilan), secenekler)
-      if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
-        kazmaBitti = true
-        break
-      }
+    }
+    if (kazmaGucu(bot, cevher.seviye).toplam <= 0) {
+      kazmaBitti = true
+      break
     }
 
     const adaylar = cevherBul(bot, cevher.bloklar, 32, karaListe)
@@ -641,11 +647,14 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
 
       try {
         if (!yakin) {
-          pathfinderHazirla(bot)
-          await sinirli(
-            bot.pathfinder.goto(new goals.GoalLookAtBlock(konum, bot.world, { range: 4 })),
-            15000, kontrol
-          )
+          const git = await pathfinderGit(bot,
+            new goals.GoalLookAtBlock(konum, bot.world, { range: 4 }),
+            kontrol, { zamanAsimi: 15000, durgunlukMs: 4000 })
+          if (!git.ok) {
+            log.uyari(`${konum} cevherine gidemedim (${git.sebep}), atlıyorum.`)
+            karaListe.add(anahtar)
+            continue
+          }
           kontrol.kontrolEt()
         }
         if (await blogoKir(bot, konum, kontrol, cevher.seviye)) kirilan++
@@ -737,19 +746,11 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
  */
 async function yuzeyeDon (bot, hedef, kontrol) {
   log.bilgi('Yüzeye dönüyorum...')
-  try {
-    pathfinderHazirla(bot)
-    await sinirli(
-      bot.pathfinder.goto(new goals.GoalNear(hedef.x, hedef.y, hedef.z, 3)),
-      60000, kontrol
-    )
-    return true
-  } catch (err) {
-    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-    pathfinderDurdur(bot)
-    log.uyari('Yüzeye dönemedim — merdiveni takip ederek beni bulabilirsin.')
-    return false
-  }
+  const git = await pathfinderGit(bot, new goals.GoalNear(hedef.x, hedef.y, hedef.z, 3),
+    kontrol, { zamanAsimi: 60000, durgunlukMs: 6000 })
+  if (git.ok) return true
+  log.uyari(`Yüzeye dönemedim (${git.sebep}) — merdiveni takip ederek beni bulabilirsin.`)
+  return false
 }
 
 module.exports = {

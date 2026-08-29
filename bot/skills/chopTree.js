@@ -3,7 +3,7 @@
 const { goals } = require('mineflayer-pathfinder')
 const log = require('../utils/log')
 const config = require('../config')
-const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
+const { IptalEdildi, sinirli, pathfinderDurdur, pathfinderGit } = require('../utils/gorev')
 const { aletKusan } = require('./alet')
 const { sutunaCik, sutundanIn } = require('./sutun')
 const koruma = require('../utils/koruma')
@@ -205,19 +205,10 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
       kontrol.kontrolEt()
       if (!esya.isValid) continue // bu arada toplanmış olabilir
 
-      try {
-        const p = esya.position
-        pathfinderHazirla(bot)
-        await sinirli(
-          bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 0)),
-          6000,
-          kontrol
-        )
-        toplanan++
-      } catch (err) {
-        if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-        pathfinderDurdur(bot) // ulaşamadık, diğerine geç
-      }
+      const p = esya.position
+      const git = await pathfinderGit(bot, new goals.GoalNear(p.x, p.y, p.z, 0),
+        kontrol, { zamanAsimi: 6000, durgunlukMs: 2500 })
+      if (git.ok) toplanan++
     }
 
     await kontrol.bekle(400)
@@ -250,17 +241,9 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
 
   // --- 3) Ağacın dibine yürü ---
   const dip = kutukler[0].position
-  try {
-    pathfinderHazirla(bot)
-    await sinirli(
-      bot.pathfinder.goto(new goals.GoalNear(dip.x, dip.y, dip.z, 2)),
-      20000,
-      kontrol
-    )
-  } catch (err) {
-    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-    pathfinderDurdur(bot)
-
+  const dibeGit = await pathfinderGit(bot, new goals.GoalNear(dip.x, dip.y, dip.z, 2),
+    kontrol, { zamanAsimi: 20000, durgunlukMs: 4000 })
+  if (!dibeGit.ok) {
     // Dibine yürüyemedik. ESKİDEN yine de denerdik: bot 20 saniye
     // uzaktan uzanmaya çalışır, başaramaz, sonra AYNI ağacı tekrar
     // seçerdi. Artık uzaklığa bakıyoruz — hâlâ menzil dışındaysak bu
@@ -323,22 +306,16 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
     // ağaç 54 saniye sürmüştü — süre bu boşa aramalarda gidiyordu.
     // Kısa deneyip (c)'ye, yani sütuna geçmek hem daha hızlı hem doğru.
     const yukarida = konum.y - Math.floor(bot.entity.position.y) >= 3
-    try {
-      pathfinderHazirla(bot)
-      await sinirli(
-        bot.pathfinder.goto(new goals.GoalLookAtBlock(konum, bot.world, { range: 4 })),
-        yukarida ? 4000 : 12000,
-        kontrol
-      )
+    const yaklas = await pathfinderGit(bot,
+      new goals.GoalLookAtBlock(konum, bot.world, { range: 4 }),
+      kontrol, { zamanAsimi: yukarida ? 4000 : 12000, durgunlukMs: 3000 })
+    if (yaklas.ok) {
       kontrol.kontrolEt()
       const b = bot.blockAt(konum)
       if (kutukMu(b) && bot.canDigBlock(b)) {
         await sinirli(bot.dig(b), 15000, kontrol)
         return 'kirildi'
       }
-    } catch (err) {
-      if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
-      pathfinderDurdur(bot)
     }
 
     // (c) yukarıdaysa sütun ör

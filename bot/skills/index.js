@@ -78,30 +78,32 @@ function kaynakSinifi (ad) {
  * ikinci komutta botun hiç ağaç kesmemesine yol açardı.
  */
 function tedarikciYap () {
-  const verilen = new Set() // bu komutta zaten toplanan kaynak sınıfları
+  // BAŞARISIZLIĞI DA HATIRLA.
+  //
+  // Önceki hâlde sadece BAŞARILI toplamalar not ediliyordu. Bot yerin
+  // altındayken odun istendiğinde ağaç bulamıyor, not düşülmüyor, ve
+  // `uret` bir sonraki ağaç türü için tekrar soruyordu. Log'da sonucu
+  // gördük: aynı saniyede 48 kez "64 blok içinde doğal ağaç bulamadım".
+  // Sonuç ne olursa olsun, bir komutta bir kaynak sınıfı BİR KEZ denenir.
+  const denenen = new Set() // bu komutta denenmiş kaynak sınıfları
   const yol = new Set() // şu an toplanmakta olanlar (döngü koruması)
 
   return async function tedarikci (bot, kontrol, ad, adet) {
     const sinif = kaynakSinifi(ad)
     if (!sinif) return false
-    if (verilen.has(sinif)) return false // bu komutta bir kez topladık
+    if (denenen.has(sinif)) return false // bu komutta zaten denedik
     if (yol.has(sinif)) return false // şu an topluyoruz, tekrar girme
     if (yol.size > 3) return false // zincir çok derinleşti
 
     yol.add(sinif)
+    denenen.add(sinif)
     try {
-      let getirdi = false
-
       if (sinif === 'odun') {
         const r = await chopTrees(bot, kontrol, Math.max(1, Math.ceil(adet / 5)))
-        getirdi = r.kazanilanOdun > 0
-      } else {
-        const r = await kaz(bot, kontrol, sinif, Math.max(1, adet), { tedarikci })
-        getirdi = r.kirilan > 0
+        return r.kazanilanOdun > 0
       }
-
-      if (getirdi) verilen.add(sinif)
-      return getirdi
+      const r = await kaz(bot, kontrol, sinif, Math.max(1, adet), { tedarikci })
+      return r.kirilan > 0
     } finally {
       yol.delete(sinif)
     }

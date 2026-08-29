@@ -105,4 +105,92 @@ function pathfinderHazirla (bot) {
   } catch (err) { /* önemsiz */ }
 }
 
-module.exports = { GorevKontrol, IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla }
+/**
+ * Pathfinder ile git — TAKILMA TESPİTİYLE.
+ *
+ * PROBLEM
+ * Bot bir çıkıntının kenarında "koşuyor ama ilerlemiyor" durumuna
+ * giriyordu. Pathfinder bir yol bulmuş, tuşlara basıyor, ama bot
+ * fiziksel olarak takılı. Sadece süre sınırı koymak yetmiyor: 15
+ * saniyelik zaman aşımını beklemek hem uzun, hem de bunu "yol
+ * bulunamadı" gibi gösteriyor — oysa yol var, bot sıkışmış.
+ *
+ * ÇÖZÜM
+ * Konumu izle. Belli bir süre boyunca hiç ilerlemiyorsa bu bir
+ * takılmadır; beklemeye devam etmenin anlamı yok. Hemen durdur,
+ * tuşları bırak, çağıran tarafa "takıldım" de — o da başka bir
+ * hedefe geçebilsin.
+ *
+ * @returns {Promise<{ok:boolean, sebep?:string}>}
+ */
+async function pathfinderGit (bot, hedef, kontrol, {
+  zamanAsimi = 15000,
+  durgunlukMs = 4000,
+  esik = 0.6,
+  kurtarmayiDene = true
+} = {}) {
+  pathfinderHazirla(bot)
+
+  let sonKonum = bot.entity.position.clone()
+  let sonIlerleme = Date.now()
+  let saat = null
+
+  const takilmaSozu = new Promise((_resolve, reject) => {
+    saat = setInterval(() => {
+      try {
+        if (bot.entity.position.distanceTo(sonKonum) > esik) {
+          sonKonum = bot.entity.position.clone()
+          sonIlerleme = Date.now()
+        } else if (Date.now() - sonIlerleme > durgunlukMs) {
+          reject(new Error('takildim'))
+        }
+      } catch (err) { /* bot yok olduysa zaman aşımı devralır */ }
+    }, 500)
+  })
+
+  try {
+    await sinirli(
+      Promise.race([bot.pathfinder.goto(hedef), takilmaSozu]),
+      zamanAsimi,
+      kontrol
+    )
+    return { ok: true }
+  } catch (err) {
+    pathfinderDurdur(bot)
+    try { bot.clearControlStates() } catch (e) {}
+    if (err instanceof IptalEdildi) throw err
+    if (saat) { clearInterval(saat); saat = null }
+
+    const takildi = err.message === 'takildim'
+
+    // TESPİT TEK BAŞINA YARIM ÇÖZÜM.
+    //
+    // Takıldığımızı anlamak botu kurtarmıyor: aynı dar yarıkta duruyor,
+    // sadece artık bunu biliyor. Çağıran taraf başka bir hedefe geçiyor,
+    // pathfinder yine yol bulamıyor, döngü baştan başlıyor. Ekran
+    // görüntülerinde tekrar tekrar gördüğümüz buydu.
+    //
+    // Önce kurtul, sonra BİR KEZ daha dene. `kurtarmayiDene: false` ile
+    // çağrıldığı için tekrar özyinelemeye girmiyor.
+    if (takildi && kurtarmayiDene) {
+      const { kurtar } = require('./kurtar')
+      const kurtuldu = await kurtar(bot, kontrol)
+      if (kurtuldu) {
+        return pathfinderGit(bot, hedef, kontrol, {
+          zamanAsimi: Math.min(zamanAsimi, 10000),
+          durgunlukMs,
+          esik,
+          kurtarmayiDene: false
+        })
+      }
+    }
+
+    return { ok: false, sebep: takildi ? 'takildim' : 'yol_yok' }
+  } finally {
+    if (saat) clearInterval(saat)
+  }
+}
+
+module.exports = {
+  GorevKontrol, IptalEdildi, sinirli, pathfinderDurdur, pathfinderHazirla, pathfinderGit
+}
