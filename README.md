@@ -168,9 +168,53 @@ The same effect appeared inside behaviour cloning: evaluating the cloned policy 
 | **2** | Node↔Python bridge + Gymnasium environment + random-agent baseline | ✅ Done |
 | **3** | Behaviour cloning from scripted demonstrations | ✅ Done |
 | **4** | PPO training warm-started from the cloned policy, learning curve | ✅ Done |
-| **5** | Extended task set: mining, simple crafting | ⬜ Planned |
+| **5** | Extended task set: mining, smelting, recursive crafting | 🟡 Scripted skills done; RL integration pending |
 
 Each milestone stands on its own — the repo is presentable at any point.
+
+### Milestone 5 — resource acquisition as a search problem
+
+`uret <item>` does not follow a hard-coded procedure. It resolves the recipe
+tree at runtime and knows three ways to obtain anything:
+
+```
+craft (crafting table)  →  smelt (furnace)  →  gather (mine / chop)
+```
+
+Asking for an iron pickaxe with an empty inventory produces this chain, none of
+which is written down anywhere:
+
+```
+iron pickaxe  ← 3 iron ingots + 2 sticks
+  iron ingot   ← not craftable → furnace
+    raw iron   ← not craftable → mine it
+      stone pickaxe ← needed first → craft
+        cobblestone ← mine it
+          wooden pickaxe ← needed first → craft
+            logs ← chop a tree
+    furnace    ← 8 cobblestone
+    fuel       ← coal, or the logs it already has
+  stick        ← planks ← logs
+```
+
+Two design notes worth reading the code for:
+
+**Species-agnostic gathering.** Sticks have ~12 recipes, one per wood type. With
+an empty inventory they all score equally, so the bot used to pick one at random
+and insist on it — asking for spruce in an oak forest. The material scorer now
+looks two levels deep (is this obtainable, not just craftable?), and after
+gathering it re-scores with what actually arrived. The bot adapts to the forest
+instead of predicting it.
+
+**No dependency cycle.** `kaz` needs `uret` to make a pickaxe; `uret` needs `kaz`
+to get ore. Rather than have the two modules require each other, `uret` knows
+only whether something is *obtainable* — the *how* is injected from
+`bot/skills/index.js`. The dependency graph stays acyclic.
+
+Mining is safety-first: staircase descent (never straight down), lava scanning
+ahead of the tunnel, health monitoring with retreat, pickaxe-durability planning
+computed from the depth of the job, and a stuck-detector that frees the bot by
+digging its own way out rather than reporting failure.
 
 ## Quick start
 
@@ -220,6 +264,9 @@ Then type in the in-game chat:
 | `envanter` / `nerede` | Report inventory / coordinates |
 | `takip` | Follow the player until told to stop |
 | `ver odun 10` | Toss items from the bot's inventory |
+| `uret demir kazma` | Craft anything — the bot resolves the recipe tree itself |
+| `kaz elmas 10` | Mine an ore: descends by staircase, equips the right pickaxe |
+| `cik` | Pillar up to the surface (if it gets stuck in a cave) |
 | `koru` | Mark a no-dig zone around you — the bot never breaks blocks there |
 | `komut` | List every command |
 | `dur` | Abort the current task immediately |
@@ -277,8 +324,16 @@ solves the task and spends its budget improving rather than discovering.
 bot/                  Node.js — everything that touches Minecraft
   index.js              Milestone 1 entry point (chat-controlled bot)
   config.js             all settings, read from .env
-  skills/               reusable behaviours (chopTree, gel, alet, takip, ver)
-  utils/gorev.js        cooperative cancellation + safe pathfinder stop
+  skills/               reusable behaviours
+    chopTree.js           find, fell and collect whole trees
+    kaz.js                mining: staircase descent, ore veins, lava safety
+    uret.js               recursive crafting — resolves the recipe tree
+    erit.js               smelting (furnace), the craft→smelt bridge
+    sutun.js              pillar up / dig down to reach unreachable blocks
+    alet.js, gel.js, takip.js, ver.js
+  utils/gorev.js        cancellation, safe pathfinder stop, stuck detection
+  utils/kurtar.js       frees the bot when it wedges itself
+  utils/yerlestir.js    block placement — clears a spot if none is free
   utils/koruma.js       player-marked no-dig zones
   bridge/
     server.js           WebSocket server exposing reset/step to Python

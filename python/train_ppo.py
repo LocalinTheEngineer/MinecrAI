@@ -57,6 +57,41 @@ VARSAYILAN_OGRENME_ORANI = 1e-4
 VARSAYILAN_KLIP = 0.15
 
 
+class EntropiAzaltici(BaseCallback):
+    """Entropi katsayisini egitim boyunca kademeli dusurur.
+
+    NEDEN: entropi kesifi tesvik ediyor. Basta lazim -- politika daha
+    hicbir seyi denemedi. Ama sonuna dogru tersine doner: ajan artik ne
+    yapacagini biliyor, rastgelelik sadece gurultu ekliyor ve odulu
+    dusuruyor.
+
+    20 bin adimlik kosuda bu fark etmiyordu (sabit 0.01 yeterliydi).
+    80 bin adimda ediyor: ajan 20 binde ogrendigini 60 bin adim boyunca
+    keskinlestirebilmeli. Lineer azaltma en basit ve en okunakli cozum;
+    SB3'un `ent_coef`i her guncellemede yeniden okundugu icin disaridan
+    degistirmek yeterli.
+    """
+
+    def __init__(self, bas: float, son: float, toplam_adim: int):
+        super().__init__()
+        self.bas = bas
+        self.son = son
+        self.toplam_adim = max(1, toplam_adim)
+        self.son_yazilan = None
+
+    def _on_step(self) -> bool:
+        oran = min(1.0, self.num_timesteps / self.toplam_adim)
+        yeni = self.bas + (self.son - self.bas) * oran
+        self.model.ent_coef = yeni
+
+        # 10 binde bir bildir, her adimda degil
+        kilometre = self.num_timesteps // 10000
+        if kilometre != self.son_yazilan:
+            self.son_yazilan = kilometre
+            print(f"  [entropi {yeni:.4f}]")
+        return True
+
+
 class BolumKaydedici(BaseCallback):
     """Her bolum bittiginde sonucu CSV'ye yazar ve ekrana basar.
 
@@ -137,6 +172,9 @@ def main() -> None:
     ap.add_argument("--devam", action="store_true",
                     help="son kontrol noktasindan devam et")
     ap.add_argument("--kontrol-araligi", type=int, default=1000)
+    ap.add_argument("--entropi-son", type=float, default=None,
+                    help="entropiyi egitim boyunca bu degere kadar dusur "
+                         "(uzun kosularda onerilir, orn. 0.003)")
     ap.add_argument("--entropi", type=float, default=VARSAYILAN_ENTROPI,
                     help="entropi bonusu — 0 verirsen politika cokebilir")
     ap.add_argument("--ogrenme-orani", type=float, default=VARSAYILAN_OGRENME_ORANI)
@@ -173,13 +211,20 @@ def main() -> None:
     print(f"entropi={args.entropi}  ogrenme_orani={args.ogrenme_orani}  klip={args.klip}")
 
     kaydedici = BolumKaydedici(KAYIT, KONTROL_NOKTASI, args.kontrol_araligi)
+    geri_cagrimlar = [kaydedici]
+
+    if args.entropi_son is not None:
+        geri_cagrimlar.append(
+            EntropiAzaltici(args.entropi, args.entropi_son, args.adim)
+        )
+        print(f"entropi {args.entropi} -> {args.entropi_son} (kademeli)")
 
     print(f"\nEgitim basliyor: {args.adim} adim")
     print(f"Kayit: {KAYIT}")
     print("Ctrl+C ile guvenle durdurabilirsin, ilerleme kaybolmaz.\n")
 
     try:
-        model.learn(total_timesteps=args.adim, callback=kaydedici,
+        model.learn(total_timesteps=args.adim, callback=geri_cagrimlar,
                     reset_num_timesteps=not args.devam)
     except KeyboardInterrupt:
         print("\nDurduruldu — model kaydediliyor...")
