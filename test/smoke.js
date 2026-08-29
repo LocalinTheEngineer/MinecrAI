@@ -17,8 +17,11 @@ function sahteBot () {
   return {
     username: 'SmokeBot',
     entity: {
-      position: new Vec3(0, 64, 0), yaw: 0, pitch: 0,
-      onGround: true, height: 1.62
+      position: new Vec3(0, 64, 0),
+      yaw: 0,
+      pitch: 0,
+      onGround: true,
+      height: 1.62
     },
     health: 20,
     food: 20,
@@ -37,7 +40,10 @@ function sahteBot () {
     version: '1.20.4',
     world: {},
     pathfinder: {
-      stop () {}, setGoal () {}, goto: async () => {}, isMoving: () => false,
+      stop () {},
+      setGoal () {},
+      goto: async () => {},
+      isMoving: () => false,
       getPathTo: () => ({ path: [], status: 'noPath' }),
       movements: {}
     },
@@ -169,6 +175,8 @@ async function main () {
 
     const env = { oak_log: 3, cobblestone: 3 } // masa YOK - kendi yapmali
     let masaYerde = false
+    const yerlesen = {}
+    let sonEquip = null
     const b = {
       version: '1.20.4',
       inventory: {
@@ -180,14 +188,28 @@ async function main () {
       // o yuzden "masam yokken 3x3 tarifi goremiyorum" bugu testte
       // hic gorunmedi -- sahte dunya gercekten daha kolaydi.
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      blockAt: (p) => ({
-        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
-        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
-        position: p
-      }),
+      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
+      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      blockAt: (p) => {
+        const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
+        if (yerlesen[anahtar]) {
+          return { name: yerlesen[anahtar], boundingBox: 'block', position: p }
+        }
+        return {
+          name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+          boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+          position: p
+        }
+      },
       entity: { position: new Vec3(0, 64, 0) },
-      equip: async () => {},
-      placeBlock: async () => { masaYerde = true; env.crafting_table = (env.crafting_table || 1) - 1 },
+      equip: async (e) => { sonEquip = e && e.name },
+      placeBlock: async (ref) => {
+        masaYerde = true
+        if (sonEquip) {
+          yerlesen[`${ref.position.x},${ref.position.y + 1},${ref.position.z}`] = sonEquip
+          env[sonEquip] = (env[sonEquip] || 1) - 1
+        }
+      },
       // mineflayer'in DAVRANISINI taklit ediyoruz, sadece imzasini degil:
       // masa verilmezse 3x3 tarifleri eliyor. Bu satir onceden sadece
       // Recipe.find(...) idi; test gecti ama oyunda calismadi, cunku sahte
@@ -217,10 +239,12 @@ async function main () {
 
   await dene('sutunBlogu() - topragi odundan once secer', () => {
     const b = sahteBot()
-    b.inventory = { items: () => [
-      { name: 'oak_log', count: 5, type: 1 },
-      { name: 'dirt', count: 3, type: 2 }
-    ] }
+    b.inventory = {
+      items: () => [
+        { name: 'oak_log', count: 5, type: 1 },
+        { name: 'dirt', count: 3, type: 2 }
+      ]
+    }
     const secilen = sutun.sutunBlogu(b)
     if (!secilen || secilen.name !== 'dirt') {
       throw new Error(`odun yerine toprak secmeliydi, secti: ${secilen && secilen.name}`)
@@ -248,7 +272,8 @@ async function main () {
       return { name: isim, position: new Vec3(0, y, 0), boundingBox: 'block' }
     }
     const orta = b.blockAt(new Vec3(0, 66, 0))
-    const dip = skills.govdeninDibi ? skills.govdeninDibi(b, orta)
+    const dip = skills.govdeninDibi
+      ? skills.govdeninDibi(b, orta)
       : require('../bot/skills/chopTree').govdeninDibi(b, orta)
     if (dip.position.y !== 64) throw new Error(`dip y=${dip.position.y}, 64 olmaliydi`)
   })
@@ -265,6 +290,8 @@ async function main () {
 
     const env = {}
     let masaYerde = false
+    const yerlesen = {}
+    let sonEquip = null
     let pisen = 0
     const istenen = []
 
@@ -276,13 +303,26 @@ async function main () {
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      blockAt: (p) => ({
-        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
-        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
-        position: p
-      }),
-      equip: async () => {},
-      placeBlock: async () => { masaYerde = true },
+      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
+      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      blockAt: (p) => {
+        const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
+        if (yerlesen[anahtar]) {
+          return { name: yerlesen[anahtar], boundingBox: 'block', position: p }
+        }
+        return {
+          name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+          boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+          position: p
+        }
+      },
+      equip: async (e) => { sonEquip = e && e.name },
+      placeBlock: async (ref) => {
+        masaYerde = true
+        if (sonEquip) {
+          yerlesen[`${ref.position.x},${ref.position.y + 1},${ref.position.z}`] = sonEquip
+        }
+      },
       recipesAll: (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa),
       craft: async (t, kere) => {
         for (const d of t.delta) {
@@ -332,6 +372,8 @@ async function main () {
 
     const env = {}
     let masaYerde = false
+    const yerlesen = {}
+    let sonEquip = null
     const b = {
       version: '1.20.4',
       entity: { position: new Vec3(0, 64, 0) },
@@ -340,13 +382,26 @@ async function main () {
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      blockAt: (p) => ({
-        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
-        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
-        position: p
-      }),
-      equip: async () => {},
-      placeBlock: async () => { masaYerde = true },
+      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
+      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      blockAt: (p) => {
+        const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
+        if (yerlesen[anahtar]) {
+          return { name: yerlesen[anahtar], boundingBox: 'block', position: p }
+        }
+        return {
+          name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+          boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+          position: p
+        }
+      },
+      equip: async (e) => { sonEquip = e && e.name },
+      placeBlock: async (ref) => {
+        masaYerde = true
+        if (sonEquip) {
+          yerlesen[`${ref.position.x},${ref.position.y + 1},${ref.position.z}`] = sonEquip
+        }
+      },
       recipesAll: (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa),
       craft: async (t, kere) => {
         for (const d of t.delta) {
@@ -378,6 +433,8 @@ async function main () {
 
     const env = {}
     let masaYerde = false
+    const yerlesen = {}
+    let sonEquip = null
     let kesilenAgac = 0
     let kazilanTas = 0
 
@@ -389,13 +446,26 @@ async function main () {
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      blockAt: (p) => ({
-        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
-        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
-        position: p
-      }),
-      equip: async () => {},
-      placeBlock: async () => { masaYerde = true },
+      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
+      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      blockAt: (p) => {
+        const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
+        if (yerlesen[anahtar]) {
+          return { name: yerlesen[anahtar], boundingBox: 'block', position: p }
+        }
+        return {
+          name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+          boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+          position: p
+        }
+      },
+      equip: async (e) => { sonEquip = e && e.name },
+      placeBlock: async (ref) => {
+        masaYerde = true
+        if (sonEquip) {
+          yerlesen[`${ref.position.x},${ref.position.y + 1},${ref.position.z}`] = sonEquip
+        }
+      },
       recipesAll: (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa),
       craft: async (t, kere) => {
         for (const d of t.delta) {
@@ -436,11 +506,13 @@ async function main () {
 
   await dene('kazmaSeviyesi() - en iyisini seciyor', () => {
     const b = sahteBot()
-    b.inventory = { items: () => [
-      { name: 'wooden_pickaxe', count: 1 },
-      { name: 'iron_pickaxe', count: 1 },
-      { name: 'stone_pickaxe', count: 1 }
-    ] }
+    b.inventory = {
+      items: () => [
+        { name: 'wooden_pickaxe', count: 1 },
+        { name: 'iron_pickaxe', count: 1 },
+        { name: 'stone_pickaxe', count: 1 }
+      ]
+    }
     const s2 = kazModul.kazmaSeviyesi(b)
     if (s2 !== 'iron') throw new Error(`en iyi iron olmaliydi, ${s2} dedi`)
   })
@@ -480,10 +552,12 @@ async function main () {
 
   await dene('kazmaGucu() - sadece YETERLI seviyedekileri topluyor', () => {
     const b = sahteBot()
-    b.inventory = { items: () => [
-      { name: 'wooden_pickaxe', maxDurability: 59, durabilityUsed: 0 },
-      { name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 50 }
-    ] }
+    b.inventory = {
+      items: () => [
+        { name: 'wooden_pickaxe', maxDurability: 59, durabilityUsed: 0 },
+        { name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 50 }
+      ]
+    }
     // 'iron' isteyince tahta kazma sayilmamali
     const g = kazModul.kazmaGucu(b, 'iron')
     if (g.adet !== 1 || g.toplam !== 200) {
@@ -505,15 +579,36 @@ async function main () {
     if (r.sebep !== 'kazma_bitti') throw new Error(`sebep: ${r.sebep}`)
   })
 
-  await dene('tek kazma derine inmeye YETMIYOR (hesap kontrolu)', () => {
-    // y=64 -> y=15: ~49 basamak x 3 blok = ~147 vurus.
-    // Bu test kod degil MATEMATIK kontrol ediyor: eger biri
-    // YEDEK_KAZMA'yi 1'e dusururse burasi bagirir.
-    const gerekenVurus = (64 - 15) * 3
-    const tasKazma = 131
-    if (kazModul.YEDEK_KAZMA * tasKazma < gerekenVurus) {
-      throw new Error(`${kazModul.YEDEK_KAZMA} tas kazma (${kazModul.YEDEK_KAZMA * tasKazma} vurus) ` +
-        `y=15'e inmeye (${gerekenVurus} vurus) yetmiyor`)
+  await dene('elmas kazma varken demir kazma YAPMIYOR', () => {
+    // Gercek sikayet: "elinde elmas kazma olmasina ragmen gidip demir
+    // kazma yapmakta". Sebep, stok kontrolunun "3 kazmam var mi?" diye
+    // SAYMASI. Bir elmas kazma 1561 vurus -- uc tas kazmanin (393) dort
+    // kati. Sayarak bakinca "1 tane, az"; vurusla bakinca fazlasiyla
+    // yeterli. Olcu birimi adet degil VURUS olmali.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    b.inventory = { items: () => [{ name: 'diamond_pickaxe', maxDurability: 1561, durabilityUsed: 0 }] }
+
+    // "kaz elmas 10": y=64'ten y=-58'e inis + 10 blok kazma
+    const gerekli = kazModul.gerekenVurus(b, -58, 10)
+    const elde = kazModul.kazmaGucu(b, 'iron').toplam
+
+    if (elde < gerekli) {
+      throw new Error(`elmas kazma (${elde} vurus) ${gerekli} vurusluk ise yetmiyor sayildi`)
+    }
+    // Adet olcusu kullanilsaydi 1 < 3 cikip bosuna kazma yapardi
+    if (kazModul.kazmaGucu(b, 'iron').adet >= 3) {
+      throw new Error('test anlamsiz: zaten 3 kazma var')
+    }
+  })
+
+  await dene('gerekenVurus() derinlikle buyuyor', () => {
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    const sig = kazModul.gerekenVurus(b, 50, 5) // 14 blok
+    const derin = kazModul.gerekenVurus(b, -58, 5) // 122 blok
+    if (!(derin > sig * 3)) {
+      throw new Error(`derin ${derin} vs sig ${sig} — derinlik hesaba katilmamis`)
     }
   })
 
@@ -547,10 +642,12 @@ async function main () {
 
   await dene('yakitBul() - komuru odundan once seciyor', () => {
     const b = sahteBot()
-    b.inventory = { items: () => [
-      { name: 'oak_log', count: 10 },
-      { name: 'coal', count: 4 }
-    ] }
+    b.inventory = {
+      items: () => [
+        { name: 'oak_log', count: 10 },
+        { name: 'coal', count: 4 }
+      ]
+    }
     const y = eritModul.yakitBul(b, 8)
     if (!y || y.esya.name !== 'coal') throw new Error(`secilen: ${y && y.esya.name}`)
     if (y.kullan !== 1) throw new Error(`1 komur 8 esya pisirir, ${y.kullan} dedi`)
@@ -677,6 +774,135 @@ async function main () {
     if (sira[0] !== 'equip:iron_pickaxe') {
       throw new Error(`ilk is ${sira[0]} — kazmayi kusanmadan kazdi`)
     }
+  })
+
+  await dene('kaz() ulasilamayan cevherde SONSUZ DONGUYE girmiyor', async () => {
+    // Gercek sikayet: bot ulasabildigi bir elmasi kiramayip donguye
+    // girdi; kullanici gidip elmasi elle kirarak dongüyu bozdu.
+    // Sahte dunya: elmas HER ZAMAN orada (kirilmiyor), pathfinder hep
+    // basarili. Sigorta olmasa bu test sonsuza kadar calisirdi.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, -58, 0)
+    b.inventory = { items: () => [{ name: 'diamond_pickaxe', maxDurability: 1561, durabilityUsed: 0, type: 1 }] }
+    b.registry = { blocksByName: { diamond_ore: { id: 1 }, deepslate_diamond_ore: { id: 2 } } }
+    b.findBlocks = () => [new Vec3(2, -58, 0)]
+    b.blockAt = (p) => ({
+      name: (p.x === 2 && Math.floor(p.y) === -58 && p.z === 0) ? 'diamond_ore' : 'deepslate',
+      boundingBox: 'block',
+      position: new Vec3(p.x, Math.floor(p.y), p.z)
+    })
+    b.canDigBlock = () => false // ASLA kirilmiyor
+
+    // Beklemeleri sifirla: sigortayi olcuyoruz, gercek sureleri degil
+    const hizli = { kontrolEt () {}, bekle: async () => {} }
+    const bitis = Date.now() + 8000
+    const r = await kazModul.kaz(b, hizli, 'elmas', 10)
+    if (Date.now() > bitis) throw new Error('8 saniyeden uzun surdu — dongu var')
+    if (r.kirilan > 0) throw new Error('kirilamayan blogu kirdigini iddia etti')
+  })
+
+  await dene('guvenliMi() su icin cevher/merdiven ayrimi yapiyor', () => {
+    // Su, NEREYE GITTIGINE gore tehlikeli:
+    //  - uzaktan CEVHERE vuruyorsak yanindaki su onemsiz (biraz sel)
+    //  - MERDIVEN kaziyorsak o bosluga KENDIMIZ girecegiz -> bogulma
+    // Eskiden su mutlak engeldi ve ulasilabilir elmaslar reddediliyordu.
+    const b = sahteBot()
+    b.blockAt = (p) => ({
+      name: (p.x === 1 && p.y === 0 && p.z === 0) ? 'water' : 'deepslate',
+      boundingBox: 'block',
+      position: p
+    })
+    const konum = new Vec3(0, 0, 0)
+    if (!kazModul.guvenliMi(b, konum)) throw new Error('cevher icin suyu engel saydi')
+    if (kazModul.guvenliMi(b, konum, { suTehlikeli: true })) {
+      throw new Error('merdiven icin suyu guvenli saydi — bogulur')
+    }
+
+    // Lav her iki durumda da engel
+    b.blockAt = (p) => ({
+      name: (p.x === 1 && p.y === 0 && p.z === 0) ? 'lava' : 'deepslate',
+      boundingBox: 'block',
+      position: p
+    })
+    if (kazModul.guvenliMi(b, konum)) throw new Error('lavi guvenli saydi')
+  })
+
+  await dene('tehlikedeMi() can azalinca ve lavda uyariyor', () => {
+    // Gercek olay: bot lav golune girdi ve OLDU. Kod kirdigi bloklari
+    // guvenlik acisindan denetliyordu ama BOTUN KENDI durumunu hic
+    // sormuyordu. Lav saniyede ~4 can goturuyor.
+    const b = sahteBot()
+    b.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
+
+    b.health = 20
+    if (kazModul.tehlikedeMi(b)) throw new Error('saglikliyken tehlike dedi')
+
+    b.health = 6
+    if (!kazModul.tehlikedeMi(b)) throw new Error('6 canla tehlike gormedi')
+
+    b.health = 20
+    b.blockAt = (p) => ({ name: 'lava', boundingBox: 'empty', position: p })
+    if (!kazModul.tehlikedeMi(b)) throw new Error('lavin icinde tehlike gormedi')
+  })
+
+  await dene('ondeLavVarMi() tunel yonunde lav goruyor', () => {
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    // 3 blok ileride (-z yonu) lav
+    b.blockAt = (p) => ({
+      name: (p.z === -3) ? 'lava' : 'stone',
+      boundingBox: 'block',
+      position: p
+    })
+    const ileri = new Vec3(0, 0, -1)
+    if (!kazModul.ondeLavVarMi(b, ileri)) throw new Error('3 blok ilerideki lavi gormedi')
+
+    const geri = new Vec3(0, 0, 1)
+    if (kazModul.ondeLavVarMi(b, geri)) throw new Error('ters yonde olmayan lavi gordu')
+  })
+
+  console.log('\nBlok yerlestirme')
+  const yerlestir = require('../bot/utils/yerlestir')
+
+  await dene('blokKoy() dar yerde YER ACIYOR (pes etmiyor)', async () => {
+    // Gercek sikayet: "envanterinde 2 firin var ama koyacak yer yok
+    // diyor -- kirsin bi yeri koysun iste". Eski kod yanindaki 6 sabit
+    // noktaya bakip pes ediyordu. Bot zaten kazma tasiyan bir madenci.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    b.inventory = { items: () => [{ name: 'furnace', count: 2, type: 1 }] }
+    b.canDigBlock = () => true
+
+    // HER YER DOLU: hicbir hazir nokta yok
+    const kirilan = new Set()
+    const konan = {}
+    let sonEquip = null
+    b.blockAt = (p) => {
+      const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
+      if (konan[anahtar]) return { name: konan[anahtar], boundingBox: 'block', position: p }
+      if (kirilan.has(anahtar)) return { name: 'air', boundingBox: 'empty', position: p }
+      return { name: 'stone', boundingBox: 'block', position: new Vec3(p.x, Math.floor(p.y), p.z) }
+    }
+    b.equip = async (e) => { sonEquip = e && e.name }
+    b.dig = async (blok) => {
+      kirilan.add(`${blok.position.x},${blok.position.y},${blok.position.z}`)
+    }
+    b.placeBlock = async (ref) => {
+      konan[`${ref.position.x},${ref.position.y + 1},${ref.position.z}`] = sonEquip
+    }
+
+    if (yerlestir.hazirYerBul(b)) throw new Error('test kurulumu bozuk: hazir yer var')
+
+    const sonuc = await yerlestir.blokKoy(b, 'furnace', k)
+    if (!sonuc) throw new Error('yer acamadi, pes etti')
+    if (kirilan.size === 0) throw new Error('hic blok kirmadan koydugunu iddia etti')
+  })
+
+  await dene('blokKoy() korumali bolgeye koymuyor', async () => {
+    const b = sahteBot()
+    b.inventory = { items: () => [] }
+    const sonuc = await yerlestir.blokKoy(b, 'furnace', k)
+    if (sonuc) throw new Error('envanterde yokken koydugunu iddia etti')
   })
 
   console.log('\nKomut yonlendirme')

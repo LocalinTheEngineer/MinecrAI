@@ -1,6 +1,5 @@
 'use strict'
 
-const Vec3 = require('vec3')
 const log = require('../utils/log')
 
 /**
@@ -78,26 +77,30 @@ function yakitBul (bot, gerekenAdet) {
   return null
 }
 
-/** Yakında fırın var mı, yoksa envanterdekini yere koy */
-async function firinBul (bot) {
+/**
+ * Yakında fırın var mı, yoksa envanterdekini yere koy.
+ *
+ * `blast_furnace` da listede: cevher eritmede normal fırınla aynı işi
+ * görüyor (üstelik iki kat hızlı). Botun envanterinde bir tane vardı ama
+ * kod onu tanımadığı için görmezden geliyordu.
+ */
+const FIRINLAR = ['furnace', 'blast_furnace']
+
+async function firinBul (bot, kontrol = null) {
   const mcData = require('minecraft-data')(bot.version)
-  const firin = bot.findBlock({ matching: mcData.blocksByName.furnace.id, maxDistance: 4 })
-  if (firin) return firin
+  const { blokKoy } = require('../utils/yerlestir')
 
-  const esya = bot.inventory.items().find((i) => i.name === 'furnace')
-  if (!esya) return null
+  const idler = FIRINLAR
+    .map((n) => (mcData.blocksByName[n] || {}).id)
+    .filter((x) => x !== undefined)
 
-  const p = bot.entity.position.floored()
-  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [0, 2]]) {
-    const zemin = bot.blockAt(new Vec3(p.x + dx, p.y - 1, p.z + dz))
-    const ust = bot.blockAt(new Vec3(p.x + dx, p.y, p.z + dz))
-    if (!zemin || !ust) continue
-    if (zemin.boundingBox !== 'block' || ust.name !== 'air') continue
-    try {
-      await bot.equip(esya, 'hand')
-      await bot.placeBlock(zemin, new Vec3(0, 1, 0))
-      return bot.findBlock({ matching: mcData.blocksByName.furnace.id, maxDistance: 4 })
-    } catch (err) { /* başka yön dene */ }
+  const mevcut = bot.findBlock({ matching: idler, maxDistance: 4 })
+  if (mevcut) return mevcut
+
+  for (const ad of FIRINLAR) {
+    if (!bot.inventory.items().some((i) => i.name === ad)) continue
+    const konan = await blokKoy(bot, ad, kontrol)
+    if (konan) return konan
   }
   return null
 }
@@ -118,7 +121,7 @@ async function erit (bot, kontrol, hedefAd, adet = 1) {
   const yakit = yakitBul(bot, pisecek)
   if (!yakit) return { basarili: false, mesaj: 'Yakıtım yok (kömür veya odun lazım).', eksik: 'coal' }
 
-  const firin = await firinBul(bot)
+  const firin = await firinBul(bot, kontrol)
   if (!firin) return { basarili: false, mesaj: 'Fırınım yok veya koyacak yer bulamadım.', eksik: 'furnace' }
 
   const mcData = require('minecraft-data')(bot.version)

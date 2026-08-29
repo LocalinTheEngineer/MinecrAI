@@ -52,21 +52,25 @@ const CEVHERLER = {
 const SEVIYELER = ['wooden', 'stone', 'iron', 'diamond', 'netherite']
 
 // Kazarken karşımıza çıkarsa DURACAĞIMIZ bloklar
-const TEHLIKELI = /lava|water|bedrock/
+const TEHLIKELI = /lava|bedrock/
+const SU = /water|bubble_column/
 
 // Kazma kırılmadan önce yenisini yapmaya başladığımız eşik.
 // Sıfırı beklemek geç: kırıldığı anda elin boş kalıyor ve kırdığın
 // bir sonraki cevher YOK OLUYOR (alet olmadan kırılan cevher düşmez).
 const KRITIK_DAYANIKLILIK = 20
 
-// Yeraltına inmeden önce yanına almaya çalıştığımız yedek kazma sayısı.
-// Neden 3? Aşağıdaki hesap:
-//   y=64'ten y=15'e inmek ~49 basamak, her basamak 3 blok = ~147 blok.
-//   tahta kazma  59 vuruş  -> yolun yarısına gelmeden biter
-//   taş kazma   131 vuruş  -> ancak inişi kaldırır, kazmaya kalmaz
-//   demir kazma 250 vuruş  -> iniş + biraz madencilik
-// Tek kazmayla derine inmek matematiksel olarak mümkün değil.
-const YEDEK_KAZMA = 3
+// Yeterlilik ölçüsü KAZMA SAYISI değil, TOPLAM VURUŞ.
+//
+// Bu ayrım bir hataya mal oldu: bot elinde ELMAS KAZMA varken gidip
+// demir kazma yapıyordu. Sebep, stok kontrolünün "3 kazmam var mı?"
+// diye sorması. Bir elmas kazma tek başına 1561 vuruş — üç taş
+// kazmanın (393) dört katı. Sayarak bakınca "1 tane, az" görünüyor;
+// vuruşla bakınca fazlasıyla yeterli.
+//
+// Referans dayanıklılıklar: tahta 59, taş 131, demir 250, elmas 1561.
+// y=64'ten y=15'e inmek ~49 basamak x 3 blok = ~147 vuruş.
+const GUVENLIK_PAYI = 40
 
 /** Bu eşyada kaç vuruş kaldı? (aleti olmayan eşyalar için sonsuz) */
 function kalanDayaniklilik (esya) {
@@ -94,11 +98,23 @@ function kazmaGucu (bot, gerekliSeviye) {
 }
 
 /**
- * Kazma stoğunu tazele. Kazdığımız taş zaten envanterde olduğu için
- * yeraltında taş kazma yapmak mümkün — tek şart yanımızda tezgah olması,
- * o yüzden inmeden önce bir tane üretiyoruz.
+ * Bu iş kaç vuruş tutar? İniş + kazma + güvenlik payı.
+ * Tahminle değil, yapılacak işin boyutundan hesaplanıyor.
  */
-async function kazmaStokla (bot, kontrol, seviye, hedefAdet, secenekler = {}) {
+function gerekenVurus (bot, hedefY, adet) {
+  const su = Math.floor(bot.entity.position.y)
+  const derinlik = hedefY === null ? 0 : Math.max(0, su - hedefY)
+  return derinlik * 3 + adet * 2 + GUVENLIK_PAYI
+}
+
+/**
+ * Kazma stoğunu VURUŞ hedefine göre tazele.
+ *
+ * Kazdığımız taş zaten envanterde olduğu için yeraltında taş kazma
+ * yapmak mümkün — tek şart yanımızda tezgah olması, o yüzden inmeden
+ * önce bir tane üretiyoruz.
+ */
+async function kazmaStokla (bot, kontrol, seviye, hedefVurus, secenekler = {}) {
   const istek = seviye === 'wooden'
     ? 'tahta kazma'
     : seviye === 'stone'
@@ -106,15 +122,67 @@ async function kazmaStokla (bot, kontrol, seviye, hedefAdet, secenekler = {}) {
       : seviye === 'iron' ? 'demir kazma' : 'elmas kazma'
 
   let yapilan = 0
-  for (let i = 0; i < hedefAdet; i++) {
+  for (let i = 0; i < 5; i++) {
     kontrol.kontrolEt()
-    const { adet } = kazmaGucu(bot, seviye)
-    if (adet >= hedefAdet) break
+    if (kazmaGucu(bot, seviye).toplam >= hedefVurus) break
     const r = await uret(bot, kontrol, istek, 1, secenekler)
     if (!r.basarili) break
     yapilan++
   }
   return yapilan
+}
+
+// Canın bu değerin altına düşmesi "buradan çık" demek.
+// 20 tam can; 12 = üç kalp gitmiş. Lav saniyede ~4 can götürüyor,
+// yani 12'de fark edip kaçmak ancak yetiyor.
+const KACIS_CANI = 12
+
+// Tünel açmadan önce önümüzü kaç blok ileriye kadar lav için tarıyoruz
+const LAV_TARAMA = 4
+
+/**
+ * Şu an tehlikede miyiz? Değilse null, tehlikedeysek sebebi.
+ *
+ * Bu fonksiyonun olmaması bir ölüme mal oldu: bot lav gölüne girdi ve
+ * kod hiçbir yerde canına bakmadığı için kazmaya devam etti. Kırdığı
+ * blokları güvenlik açısından kontrol ediyorduk ama BOTUN KENDİ
+ * durumunu hiç sormuyorduk.
+ */
+function tehlikedeMi (bot) {
+  if (typeof bot.health === 'number' && bot.health < KACIS_CANI) {
+    return `canım azaldı (${bot.health.toFixed(0)}/20)`
+  }
+  const ayak = bot.blockAt(bot.entity.position)
+  const alt = bot.blockAt(bot.entity.position.offset(0, -1, 0))
+  for (const b of [ayak, alt]) {
+    if (b && /lava/.test(b.name)) return 'lavın içindeyim'
+  }
+  return null
+}
+
+/**
+ * Gitmek istediğimiz yönde lav var mı?
+ *
+ * `guvenliMi` sadece KIRACAĞIMIZ bloğun komşularına bakıyordu — bir blok
+ * ötesi kör nokta. Tünel açarken lav gölünün duvarını delip içine
+ * yürümek tam olarak böyle oluyor.
+ */
+function ondeLavVarMi (bot, yon, menzil = LAV_TARAMA) {
+  const ayak = bot.entity.position.floored()
+  for (let i = 1; i <= menzil; i++) {
+    for (let dy = -1; dy <= 2; dy++) {
+      for (const yan of [-1, 0, 1]) {
+        const p = ayak.offset(
+          yon.x * i + (yon.x === 0 ? yan : 0),
+          dy,
+          yon.z * i + (yon.z === 0 ? yan : 0)
+        )
+        const b = bot.blockAt(p)
+        if (b && /lava/.test(b.name)) return true
+      }
+    }
+  }
+  return false
 }
 
 /** Envanterdeki en iyi kazmanın seviyesi (yoksa null) */
@@ -140,21 +208,55 @@ function ileriYon (bot) {
 }
 
 /** Bu bloğu kırmak güvenli mi? Komşularında lav/su var mı? */
-function guvenliMi (bot, konum) {
+/**
+ * Bu bloğu kırmak güvenli mi?
+ *
+ * SU, NEREYE GİTTİĞİNE GÖRE TEHLİKELİ.
+ *
+ * Eskiden su da lav gibi mutlak engeldi ve bu yüzden ulaşılabilir
+ * elmaslar sessizce reddediliyordu — derinlerde su cebi çok yaygın.
+ * Ama ayrım şurada:
+ *
+ *  - Uzaktan bir CEVHERE vuruyorsak yanındaki su önemsiz; en fazla
+ *    biraz sel olur, biz yerimizde dururuz.
+ *  - MERDİVEN kazıyorsak o boşluğa kendimiz gireceğiz. Su cebini açıp
+ *    içine girmek boğulmak demek.
+ *
+ * O yüzden `suTehlikeli` çağıran tarafın kararı: merdiven true diyor,
+ * cevher kırma false.
+ */
+function guvenliMi (bot, konum, { suTehlikeli = false } = {}) {
   for (const [dx, dy, dz] of [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]) {
     const b = bot.blockAt(konum.offset(dx, dy, dz))
-    if (b && TEHLIKELI.test(b.name)) return false
+    if (!b) continue
+    if (TEHLIKELI.test(b.name)) return false
+    if (suTehlikeli && SU.test(b.name)) return false
   }
   return true
 }
 
 /** Tek bir bloğu kır (kırılabiliyorsa) */
-async function blogoKir (bot, konum, kontrol, gerekliSeviye = null) {
+async function blogoKir (bot, konum, kontrol, gerekliSeviye = null, { suTehlikeli = false } = {}) {
   const b = bot.blockAt(konum)
   if (!b || b.name === 'air' || b.boundingBox !== 'block') return true
-  if (koruma.korumaliMi(konum)) return false
-  if (!guvenliMi(bot, konum)) return false
-  if (!bot.canDigBlock(b)) return false
+
+  // NEDEN kıramadığını SÖYLE.
+  //
+  // Bot ulaşabildiği bir elması kıramayıp döngüye girdi ve log'da tek
+  // satır sebep yoktu — kodu okuyup tahmin yürütmek zorunda kaldım.
+  // Reddin sebebi artık konsola yazılıyor; bir dahakine tahmin yok.
+  const reddet = (sebep) => {
+    log.uyari(`${b.name} @ ${konum} kırılmadı: ${sebep}`)
+    return false
+  }
+
+  if (koruma.korumaliMi(konum)) return reddet('koruma bölgesi')
+  if (!guvenliMi(bot, konum, { suTehlikeli })) return reddet('yanında lav, su veya bedrock var')
+  if (!bot.canDigBlock(b)) {
+    const goz = bot.entity.position.offset(0, bot.entity.height || 1.62, 0)
+    const uzaklik = goz.distanceTo(konum.offset(0.5, 0.5, 0.5))
+    return reddet(`kazılamıyor (uzaklık ${uzaklik.toFixed(1)}, görüş kapalı olabilir)`)
+  }
 
   const alet = uygunAlet(bot, b)
 
@@ -167,7 +269,7 @@ async function blogoKir (bot, konum, kontrol, gerekliSeviye = null) {
   // veri kaybı.
   if (gerekliSeviye && /ore$|ancient_debris/.test(b.name)) {
     const { toplam } = kazmaGucu(bot, gerekliSeviye)
-    if (toplam <= 0) return false
+    if (toplam <= 0) return reddet(`${gerekliSeviye} kazma gerekiyor, yok`)
   }
 
   if (alet) { try { await bot.equip(alet, 'hand') } catch (err) { /* elle dene */ } }
@@ -187,6 +289,7 @@ async function blogoKir (bot, konum, kontrol, gerekliSeviye = null) {
  */
 async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
   const yon = ileriYon(bot)
+  if (ondeLavVarMi(bot, yon)) return { ok: false, sebep: 'onde_lav' }
   const ayak = bot.entity.position.floored()
 
   const onAyak = ayak.plus(yon)
@@ -195,7 +298,8 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
 
   for (const konum of [onBas, onAyak, onAlt]) {
     kontrol.kontrolEt()
-    if (!guvenliMi(bot, konum)) return { ok: false, sebep: 'tehlike' }
+    // İçine gireceğimiz boşluk: su da tehlike (boğulma)
+    if (!guvenliMi(bot, konum, { suTehlikeli: true })) return { ok: false, sebep: 'tehlike' }
   }
 
   // AÇIK MAĞARA DURUMU.
@@ -215,7 +319,9 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
 
   for (const konum of [onBas, onAyak, onAlt]) {
     kontrol.kontrolEt()
-    if (!(await blogoKir(bot, konum, kontrol, gerekliSeviye))) return { ok: false, sebep: 'kirilamadi' }
+    if (!(await blogoKir(bot, konum, kontrol, gerekliSeviye, { suTehlikeli: true }))) {
+      return { ok: false, sebep: 'kirilamadi' }
+    }
   }
 
   // Açtığımız boşluğa yürü
@@ -244,6 +350,7 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
  */
 async function birAdimIlerle (bot, kontrol, gerekliSeviye = null) {
   const yon = ileriYon(bot)
+  if (ondeLavVarMi(bot, yon)) return { ok: false, sebep: 'onde_lav' }
   const ayak = bot.entity.position.floored()
 
   const onAyak = ayak.plus(yon)
@@ -251,11 +358,11 @@ async function birAdimIlerle (bot, kontrol, gerekliSeviye = null) {
 
   for (const konum of [onBas, onAyak]) {
     kontrol.kontrolEt()
-    if (!guvenliMi(bot, konum)) return { ok: false, sebep: 'tehlike' }
+    if (!guvenliMi(bot, konum, { suTehlikeli: true })) return { ok: false, sebep: 'tehlike' }
   }
   for (const konum of [onBas, onAyak]) {
     kontrol.kontrolEt()
-    if (!(await blogoKir(bot, konum, kontrol, gerekliSeviye))) {
+    if (!(await blogoKir(bot, konum, kontrol, gerekliSeviye, { suTehlikeli: true }))) {
       return { ok: false, sebep: 'kirilamadi' }
     }
   }
@@ -281,6 +388,10 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
 
   while (Math.floor(bot.entity.position.y) > hedefY && basamak < maksBasamak) {
     kontrol.kontrolEt()
+
+    const tehlike = tehlikedeMi(bot)
+    if (tehlike) return { ok: false, basamak, sebep: `tehlike: ${tehlike}` }
+
     const oncekiY = Math.floor(bot.entity.position.y)
 
     // İNİŞ SIRASINDA KAZMA BİTERSE.
@@ -292,7 +403,7 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
     const guc = kazmaGucu(bot, seviye)
     if (guc.toplam < KRITIK_DAYANIKLILIK) {
       log.uyari(`Kazma bitmek üzere (${guc.toplam} vuruş), yenisini yapıyorum.`)
-      await kazmaStokla(bot, kontrol, seviye, 2, { tedarikci })
+      await kazmaStokla(bot, kontrol, seviye, gerekenVurus(bot, hedefY, 0), { tedarikci })
       if (kazmaGucu(bot, seviye).toplam < KRITIK_DAYANIKLILIK) {
         return { ok: false, basamak, sebep: 'kazma_bitti' }
       }
@@ -429,7 +540,7 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   // Yanımıza yedek kazma ve bir tezgah alıyoruz; tezgah sayesinde
   // aşağıda, kazdığımız taştan yerinde yeni kazma yapabiliyoruz.
   if (cevher.y !== null && Math.floor(bot.entity.position.y) > cevher.y + 8) {
-    await kazmaStokla(bot, kontrol, cevher.seviye, YEDEK_KAZMA, secenekler)
+    await kazmaStokla(bot, kontrol, cevher.seviye, gerekenVurus(bot, cevher.y, adet), secenekler)
     await uret(bot, kontrol, 'tezgah', 1, secenekler) // olmazsa olsun, sadece deniyoruz
     const g = kazmaGucu(bot, cevher.seviye)
     log.bilgi(`${g.adet} kazma, toplam ${g.toplam} vuruş ile iniyorum.`)
@@ -461,13 +572,39 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   let kirilan = 0
   let bosArama = 0
   let kazmaBitti = false
+  let kacildi = null
 
-  while (kirilan < adet && bosArama < 6) {
+  // DÖNGÜ SİGORTASI.
+  //
+  // Bot ulaşamadığı bir cevherin etrafında sonsuza kadar dönebiliyordu.
+  // İki koruma: toplam tur sayısı sınırlı, ve her turda ya bir blok
+  // kırılmalı ya da kara listeye bir şey eklenmeli. İkisi de olmuyorsa
+  // ilerleme yok demektir; sayıyoruz ve belli bir yerden sonra duruyoruz.
+  const MAKS_TUR = 60
+  let tur = 0
+  let ilerlemesiz = 0
+
+  while (kirilan < adet && bosArama < 6 && tur < MAKS_TUR) {
     kontrol.kontrolEt()
+
+    // CANINA BAK. Lav saniyede ~4 can götürüyor; 12'de fark edip
+    // kaçmak ancak yetiyor. Bu kontrol olmadığı için bot bir kez
+    // lavda öldü — kırdığı blokları denetliyorduk ama kendi durumunu
+    // hiç sormuyorduk.
+    const tehlike = tehlikedeMi(bot)
+    if (tehlike) {
+      log.hata(`${tehlike} — kaçıyorum.`)
+      kacildi = tehlike
+      break
+    }
+
+    tur++
+    const turBasiKirilan = kirilan
+    const turBasiKara = karaListe.size
 
     // Kazarken de bitebilir — yerinde yenisini yapmayı dene
     if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
-      await kazmaStokla(bot, kontrol, cevher.seviye, 2, secenekler)
+      await kazmaStokla(bot, kontrol, cevher.seviye, gerekenVurus(bot, null, adet - kirilan), secenekler)
       if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
         kazmaBitti = true
         break
@@ -540,12 +677,30 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
         karaListe.add(`${konum.x},${konum.y},${konum.z}`)
       }
     }
+
+    if (kirilan === turBasiKirilan && karaListe.size === turBasiKara) {
+      if (++ilerlemesiz >= 5) {
+        log.uyari('Beş turdur ilerleme yok — burada yapabileceğim bir şey kalmadı.')
+        break
+      }
+    } else {
+      ilerlemesiz = 0
+    }
   }
 
   // --- 4) Düşenleri topla ---
   if (kirilan > 0) {
     await kontrol.bekle(600)
     await dusenleriTopla(bot, baslangic, kontrol, { yaricap: 16 })
+  }
+
+  if (kacildi) {
+    await yuzeyeDon(bot, baslangicKonum, kontrol)
+    return {
+      basarili: kirilan > 0,
+      kirilan,
+      mesaj: `${kacildi} — ${kirilan} ${ad} ile geri döndüm. Aşağısı tehlikeli.`
+    }
   }
 
   if (kazmaBitti) {
@@ -612,5 +767,10 @@ module.exports = {
   CEVHERLER,
   SEVIYELER,
   KRITIK_DAYANIKLILIK,
-  YEDEK_KAZMA
+  GUVENLIK_PAYI,
+  gerekenVurus,
+  guvenliMi,
+  tehlikedeMi,
+  ondeLavVarMi,
+  KACIS_CANI
 }

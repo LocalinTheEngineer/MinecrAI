@@ -165,28 +165,17 @@ async function baltaYap (bot) {
   return { basarili: true, mesaj: 'Tahta balta hazır, artık daha hızlı keseceğim.' }
 }
 
-/** Ayağının yanına boş bir yer bulup tezgahı koyar */
-async function tezgahKoy (bot) {
-  const Vec3 = require('vec3')
-  const tezgah = bot.inventory.items().find((i) => i.name === 'crafting_table')
-  if (!tezgah) return false
-
-  const p = bot.entity.position.floored()
-  const yonler = [[1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [0, 2]]
-
-  for (const [dx, dz] of yonler) {
-    const zemin = bot.blockAt(new Vec3(p.x + dx, p.y - 1, p.z + dz))
-    const ust = bot.blockAt(new Vec3(p.x + dx, p.y, p.z + dz))
-    if (!zemin || !ust) continue
-    if (zemin.boundingBox !== 'block' || ust.name !== 'air') continue
-
-    try {
-      await bot.equip(tezgah, 'hand')
-      await bot.placeBlock(zemin, new Vec3(0, 1, 0))
-      return true
-    } catch (err) { /* diğer yönü dene */ }
-  }
-  return false
+/**
+ * Tezgahı yere koyar.
+ *
+ * Eskiden burada yanındaki 6 sabit noktaya bakan naif bir arama vardı ve
+ * dar bir yerde "koyacak yer bulamadım" deyip pes ediyordu. Artık ortak
+ * yerleştirici kullanılıyor: geniş arama + gerekirse bir bloğu kırıp
+ * yer açma. Aynı kod fırın için de çalışıyor.
+ */
+async function tezgahKoy (bot, kontrol = null) {
+  const { blokKoy } = require('../utils/yerlestir')
+  return !!(await blokKoy(bot, 'crafting_table', kontrol))
 }
 
 module.exports = { uygunAlet, aletKusan, aletTipi, baltaYap, tezgahKoy }

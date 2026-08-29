@@ -101,6 +101,25 @@ function botOlustur () {
     const movements = new Movements(bot)
     movements.canDig = true // yolunu açmak için blok kırabilsin
     movements.allow1by1towers = false // gereksiz kule dikmesin
+
+    // LAV AYARLARI — bot bir kez lavda öldü, sebebi büyük ihtimalle burası.
+    //
+    // mineflayer-pathfinder'ın varsayılanında (lib/movements.js:73)
+    // lav "replaceable" listesinde: yol açarken lavı DEĞİŞTİRİLEBİLİR bir
+    // blok sayıyor ve içinden geçmeyi planlayabiliyor. Yerin 60 blok
+    // altında bu ölüm demek. Listeden çıkarıyoruz.
+    try {
+      movements.replaceables.delete(bot.registry.blocksByName.lava.id)
+    } catch (err) { /* sürüm farkı — kritik değil */ }
+
+    // Parkur = boşlukların üstünden atlamak. Yüzeyde hoş; mağarada
+    // lav gölünün üstünden atlamaya çalışmak demek.
+    movements.allowParkour = false
+
+    // Varsayılan 4 blok düşüşe izin veriyor. Karanlık bir mağarada
+    // 4 blok aşağısı çoğu zaman hiç görünmüyor.
+    movements.maxDropDown = 3
+
     bot.pathfinder.setMovements(movements)
 
     log.basari(`Dünyaya girdim. Konum: ${bot.entity.position}`)
