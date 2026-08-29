@@ -49,6 +49,10 @@ const KOMUTLAR = [
   { ad: 'ver odun', aciklama: 'eşya atar (tahta/balta/kazma...)' },
   { ad: 'ver odun 10', aciklama: 'adet belirtirsin' },
   { ad: 'balta', aciklama: 'odundan tahta balta yapar' },
+  { ad: 'uret tas kazma', aciklama: 'tarif agacini kendi cozer' },
+  { ad: 'uret cubuk 8', aciklama: 'adet belirtirsin' },
+  { ad: 'kaz demir', aciklama: 'merdivenle inip cevher kazar' },
+  { ad: 'kaz elmas 5', aciklama: 'adet belirtirsin' },
   { ad: 'koru', aciklama: 'durduğun yeri korur, orada kesmez' },
   { ad: 'koru 40', aciklama: 'koruma yarıçapı (4-200)' },
   { ad: 'korumalar', aciklama: 'koruma bölgelerini listeler' },
@@ -228,6 +232,52 @@ function botOlustur () {
       await gorevCalistir('balta', async () => {
         bot.chat('Balta yapmayı deniyorum...')
         const sonuc = await skills.baltaYap(bot)
+        bot.chat(sonuc.mesaj)
+      })
+      return
+    }
+
+    // "uret taş kazma" / "uret çubuk 8"
+    //
+    // DİKKAT: `komut` mesajın SADECE İLK KELİMESİ (parcalar[0]).
+    // Burada bir zamanlar `komut.startsWith('uret ')` yazıyordu — `komut`
+    // hiçbir zaman boşluk içermediği için o koşul asla doğru olmuyordu ve
+    // "uret" komutu sessizce hiçbir şey yapmıyordu. Argümanlar `parcalar`
+    // dizisinin geri kalanında.
+    // "kaz demir" / "kaz elmas 5" / "kaz" (varsayilan: tas)
+    if (komut === 'kaz') {
+      const argumanlar = parcalar.slice(1)
+      let adet = 8
+      if (argumanlar.length > 0 && /^\d+$/.test(argumanlar[argumanlar.length - 1])) {
+        adet = Math.min(64, Math.max(1, parseInt(argumanlar.pop(), 10)))
+      }
+      const ne = argumanlar[0] || 'tas'
+
+      await gorevCalistir('kaz', async () => {
+        bot.chat(`${ne} kazmaya gidiyorum (${adet} tane)...`)
+        const sonuc = await skills.kaz(bot, kontrol, ne, adet)
+        bot.chat(sonuc.mesaj)
+      })
+      return
+    }
+
+    if (komut === 'uret' || komut === 'üret' || komut === 'yap') {
+      const argumanlar = parcalar.slice(1)
+      if (argumanlar.length === 0) {
+        bot.chat('Ne üreteyim? Örnek: "uret tas kazma" veya "uret cubuk 8"')
+        return
+      }
+
+      // Son kelime sayıysa adettir: "uret cubuk 8"
+      let adet = 1
+      if (argumanlar.length > 1 && /^\d+$/.test(argumanlar[argumanlar.length - 1])) {
+        adet = Math.min(64, Math.max(1, parseInt(argumanlar.pop(), 10)))
+      }
+      const istek = argumanlar.join(' ')
+
+      await gorevCalistir('uret', async () => {
+        bot.chat(`${istek} yapmayı deniyorum...`)
+        const sonuc = await skills.uret(bot, kontrol, istek, adet)
         bot.chat(sonuc.mesaj)
       })
       return

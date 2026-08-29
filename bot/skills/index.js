@@ -5,6 +5,9 @@ const { gel } = require('./gel')
 const { baltaYap, aletKusan, uygunAlet } = require('./alet')
 const { takipBaslat, takipBirak, takipVarMi } = require('./takip')
 const { ver } = require('./ver')
+const { uret } = require('./uret')
+const { kaz, kazmaSeviyesi } = require('./kaz')
+const { sutunaCik, sutundanIn } = require('./sutun')
 
 /**
  * Bütün "skill"ler (botun yapabildiği işler) buradan dışa açılır.
@@ -12,6 +15,6 @@ const { ver } = require('./ver')
  */
 module.exports = {
   chopTree, chopTrees, gel, baltaYap, aletKusan, uygunAlet,
-  takipBaslat, takipBirak, takipVarMi, ver,
+  takipBaslat, takipBirak, takipVarMi, ver, uret, kaz, kazmaSeviyesi, sutunaCik, sutundanIn,
   oduncuSay, kutukMu, agaciTopla, dusenleriTopla
 }

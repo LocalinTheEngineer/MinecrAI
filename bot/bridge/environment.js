@@ -40,8 +40,14 @@ const { DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI, HEDEF_SABIR } = require
  * gözlem + ödül al. Minecraft'ın karmaşası bu dosyada kalır.
  */
 class MinecraftEnvironment {
-  constructor (bot) {
+  constructor (bot, secenekler = {}) {
     this.bot = bot
+
+    // Beklemeleri ölçekleyen çarpan. Oyunda 1 (gerçek süreler).
+    // Testte 0 veriliyor: sahte botla oynarken ışınlanma/chunk yüklenmesi
+    // beklemenin bir anlamı yok. Bu olmadan smoke testi 43 saniye sürüyordu
+    // ve süresinin çoğu `tazeAlanaIsinla`nın 4 x 4 saniyelik beklemesiydi.
+    this.zamanCarpani = secenekler.zamanCarpani ?? 1
     this.adim = 0
     this.oncekiOdun = 0
     this.oncekiMesafe = null
@@ -757,7 +763,7 @@ class MinecraftEnvironment {
   // ---------------------------------------------------------------- yardımcı
 
   bekle (ms) {
-    return new Promise((r) => setTimeout(r, ms))
+    return new Promise((r) => setTimeout(r, ms * this.zamanCarpani))
   }
 
   zamanAsimiyla (soz, ms) {
