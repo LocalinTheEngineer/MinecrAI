@@ -79,8 +79,14 @@ function dogalAgacMi (bot, blok) {
   return false
 }
 
-/** En yakın DOĞAL ağacı bul (oyuncunun yapılarını atlar) */
-function enYakinDogalAgac (bot, yaricap) {
+/**
+ * En yakın DOĞAL ağacı bul (oyuncunun yapılarını ve kara listeyi atlar).
+ *
+ * `karaListe`: daha önce denenip ULAŞILAMAYAN gövde dipleri. Bu olmadan
+ * bot aynı erişilemez kütüğü sonsuza kadar seçiyordu — log'da bunu
+ * (1429,71,-48) beş kez üst üste denerken gördük. Her deneme ~20 saniye.
+ */
+function enYakinDogalAgac (bot, yaricap, karaListe = null) {
   const adaylar = bot.findBlocks({
     matching: (b) => kutukMu(b), maxDistance: yaricap, count: 96
   })
@@ -91,7 +97,12 @@ function enYakinDogalAgac (bot, yaricap) {
 
   for (const konum of adaylar) {
     const blok = bot.blockAt(konum)
-    if (dogalAgacMi(bot, blok)) return blok
+    if (!dogalAgacMi(bot, blok)) continue
+    if (karaListe) {
+      const dip = govdeninDibi(bot, blok).position
+      if (karaListe.has(`${dip.x},${dip.y},${dip.z}`)) continue
+    }
+    return blok
   }
   return null
 }
@@ -219,12 +230,12 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
  * Tek bir ağaç keser.
  * @param {object} kontrol GorevKontrol nesnesi (iptal için)
  */
-async function chopTree (bot, kontrol) {
+async function chopTree (bot, kontrol, { karaListe = null } = {}) {
   const baslangicOdun = oduncuSay(bot)
   kontrol.kontrolEt()
 
   // --- 1) En yakın DOĞAL ağacı bul (oyuncunun yapıları hariç) ---
-  const hedef = enYakinDogalAgac(bot, config.searchRadius)
+  const hedef = enYakinDogalAgac(bot, config.searchRadius, karaListe)
 
   if (!hedef) {
     log.uyari(`${config.searchRadius} blok içinde doğal ağaç bulamadım.`)
@@ -249,6 +260,17 @@ async function chopTree (bot, kontrol) {
   } catch (err) {
     if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
     pathfinderDurdur(bot)
+
+    // Dibine yürüyemedik. ESKİDEN yine de denerdik: bot 20 saniye
+    // uzaktan uzanmaya çalışır, başaramaz, sonra AYNI ağacı tekrar
+    // seçerdi. Artık uzaklığa bakıyoruz — hâlâ menzil dışındaysak bu
+    // ağaç bize göre değil, kara listeye yazıp bir sonrakine geçiyoruz.
+    const uzaklik = bot.entity.position.distanceTo(dip)
+    if (uzaklik > 6) {
+      if (karaListe) karaListe.add(`${dip.x},${dip.y},${dip.z}`)
+      log.uyari(`Ağacın dibine ulaşamadım (${uzaklik.toFixed(0)} blok uzakta), başka ağaca geçiyorum.`)
+      return { basarili: false, kesilen: 0, kazanilanOdun: 0, hata: 'ulasilamadi' }
+    }
     log.uyari('Ağacın dibine tam yürüyemedim — yine de deneyeceğim.')
   }
 
@@ -395,7 +417,11 @@ async function chopTree (bot, kontrol) {
     await dusenleriTopla(bot, dip, kontrol)
   }
 
-  const kazanilanOdun = oduncuSay(bot) - baslangicOdun
+  if (kesilen === 0 && karaListe) karaListe.add(`${dip.x},${dip.y},${dip.z}`)
+
+  // Envanter dışarıdan boşaltılmış olabilir (/clear); negatif kazanç
+  // "odun topladık" sayılmamalı ama hata da değil.
+  const kazanilanOdun = Math.max(0, oduncuSay(bot) - baslangicOdun)
   log.basari(`${kesilen} kütük kesildi, envantere +${kazanilanOdun} odun girdi.`)
 
   return { basarili: kesilen > 0, kesilen, kazanilanOdun }
@@ -410,13 +436,25 @@ async function chopTrees (bot, kontrol, adet = 1) {
   let toplamOdun = 0
   let agac = 0
 
+  // Bütün turlar boyunca PAYLAŞILAN kara liste. Ulaşılamayan bir ağaç
+  // bir kez işaretlenince tekrar seçilmiyor.
+  const karaListe = new Set()
+  let ustUsteBasarisiz = 0
+
   while (agac < adet) {
     kontrol.kontrolEt()
 
-    const sonuc = await chopTree(bot, kontrol)
+    const sonuc = await chopTree(bot, kontrol, { karaListe })
     if (!sonuc.basarili) {
       // Ağaç kalmadıysa daha fazla dönmenin anlamı yok
       if (sonuc.hata === 'agac_yok') break
+      // Peş peşe ulaşılamıyorsa buradan kesecek ağaç yok demektir
+      if (++ustUsteBasarisiz >= 5) {
+        log.uyari('Ulaşabildiğim ağaç kalmadı.')
+        break
+      }
+    } else {
+      ustUsteBasarisiz = 0
     }
 
     toplamKesilen += sonuc.kesilen
@@ -430,6 +468,13 @@ async function chopTrees (bot, kontrol, adet = 1) {
 }
 
 module.exports = {
-  chopTree, chopTrees, oduncuSay, kutukMu, dogalAgacMi, enYakinDogalAgac,
-  agaciTopla, dusenleriTopla, govdeninDibi
+  chopTree,
+  chopTrees,
+  oduncuSay,
+  kutukMu,
+  dogalAgacMi,
+  enYakinDogalAgac,
+  agaciTopla,
+  dusenleriTopla,
+  govdeninDibi
 }

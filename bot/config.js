@@ -14,9 +14,11 @@ const config = {
   bridgePort: parseInt(process.env.BRIDGE_PORT || '8765', 10),
 
   // Botun davranış ayarları
-  searchRadius: 32,   // kaynak ararken kaç blok uzağa bakılsın
-                      // (64 idi: yüklenmemiş chunk'lardaki ağaçları buluyordu)
-  maxLogsPerTree: 40  // tek seferde en fazla kaç kütük kesilsin
+  searchRadius: 64, // kaynak ararken kaç blok uzağa bakılsın
+  // (32'ydi: temizlenmiş bir alanda "ağaç bulamadım" deyip pes ediyordu.
+  //  Sunucu görüş mesafesi ~160 blok yüklüyor, 64 hâlâ güvenli.)
+  // (64 idi: yüklenmemiş chunk'lardaki ağaçları buluyordu)
+  maxLogsPerTree: 40 // tek seferde en fazla kaç kütük kesilsin
   // (12'ydi: koyu meşe/orman ağaçları 20+ kütük, yayılma ortada kesiliyor,
   //  kök ve tepe listeye hiç girmiyordu — botun ağacın ortasını kesip
   //  gitmesinin asıl sebebi buydu)

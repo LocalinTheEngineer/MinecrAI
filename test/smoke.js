@@ -253,6 +253,180 @@ async function main () {
     if (dip.position.y !== 64) throw new Error(`dip y=${dip.position.y}, 64 olmaliydi`)
   })
 
+  await dene('uret() SIFIRDAN demir kazma (kes > kaz > erit > uret)', async () => {
+    // Ucu uca zincir testi. Envanter TAMAMEN bos basliyor:
+    //   demir kazma <- 3 kulce + 2 cubuk
+    //     kulce   <- tezgahta YOK -> firin <- ham demir <- kaz
+    //     cubuk   <- tahta <- kutuk <- kes
+    //     firin   <- 8 tas <- kaz
+    // Bot bu agaci kendi kurmali; hicbir adim elle yazilmadi.
+    const mcData = require('minecraft-data')('1.20.4')
+    const Recipe = require('prismarine-recipe')('1.20.4').Recipe
+
+    const env = {}
+    let masaYerde = false
+    let pisen = 0
+    const istenen = []
+
+    const b = {
+      version: '1.20.4',
+      entity: { position: new Vec3(0, 64, 0) },
+      inventory: {
+        items: () => Object.entries(env).filter(([, c]) => c > 0)
+          .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
+      },
+      findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
+      blockAt: (p) => ({
+        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+        position: p
+      }),
+      equip: async () => {},
+      placeBlock: async () => { masaYerde = true },
+      recipesAll: (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa),
+      craft: async (t, kere) => {
+        for (const d of t.delta) {
+          env[mcData.items[d.id].name] = (env[mcData.items[d.id].name] || 0) + d.count * kere
+        }
+      },
+      openFurnace: async () => ({
+        putFuel: async () => {},
+        putInput: async (id, m, c) => { pisen = c; env.raw_iron -= c },
+        outputItem: () => (pisen > 0 ? { count: pisen } : null),
+        takeOutput: async () => {
+          const n = pisen; pisen = 0
+          env.iron_ingot = (env.iron_ingot || 0) + n
+          return { count: n }
+        },
+        close: () => {}
+      })
+    }
+
+    const tedarikci = async (bot, kontrol, ad, adet) => {
+      istenen.push(ad)
+      if (/_log$/.test(ad)) env[ad] = (env[ad] || 0) + 8
+      else if (ad === 'cobblestone' || ad === 'stone') env.cobblestone = (env.cobblestone || 0) + 16
+      else if (ad === 'raw_iron') env.raw_iron = (env.raw_iron || 0) + 4
+      else if (ad === 'coal') env.coal = (env.coal || 0) + 4
+      else return false
+      return true
+    }
+
+    const kk = { kontrolEt () {}, bekle: async () => {} }
+    const r = await uretModul.uret(b, kk, 'demir kazma', 1, { tedarikci })
+    if (!r.basarili) throw new Error(`zincir koptu: ${r.mesaj}`)
+    if ((env.iron_pickaxe || 0) < 1) throw new Error('kazma envanterde yok')
+    if (!istenen.includes('raw_iron')) throw new Error('ham demir hic istenmedi')
+    if (istenen.some((x) => x.startsWith('stripped_'))) {
+      throw new Error(`soyulmus kutuk istedi: ${istenen.join(',')}`)
+    }
+  })
+
+  await dene('uret() ormanda NE VARSA ona uyuyor (agac turu tahmin etmiyor)', async () => {
+    // Gercek hata: bot "spruce_log toplanamiyor" dedi. Cubugun ~12 tarifi
+    // var (her agac turu icin bir tahta). Envanter bosken hepsi ayni puani
+    // aliyor, bot rastgele ladini secip israr ediyordu -- ormanda mese vardi.
+    // Iki tur: 1) tedarikciyi tetikle, 2) eline GECENLE yeniden puanla.
+    const mcData = require('minecraft-data')('1.20.4')
+    const Recipe = require('prismarine-recipe')('1.20.4').Recipe
+
+    const env = {}
+    let masaYerde = false
+    const b = {
+      version: '1.20.4',
+      entity: { position: new Vec3(0, 64, 0) },
+      inventory: {
+        items: () => Object.entries(env).filter(([, c]) => c > 0)
+          .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
+      },
+      findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
+      blockAt: (p) => ({
+        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+        position: p
+      }),
+      equip: async () => {},
+      placeBlock: async () => { masaYerde = true },
+      recipesAll: (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa),
+      craft: async (t, kere) => {
+        for (const d of t.delta) {
+          env[mcData.items[d.id].name] = (env[mcData.items[d.id].name] || 0) + d.count * kere
+        }
+      }
+    }
+
+    // ORMANDA SADECE MESE VAR: ne istenirse istensin mese geliyor
+    const tedarikci = async (bot, kontrol, ad, adet) => {
+      if (/_log$/.test(ad)) { env.oak_log = (env.oak_log || 0) + 8; return true }
+      if (ad === 'cobblestone' || ad === 'stone') { env.cobblestone = (env.cobblestone || 0) + 16; return true }
+      return false
+    }
+
+    const kk = { kontrolEt () {}, bekle: async () => {} }
+    const r = await uretModul.uret(b, kk, 'tas kazma', 1, { tedarikci })
+    if (!r.basarili) throw new Error(`tur cesidine takildi: ${r.mesaj}`)
+    if ((env.stone_pickaxe || 0) < 1) throw new Error('kazma yok')
+  })
+
+  await dene('tedarikci AYNI kaynagi iki kez toplamiyor (sonsuz agac kesme)', async () => {
+    // Gercek hata: tek bir "uret tas kazma" komutu 4 agac kesti ve hala
+    // bitmemisti. Cubugun ~12 tarifi var (her agac turu icin bir tahta);
+    // uret sirayla hepsini deniyor, her biri icin tedarikciden o TURDEN
+    // kutuk istiyordu -> her istekte yeni agac kesiliyordu.
+    const mcData = require('minecraft-data')('1.20.4')
+    const Recipe = require('prismarine-recipe')('1.20.4').Recipe
+
+    const env = {}
+    let masaYerde = false
+    let kesilenAgac = 0
+    let kazilanTas = 0
+
+    const b = {
+      version: '1.20.4',
+      entity: { position: new Vec3(0, 64, 0) },
+      inventory: {
+        items: () => Object.entries(env).filter(([, c]) => c > 0)
+          .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
+      },
+      findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
+      blockAt: (p) => ({
+        name: Math.floor(p.y) < 64 ? 'dirt' : 'air',
+        boundingBox: Math.floor(p.y) < 64 ? 'block' : 'empty',
+        position: p
+      }),
+      equip: async () => {},
+      placeBlock: async () => { masaYerde = true },
+      recipesAll: (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa),
+      craft: async (t, kere) => {
+        for (const d of t.delta) {
+          env[mcData.items[d.id].name] = (env[mcData.items[d.id].name] || 0) + d.count * kere
+        }
+      }
+    }
+
+    // Gercek tedarikciYap()'in mantigini kullaniyoruz ama sayac koyuyoruz
+    const sinif = (ad) => (/_log$/.test(ad) ? 'odun' : (ad === 'cobblestone' || ad === 'stone' ? 'tas' : null))
+    const verilen = new Set()
+    const tedarikci = async (bot, kontrol, ad, adet) => {
+      const s2 = sinif(ad)
+      if (!s2 || verilen.has(s2)) return false
+      // ORMANDA KIRAZ VAR, MESE YOK.
+      // Kiraz bilerek secildi: tarif listesinde ARKALARDA. Ilk denenen
+      // tarif mese oluyor; tek turlu bir cozum meseye takilip kalirdi.
+      // Botun "elime kiraz gecti, tarifleri yeniden puanlayayim" demesi
+      // gerekiyor. Mese verseydik test hicbir sey kanitlamazdi.
+      if (s2 === 'odun') { kesilenAgac++; env.cherry_log = (env.cherry_log || 0) + 8 } else { kazilanTas++; env.cobblestone = (env.cobblestone || 0) + 16 }
+      verilen.add(s2)
+      return true
+    }
+
+    const kk = { kontrolEt () {}, bekle: async () => {} }
+    const r = await uretModul.uret(b, kk, 'tas kazma', 1, { tedarikci })
+    if (!r.basarili) throw new Error(`uretemedi: ${r.mesaj}`)
+    if (kesilenAgac !== 1) throw new Error(`${kesilenAgac} kez agac kesti, 1 olmaliydi`)
+    if (kazilanTas !== 1) throw new Error(`${kazilanTas} kez tas kazdi, 1 olmaliydi`)
+  })
+
   console.log('\nMadencilik')
   const kazModul = require('../bot/skills/kaz')
 
@@ -293,6 +467,216 @@ async function main () {
     const r = await kazModul.kaz(bot, k, 'elmas', 1)
     if (r.basarili) throw new Error('kazmasiz elmas kazdigini iddia etti')
     if (!/kazma/.test(r.mesaj)) throw new Error(`kazma eksigini soylemedi: ${r.mesaj}`)
+  })
+
+  await dene('kalanDayaniklilik() - kullanilmis alet', () => {
+    const taze = kazModul.kalanDayaniklilik({ maxDurability: 131, durabilityUsed: 0 })
+    const yipranmis = kazModul.kalanDayaniklilik({ maxDurability: 131, durabilityUsed: 125 })
+    const aletsiz = kazModul.kalanDayaniklilik({ name: 'cobblestone' })
+    if (taze !== 131) throw new Error(`taze ${taze}`)
+    if (yipranmis !== 6) throw new Error(`yipranmis ${yipranmis}`)
+    if (aletsiz !== Infinity) throw new Error('aletsiz esya sonsuz olmali')
+  })
+
+  await dene('kazmaGucu() - sadece YETERLI seviyedekileri topluyor', () => {
+    const b = sahteBot()
+    b.inventory = { items: () => [
+      { name: 'wooden_pickaxe', maxDurability: 59, durabilityUsed: 0 },
+      { name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 50 }
+    ] }
+    // 'iron' isteyince tahta kazma sayilmamali
+    const g = kazModul.kazmaGucu(b, 'iron')
+    if (g.adet !== 1 || g.toplam !== 200) {
+      throw new Error(`iron icin adet=${g.adet} toplam=${g.toplam}, beklenen 1/200`)
+    }
+    // 'wooden' isteyince ikisi de sayilmali
+    const g2 = kazModul.kazmaGucu(b, 'wooden')
+    if (g2.adet !== 2 || g2.toplam !== 259) {
+      throw new Error(`wooden icin adet=${g2.adet} toplam=${g2.toplam}, beklenen 2/259`)
+    }
+  })
+
+  await dene('seviyeyeIn() - kazma yoksa KAZMADAN duruyor', async () => {
+    // Kritik: kazmasiz inmeye baslarsa cevheri yok ederek ilerler.
+    // Hic basamak kirmadan 'kazma_bitti' ile donmeli.
+    const r = await kazModul.seviyeyeIn(bot, 15, k, { seviye: 'stone' })
+    if (r.ok) throw new Error('kazmasiz indigini iddia etti')
+    if (r.basamak !== 0) throw new Error(`${r.basamak} basamak kirmis, 0 olmaliydi`)
+    if (r.sebep !== 'kazma_bitti') throw new Error(`sebep: ${r.sebep}`)
+  })
+
+  await dene('tek kazma derine inmeye YETMIYOR (hesap kontrolu)', () => {
+    // y=64 -> y=15: ~49 basamak x 3 blok = ~147 vurus.
+    // Bu test kod degil MATEMATIK kontrol ediyor: eger biri
+    // YEDEK_KAZMA'yi 1'e dusururse burasi bagirir.
+    const gerekenVurus = (64 - 15) * 3
+    const tasKazma = 131
+    if (kazModul.YEDEK_KAZMA * tasKazma < gerekenVurus) {
+      throw new Error(`${kazModul.YEDEK_KAZMA} tas kazma (${kazModul.YEDEK_KAZMA * tasKazma} vurus) ` +
+        `y=15'e inmeye (${gerekenVurus} vurus) yetmiyor`)
+    }
+  })
+
+  await dene('uret() tahtayi SOYULMUS kutukten yapmaya kalkmiyor', () => {
+    // Gercek hata: bot "demir kazma yapamadim, eksik olan
+    // stripped_birch_log" dedi. Tahtanin 4 tarifi var; soyulmus kutuk
+    // dogada YOK (baltayla soyulur), ama tarif gecerli oldugu icin
+    // seciliyordu. Puanlama artik "elde var mi"ya degil "nasil elde
+    // edilir"e bakiyor.
+    const mcData = require('minecraft-data')('1.20.4')
+    const b = sahteBot()
+    const Recipe = require('prismarine-recipe')('1.20.4').Recipe
+    b.recipesAll = (id, m, masa) => Recipe.find(id, null).filter((r) => !r.requiresTable || masa)
+
+    const p1 = uretModul.malzemePuani(b, mcData, 'birch_log')
+    const p2 = uretModul.malzemePuani(b, mcData, 'stripped_birch_log')
+    const p3 = uretModul.malzemePuani(b, mcData, 'birch_wood')
+    if (!(p1 > p2)) throw new Error(`kutuk ${p1} <= soyulmus kutuk ${p2}`)
+    if (!(p1 > p3)) throw new Error(`kutuk ${p1} <= wood ${p3}`)
+    if (p2 >= 0) throw new Error(`soyulmus kutuk pozitif puan aldi: ${p2}`)
+  })
+
+  console.log('\nEritme (firin)')
+  const eritModul = require('../bot/skills/erit')
+
+  await dene('eritmeGirdisi() - kulce icin ham cevher', () => {
+    if (eritModul.eritmeGirdisi('iron_ingot') !== 'raw_iron') throw new Error('demir zinciri kopuk')
+    if (eritModul.eritmeGirdisi('gold_ingot') !== 'raw_gold') throw new Error('altin zinciri kopuk')
+    if (eritModul.eritmeGirdisi('stick') !== null) throw new Error('cubuk eritilmez')
+  })
+
+  await dene('yakitBul() - komuru odundan once seciyor', () => {
+    const b = sahteBot()
+    b.inventory = { items: () => [
+      { name: 'oak_log', count: 10 },
+      { name: 'coal', count: 4 }
+    ] }
+    const y = eritModul.yakitBul(b, 8)
+    if (!y || y.esya.name !== 'coal') throw new Error(`secilen: ${y && y.esya.name}`)
+    if (y.kullan !== 1) throw new Error(`1 komur 8 esya pisirir, ${y.kullan} dedi`)
+  })
+
+  await dene('erit() - girdi yoksa NEYIN eksik oldugunu soyluyor', async () => {
+    const r = await eritModul.erit(bot, k, 'iron_ingot', 1)
+    if (r.basarili) throw new Error('bos envanterle erittigini iddia etti')
+    if (r.eksik !== 'raw_iron') throw new Error(`eksik: ${r.eksik}, raw_iron olmaliydi`)
+  })
+
+  await dene('uret() zinciri firina atliyor (demir kulce tezgahta yok)', async () => {
+    // Demir kulce TEZGAHTA uretilemiyor. Eskiden burada "uretilemiyor"
+    // deyip duruyorduk; artik eritmeyi denemesi, o da olmayinca ham
+    // maddeyi ISTEMESI lazim.
+    const r = await uretModul.uret(bot, k, 'iron_ingot', 1)
+    if (r.basarili) throw new Error('yoktan kulce urettigini iddia etti')
+    if (!/raw_iron|iron/.test(r.mesaj)) {
+      throw new Error(`ham maddeyi hic anmadi: ${r.mesaj}`)
+    }
+  })
+
+  await dene('enYakinDogalAgac() kara listedeki agaci ATLIYOR', () => {
+    // Gercek hata: bot ulasilamayan bir kutugu (1429,71,-48) BES KEZ
+    // ust uste secti, her denemede ~20 saniye harcadi. Kara liste yoktu.
+    const chop = require('../bot/skills/chopTree')
+    const b = sahteBot()
+    // y=64..66 arasi tek bir mese govdesi
+    b.blockAt = (p) => {
+      const y = Math.floor(p.y)
+      const kutuk = (p.x === 10 && p.z === 10 && y >= 64 && y <= 66)
+      // Yapraklar USTTE olmali: dogalAgacMi yapragi dy 0..6 araliginda
+      // ariyor, yani kutugun ustunde.
+      return {
+        name: kutuk ? 'oak_log' : (y >= 67 && y <= 68 ? 'oak_leaves' : 'air'),
+        boundingBox: kutuk ? 'block' : 'empty',
+        position: new Vec3(p.x, y, p.z)
+      }
+    }
+    b.findBlocks = () => [new Vec3(10, 65, 10)]
+
+    const bulunan = chop.enYakinDogalAgac(b, 32)
+    if (!bulunan) throw new Error('agaci hic bulamadi')
+
+    // Ayni agacin DIBINI kara listeye al -> artik bulmamali
+    const kara = new Set(['10,64,10'])
+    const ikinci = chop.enYakinDogalAgac(b, 32, kara)
+    if (ikinci) throw new Error(`kara listeye ragmen secti: ${ikinci.position}`)
+  })
+
+  await dene('damarTopla() damarin TAMAMINI buluyor', () => {
+    // Gercek sikayet: "bir 2 tane kazdi, geride 3-4 tane birakti,
+    // yenisine gitti". Kod her turda "en yakin cevheri" secip kiriyordu;
+    // bir blok kirilinca en yakin aday bazen BASKA damarin kenari
+    // oluyordu. Artik damar tek parca olarak toplaniyor.
+    const b = sahteBot()
+    // (0,10,0)-(0,10,2) ve (1,10,0) => 4 blokluk bir damar
+    const damarNoktalari = new Set(['0,10,0', '0,10,1', '0,10,2', '1,10,0'])
+    b.blockAt = (p) => ({
+      name: damarNoktalari.has(`${p.x},${p.y},${p.z}`) ? 'iron_ore' : 'stone',
+      boundingBox: 'block',
+      position: p
+    })
+
+    const damar = kazModul.damarTopla(b, new Vec3(0, 10, 0), ['iron_ore', 'deepslate_iron_ore'])
+    if (damar.length !== 4) {
+      throw new Error(`${damar.length} blok buldu, 4 olmaliydi`)
+    }
+  })
+
+  await dene('damarTopla() komsu OLMAYAN cevhere atlamiyor', () => {
+    const b = sahteBot()
+    // Iki ayri damar: biri (0,10,0), digeri 5 blok otede
+    const noktalar = new Set(['0,10,0', '0,10,1', '5,10,5', '5,10,6'])
+    b.blockAt = (p) => ({
+      name: noktalar.has(`${p.x},${p.y},${p.z}`) ? 'iron_ore' : 'stone',
+      boundingBox: 'block',
+      position: p
+    })
+    const damar = kazModul.damarTopla(b, new Vec3(0, 10, 0), ['iron_ore'])
+    if (damar.length !== 2) throw new Error(`${damar.length} blok — iki damari birlestirdi`)
+  })
+
+  await dene('birAdimIlerle() YATAY gidiyor (bedrocka inmiyor)', async () => {
+    // Gercek hata: cevher bulamayinca "biraz ilerle, tekrar bak"
+    // deniyordu ama ilerlemek icin birBasamakIn cagriliyordu -- o da her
+    // seferinde BIR KAT ASAGI iniyor. Bot boyle bedrocka kadar indi.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 64, 0)
+    b.entity.yaw = 0 // ileri = -z
+    let hedef = null
+    b.pathfinder = {
+      ...b.pathfinder,
+      setGoal () {},
+      stop () {},
+      goto: async (g) => { hedef = g }
+    }
+    await kazModul.birAdimIlerle(b, k)
+    if (!hedef) throw new Error('hic yurumeye calismadi')
+    if (hedef.y !== 64) throw new Error(`y=${hedef.y} hedefledi, 64 (ayni seviye) olmaliydi`)
+    if (hedef.z !== -1) throw new Error(`ileri gitmedi: z=${hedef.z}`)
+  })
+
+  await dene('sutundanIn() kazmayi KUSANIP kaziyor (elle degil)', async () => {
+    // Gercek sikayet: "yuzeye cikma isini kazmasi olmasina ragmen
+    // eliyle yapmakta". Tasi elle kirmak ~5 kat yavas, cevher olursa
+    // hicbir sey de dusmuyor. chopTree ve kaz aleti kusaniyordu,
+    // sutun.js atlanmisti.
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 70, 0)
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b.canDigBlock = () => true
+
+    const sira = []
+    b.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', position: p })
+    b.equip = async (esya) => { sira.push('equip:' + esya.name) }
+    b.dig = async () => {
+      sira.push('dig')
+      b.entity.position = new Vec3(0, b.entity.position.y - 1, 0)
+    }
+
+    await sutun.sutundanIn(b, 69, k)
+    if (sira.length === 0) throw new Error('hic kazmadi')
+    if (sira[0] !== 'equip:iron_pickaxe') {
+      throw new Error(`ilk is ${sira[0]} — kazmayi kusanmadan kazdi`)
+    }
   })
 
   console.log('\nKomut yonlendirme')

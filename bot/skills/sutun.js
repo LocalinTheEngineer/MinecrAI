@@ -1,8 +1,8 @@
 'use strict'
 
 const Vec3 = require('vec3')
-const log = require('../utils/log')
 const { IptalEdildi, sinirli } = require('../utils/gorev')
+const { aletKusan } = require('./alet')
 
 /**
  * SKILL: Sütun yap / sütundan in  ("pillar jumping")
@@ -83,7 +83,7 @@ async function birKatCik (bot, kontrol) {
   const bitis = Date.now() + 1200
   while (Date.now() < bitis) {
     kontrol.kontrolEt()
-    await new Promise((r) => setTimeout(r, 40))
+    await new Promise((resolve) => setTimeout(resolve, 40))
 
     // Bir blok yükseldik mi? O an ayağımızın altı boşta.
     if (bot.entity.position.y - baslangicY >= 1.0) {
@@ -147,6 +147,7 @@ async function sutundanIn (bot, hedefY, kontrol, { maksKat = 16 } = {}) {
     if (!bot.canDigBlock(alt)) break
 
     try {
+      await aletKusan(bot, alt) // elle kazmak ~5 kat yavaş
       await bot.look(bot.entity.yaw, Math.PI / 2, true)
       await sinirli(bot.dig(alt), 8000, kontrol)
     } catch (err) {
@@ -164,4 +165,46 @@ async function sutundanIn (bot, hedefY, kontrol, { maksKat = 16 } = {}) {
   return inilen
 }
 
-module.exports = { sutunaCik, sutundanIn, birKatCik, sutunBlogu }
+/**
+ * Gökyüzünü görene kadar sütun ör — "cik" komutu.
+ * Bot bir çukurda/mağarada takıldığında elle kurtarma yolu.
+ */
+async function yuzeyeSutunla (bot, kontrol, { maksKat = 80 } = {}) {
+  let cikilan = 0
+
+  while (cikilan < maksKat) {
+    kontrol.kontrolEt()
+
+    // Tepemiz açık mı? 8 blok yukarı kadar dolu blok var mı diye bak
+    let kapali = false
+    for (let dy = 1; dy <= 8; dy++) {
+      const b = bot.blockAt(bot.entity.position.offset(0, dy, 0))
+      if (b && b.boundingBox === 'block') { kapali = true; break }
+    }
+
+    if (!kapali && bot.entity.position.y > 62) break
+
+    if (kapali) {
+      // Tavanı del, sonra çık
+      const tavan = bot.blockAt(bot.entity.position.offset(0, 2, 0))
+      if (tavan && tavan.boundingBox === 'block' && bot.canDigBlock(tavan)) {
+        try {
+          // ALETİ KUŞAN. Taşı elle kırmak ~5 kat yavaş; cevher olursa
+          // hiçbir şey de düşmüyor. `chopTree` ve `kaz` bunu zaten
+          // yapıyordu, sütun dosyası atlanmış.
+          await aletKusan(bot, tavan)
+          await bot.lookAt(tavan.position.offset(0.5, 0.5, 0.5), true)
+          await bot.dig(tavan)
+        } catch (err) { return { ok: false, cikilan, sebep: 'tavan_kirilamadi' } }
+      }
+    }
+
+    const r = await birKatCik(bot, kontrol)
+    if (!r.ok) return { ok: cikilan > 0, cikilan, sebep: r.sebep }
+    cikilan++
+  }
+
+  return { ok: true, cikilan }
+}
+
+module.exports = { sutunaCik, sutundanIn, birKatCik, sutunBlogu, yuzeyeSutunla }

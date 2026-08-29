@@ -54,6 +54,69 @@ const SEVIYELER = ['wooden', 'stone', 'iron', 'diamond', 'netherite']
 // Kazarken karşımıza çıkarsa DURACAĞIMIZ bloklar
 const TEHLIKELI = /lava|water|bedrock/
 
+// Kazma kırılmadan önce yenisini yapmaya başladığımız eşik.
+// Sıfırı beklemek geç: kırıldığı anda elin boş kalıyor ve kırdığın
+// bir sonraki cevher YOK OLUYOR (alet olmadan kırılan cevher düşmez).
+const KRITIK_DAYANIKLILIK = 20
+
+// Yeraltına inmeden önce yanına almaya çalıştığımız yedek kazma sayısı.
+// Neden 3? Aşağıdaki hesap:
+//   y=64'ten y=15'e inmek ~49 basamak, her basamak 3 blok = ~147 blok.
+//   tahta kazma  59 vuruş  -> yolun yarısına gelmeden biter
+//   taş kazma   131 vuruş  -> ancak inişi kaldırır, kazmaya kalmaz
+//   demir kazma 250 vuruş  -> iniş + biraz madencilik
+// Tek kazmayla derine inmek matematiksel olarak mümkün değil.
+const YEDEK_KAZMA = 3
+
+/** Bu eşyada kaç vuruş kaldı? (aleti olmayan eşyalar için sonsuz) */
+function kalanDayaniklilik (esya) {
+  if (!esya || !esya.maxDurability) return Infinity
+  return esya.maxDurability - (esya.durabilityUsed || 0)
+}
+
+/**
+ * Gerekli seviyeyi karşılayan kazmaların TOPLAM kalan vuruşu.
+ * Tek tek değil toplam bakıyoruz: iki yarı ömürlü kazma bir tam kazma eder.
+ */
+function kazmaGucu (bot, gerekliSeviye) {
+  const gerekli = SEVIYELER.indexOf(gerekliSeviye)
+  let toplam = 0
+  let adet = 0
+  for (const esya of bot.inventory.items()) {
+    const m = /^(\w+)_pickaxe$/.exec(esya.name)
+    if (!m) continue
+    const seviye = SEVIYELER.indexOf(m[1] === 'golden' ? 'stone' : m[1])
+    if (seviye < gerekli) continue
+    toplam += kalanDayaniklilik(esya)
+    adet++
+  }
+  return { toplam, adet }
+}
+
+/**
+ * Kazma stoğunu tazele. Kazdığımız taş zaten envanterde olduğu için
+ * yeraltında taş kazma yapmak mümkün — tek şart yanımızda tezgah olması,
+ * o yüzden inmeden önce bir tane üretiyoruz.
+ */
+async function kazmaStokla (bot, kontrol, seviye, hedefAdet, secenekler = {}) {
+  const istek = seviye === 'wooden'
+    ? 'tahta kazma'
+    : seviye === 'stone'
+      ? 'tas kazma'
+      : seviye === 'iron' ? 'demir kazma' : 'elmas kazma'
+
+  let yapilan = 0
+  for (let i = 0; i < hedefAdet; i++) {
+    kontrol.kontrolEt()
+    const { adet } = kazmaGucu(bot, seviye)
+    if (adet >= hedefAdet) break
+    const r = await uret(bot, kontrol, istek, 1, secenekler)
+    if (!r.basarili) break
+    yapilan++
+  }
+  return yapilan
+}
+
 /** Envanterdeki en iyi kazmanın seviyesi (yoksa null) */
 function kazmaSeviyesi (bot) {
   let enIyi = -1
@@ -86,7 +149,7 @@ function guvenliMi (bot, konum) {
 }
 
 /** Tek bir bloğu kır (kırılabiliyorsa) */
-async function blogoKir (bot, konum, kontrol) {
+async function blogoKir (bot, konum, kontrol, gerekliSeviye = null) {
   const b = bot.blockAt(konum)
   if (!b || b.name === 'air' || b.boundingBox !== 'block') return true
   if (koruma.korumaliMi(konum)) return false
@@ -94,6 +157,19 @@ async function blogoKir (bot, konum, kontrol) {
   if (!bot.canDigBlock(b)) return false
 
   const alet = uygunAlet(bot, b)
+
+  // ALETSİZ CEVHERE VURMA.
+  //
+  // `canDigBlock` "kırabilir misin"e bakıyor, "düşer mi"ye değil. Elle
+  // vurunca taş da cevher de kırılıyor ama YERE HİÇBİR ŞEY DÜŞMÜYOR.
+  // Kazma kırıldıktan sonra bot çalışmaya devam ederse elmas damarını
+  // sessizce siler. Kırılan kazma bu yüzden sadece bir yavaşlama değil,
+  // veri kaybı.
+  if (gerekliSeviye && /ore$|ancient_debris/.test(b.name)) {
+    const { toplam } = kazmaGucu(bot, gerekliSeviye)
+    if (toplam <= 0) return false
+  }
+
   if (alet) { try { await bot.equip(alet, 'hand') } catch (err) { /* elle dene */ } }
 
   await bot.lookAt(b.position.offset(0.5, 0.5, 0.5), true)
@@ -109,7 +185,7 @@ async function blogoKir (bot, konum, kontrol) {
  * boşalmıyor, o yüzden ne düşüyoruz ne de lavın içine giriyoruz.
  * Lav/su görürsek basamağı hiç kırmadan duruyoruz.
  */
-async function birBasamakIn (bot, kontrol) {
+async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
   const yon = ileriYon(bot)
   const ayak = bot.entity.position.floored()
 
@@ -122,9 +198,24 @@ async function birBasamakIn (bot, kontrol) {
     if (!guvenliMi(bot, konum)) return { ok: false, sebep: 'tehlike' }
   }
 
+  // AÇIK MAĞARA DURUMU.
+  //
+  // Merdiven algoritması "önümüz dolu taş" varsayıyor. 1.18 sonrası
+  // devasa mağaralarda bu varsayım çöküyor: önümüz zaten boşluk, kıracak
+  // bir şey yok, sonra da havadaki bir noktaya yürümeye çalışıp
+  // "yuruyemedim" diyorduk. Ekran görüntüsünde bot tam olarak bunu
+  // yaşıyordu — bir mağara çıkıntısında durup inemiyordu.
+  //
+  // Önümüz boşsa kazmaya gerek yok; iş pathfinder'ın işi.
+  const onuBos = [onBas, onAyak, onAlt].every((k) => {
+    const b = bot.blockAt(k)
+    return !b || b.boundingBox !== 'block'
+  })
+  if (onuBos) return { ok: false, sebep: 'acik_alan' }
+
   for (const konum of [onBas, onAyak, onAlt]) {
     kontrol.kontrolEt()
-    if (!(await blogoKir(bot, konum, kontrol))) return { ok: false, sebep: 'kirilamadi' }
+    if (!(await blogoKir(bot, konum, kontrol, gerekliSeviye))) return { ok: false, sebep: 'kirilamadi' }
   }
 
   // Açtığımız boşluğa yürü
@@ -142,19 +233,148 @@ async function birBasamakIn (bot, kontrol) {
   return { ok: true }
 }
 
+/**
+ * Bir adım YATAY tünel aç (aşağı inmeden).
+ *
+ * `birBasamakIn` her çağrıldığında BİR BLOK AŞAĞI iniyor. Arama
+ * döngüsünde onu kullanmak şu hataya yol açtı: cevher bulamayınca
+ * "biraz ilerle, tekrar bak" derken bot her seferinde bir kat daha
+ * iniyordu ve sonunda BEDROCK'a dayanıyordu. Aramak yatay bir iş;
+ * derinliği zaten `seviyeyeIn` ayarladı, orada kalmalıyız.
+ */
+async function birAdimIlerle (bot, kontrol, gerekliSeviye = null) {
+  const yon = ileriYon(bot)
+  const ayak = bot.entity.position.floored()
+
+  const onAyak = ayak.plus(yon)
+  const onBas = onAyak.offset(0, 1, 0)
+
+  for (const konum of [onBas, onAyak]) {
+    kontrol.kontrolEt()
+    if (!guvenliMi(bot, konum)) return { ok: false, sebep: 'tehlike' }
+  }
+  for (const konum of [onBas, onAyak]) {
+    kontrol.kontrolEt()
+    if (!(await blogoKir(bot, konum, kontrol, gerekliSeviye))) {
+      return { ok: false, sebep: 'kirilamadi' }
+    }
+  }
+
+  try {
+    pathfinderHazirla(bot)
+    await sinirli(
+      bot.pathfinder.goto(new goals.GoalBlock(onAyak.x, onAyak.y, onAyak.z)),
+      8000, kontrol
+    )
+  } catch (err) {
+    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
+    pathfinderDurdur(bot)
+    return { ok: false, sebep: 'yuruyemedim' }
+  }
+  return { ok: true }
+}
+
 /** Hedef Y seviyesine merdivenle in */
-async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120 } = {}) {
+async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = 'stone', tedarikci = null } = {}) {
   let basamak = 0
+  let takilma = 0
+
   while (Math.floor(bot.entity.position.y) > hedefY && basamak < maksBasamak) {
     kontrol.kontrolEt()
-    const r = await birBasamakIn(bot, kontrol)
-    if (!r.ok) return { ok: false, basamak, sebep: r.sebep }
+    const oncekiY = Math.floor(bot.entity.position.y)
+
+    // İNİŞ SIRASINDA KAZMA BİTERSE.
+    //
+    // Her basamak 3 blok. y=64'ten y=15'e inmek ~147 blok eder; tahta
+    // kazma 59, taş kazma 131 vuruş dayanır. Yani inişin ortasında
+    // kalmak istisna değil, KURAL. Eşiğe gelince duruyoruz ve kazdığımız
+    // taştan yenisini yapıyoruz — malzeme zaten envanterde.
+    const guc = kazmaGucu(bot, seviye)
+    if (guc.toplam < KRITIK_DAYANIKLILIK) {
+      log.uyari(`Kazma bitmek üzere (${guc.toplam} vuruş), yenisini yapıyorum.`)
+      await kazmaStokla(bot, kontrol, seviye, 2, { tedarikci })
+      if (kazmaGucu(bot, seviye).toplam < KRITIK_DAYANIKLILIK) {
+        return { ok: false, basamak, sebep: 'kazma_bitti' }
+      }
+    }
+
+    // ÖNCE PATHFINDER, SONRA MERDİVEN.
+    //
+    // Pathfinder mağarayı, çıkıntıyı, merdiveni, tüneli hepsini biliyor
+    // ve `canDig` açık olduğu için gerekirse taş da kırıyor. Elle yazdığım
+    // merdiven onun yapamadığı tek şeyi yapıyor: DÜMDÜZ TAŞIN İÇİNDE yol
+    // açmak. Doğru sıra bu — önce hazır çözümü dene, olmazsa kaz.
+    //
+    // 10 bloklu parçalar halinde iniyoruz: 50 bloğun tamamını tek seferde
+    // istemek pathfinder'a devasa bir arama uzayı veriyor.
+    const araHedef = Math.max(hedefY, oncekiY - 10)
+    try {
+      pathfinderHazirla(bot)
+      await sinirli(bot.pathfinder.goto(new goals.GoalY(araHedef)), 20000, kontrol)
+    } catch (err) {
+      if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
+      pathfinderDurdur(bot)
+    }
+
+    if (Math.floor(bot.entity.position.y) < oncekiY) {
+      basamak++
+      takilma = 0
+      continue
+    }
+
+    // Pathfinder ilerletemedi: elle merdiven kaz
+    const r = await birBasamakIn(bot, kontrol, seviye)
+    if (!r.ok) {
+      if (++takilma >= 3) return { ok: false, basamak, sebep: r.sebep }
+      continue
+    }
+    takilma = 0
     basamak++
     if (basamak % 10 === 0) {
       log.bilgi(`y=${Math.floor(bot.entity.position.y)} (${basamak} basamak)`)
     }
   }
   return { ok: true, basamak }
+}
+
+/**
+ * Bir cevherden başlayıp DAMARIN TAMAMINI bulur (flood fill).
+ *
+ * Cevherler tek tek değil damar halinde bulunuyor: bir demir damarı
+ * genelde 4-9 blok. Eskiden kod her turda "en yakın cevheri" seçip
+ * kırıyor, sonra yeniden arıyordu. Sorun şu: bir bloğu kırdıktan sonra
+ * en yakın aday bazen başka bir damarın kenarı oluyor — bot 2 blok
+ * kırıp 3-4'ünü bırakarak gidiyordu. Ekranda gördüğün buydu.
+ *
+ * Ağaç kesmede aynı şeyi `agaciTopla` ile çözmüştük; burada da damarın
+ * tamamını bir liste yapıp bitirene kadar üstünde duruyoruz.
+ */
+function damarTopla (bot, baslangic, isimler, limit = 24) {
+  const bulunan = []
+  const gorulen = new Set()
+  const kuyruk = [baslangic]
+
+  while (kuyruk.length > 0 && bulunan.length < limit) {
+    const p = kuyruk.shift()
+    const anahtar = `${p.x},${p.y},${p.z}`
+    if (gorulen.has(anahtar)) continue
+    gorulen.add(anahtar)
+
+    const b = bot.blockAt(p)
+    if (!b || !isimler.includes(b.name)) continue
+    if (koruma.korumaliMi(p)) continue
+    bulunan.push(p)
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (dx === 0 && dy === 0 && dz === 0) continue
+          kuyruk.push(p.offset(dx, dy, dz))
+        }
+      }
+    }
+  }
+  return bulunan
 }
 
 /** Yakındaki hedef cevherleri, gerçek uzaklığa göre sıralı */
@@ -175,7 +395,7 @@ function cevherBul (bot, isimler, yaricap, karaListe) {
  * @param {string} istek "demir", "elmas", "tas"
  * @param {number} adet kaç blok kırılsın
  */
-async function kaz (bot, kontrol, istek, adet = 8) {
+async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   const ad = String(istek || 'tas').toLowerCase().trim()
   const cevher = CEVHERLER[ad]
   if (!cevher) {
@@ -191,7 +411,7 @@ async function kaz (bot, kontrol, istek, adet = 8) {
 
   if (mevcut < gerekli) {
     log.bilgi(`${cevher.seviye} kazma lazım, yapmayı deniyorum...`)
-    const yapim = await uret(bot, kontrol, `${cevher.seviye === 'wooden' ? 'tahta' : cevher.seviye === 'stone' ? 'tas' : 'demir'} kazma`, 1)
+    const yapim = await uret(bot, kontrol, `${cevher.seviye === 'wooden' ? 'tahta' : cevher.seviye === 'stone' ? 'tas' : 'demir'} kazma`, 1, secenekler)
     mevcut = SEVIYELER.indexOf(kazmaSeviyesi(bot))
     if (mevcut < gerekli) {
       return {
@@ -201,12 +421,36 @@ async function kaz (bot, kontrol, istek, adet = 8) {
     }
   }
 
-  // --- 2) Doğru derinliğe in ---
+  const baslangicKonum = bot.entity.position.clone()
+
+  // --- 2) İnmeden önce STOK YAP ---
+  //
+  // Tek kazmayla derine inmek mümkün değil (yukarıdaki hesaba bak).
+  // Yanımıza yedek kazma ve bir tezgah alıyoruz; tezgah sayesinde
+  // aşağıda, kazdığımız taştan yerinde yeni kazma yapabiliyoruz.
+  if (cevher.y !== null && Math.floor(bot.entity.position.y) > cevher.y + 8) {
+    await kazmaStokla(bot, kontrol, cevher.seviye, YEDEK_KAZMA, secenekler)
+    await uret(bot, kontrol, 'tezgah', 1, secenekler) // olmazsa olsun, sadece deniyoruz
+    const g = kazmaGucu(bot, cevher.seviye)
+    log.bilgi(`${g.adet} kazma, toplam ${g.toplam} vuruş ile iniyorum.`)
+  }
+
+  // --- 3) Doğru derinliğe in ---
   if (cevher.y !== null && Math.floor(bot.entity.position.y) > cevher.y + 8) {
     log.bilgi(`${ad} için y=${cevher.y} seviyesine iniyorum...`)
-    const inis = await seviyeyeIn(bot, cevher.y, kontrol)
+    const inis = await seviyeyeIn(bot, cevher.y, kontrol, { seviye: cevher.seviye, tedarikci: secenekler.tedarikci })
     if (!inis.ok && inis.basamak === 0) {
       return { basarili: false, mesaj: `İnemedim (${inis.sebep}).` }
+    }
+    if (!inis.ok && inis.sebep === 'kazma_bitti') {
+      // Aletsiz yeraltında kalmak = mahsur kalmak. Kazdığımız merdiven
+      // hâlâ duruyor, oradan yürüyerek geri çıkabiliyoruz.
+      await yuzeyeDon(bot, baslangicKonum, kontrol)
+      return {
+        basarili: false,
+        kirilan: 0,
+        mesaj: `Kazmam bitti ve yenisini yapacak malzemem yok (y=${Math.floor(bot.entity.position.y)}). Yukarı döndüm — odun ve taş verirsen tekrar denerim.`
+      }
     }
     if (!inis.ok) log.uyari(`İniş yarıda kesildi (${inis.sebep}), buradan arıyorum.`)
   }
@@ -216,38 +460,85 @@ async function kaz (bot, kontrol, istek, adet = 8) {
   const karaListe = new Set()
   let kirilan = 0
   let bosArama = 0
+  let kazmaBitti = false
 
   while (kirilan < adet && bosArama < 6) {
     kontrol.kontrolEt()
+
+    // Kazarken de bitebilir — yerinde yenisini yapmayı dene
+    if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
+      await kazmaStokla(bot, kontrol, cevher.seviye, 2, secenekler)
+      if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
+        kazmaBitti = true
+        break
+      }
+    }
 
     const adaylar = cevherBul(bot, cevher.bloklar, 32, karaListe)
     if (adaylar.length === 0) {
       // Bulamadık: yatay olarak biraz ilerleyip tekrar bak (tünel aç)
       bosArama++
-      const r = await birBasamakIn(bot, kontrol)
+      // YATAY ilerle. Eskiden `birBasamakIn` çağrılıyordu ve her boş
+      // aramada bir kat aşağı iniyorduk — bot böyle bedrock'a dayandı.
+      const r = await birAdimIlerle(bot, kontrol, cevher.seviye)
       if (!r.ok) break
       continue
     }
     bosArama = 0
 
-    const konum = adaylar[0]
-    const anahtar = `${konum.x},${konum.y},${konum.z}`
+    // Damarın TAMAMINI al, tek bloğu değil
+    const damar = damarTopla(bot, adaylar[0], cevher.bloklar)
+    log.bilgi(`${damar.length} bloklu damar bulundu (y=${adaylar[0].y}).`)
 
-    try {
-      pathfinderHazirla(bot)
-      await sinirli(
-        bot.pathfinder.goto(new goals.GoalLookAtBlock(konum, bot.world, { range: 4 })),
-        15000, kontrol
-      )
+    for (const konum of damar) {
       kontrol.kontrolEt()
-      if (await blogoKir(bot, konum, kontrol)) kirilan++
-      else karaListe.add(anahtar)
-    } catch (err) {
-      if (err instanceof IptalEdildi) {
-        pathfinderDurdur(bot); bot.stopDigging(); throw err
+      if (kirilan >= adet) break
+
+      const anahtar = `${konum.x},${konum.y},${konum.z}`
+      if (karaListe.has(anahtar)) continue
+
+      // Elimizin altındaysa yürümeye gerek yok — damarın içindeyken
+      // komşu bloklar zaten menzilde oluyor
+      const goz = bot.entity.position.offset(0, bot.entity.height || 1.62, 0)
+      const yakin = goz.distanceTo(konum.offset(0.5, 0.5, 0.5)) <= 4.4
+
+      try {
+        if (!yakin) {
+          pathfinderHazirla(bot)
+          await sinirli(
+            bot.pathfinder.goto(new goals.GoalLookAtBlock(konum, bot.world, { range: 4 })),
+            15000, kontrol
+          )
+          kontrol.kontrolEt()
+        }
+        if (await blogoKir(bot, konum, kontrol, cevher.seviye)) kirilan++
+        else karaListe.add(anahtar)
+      } catch (err) {
+        if (err instanceof IptalEdildi) {
+          pathfinderDurdur(bot); bot.stopDigging(); throw err
+        }
+        pathfinderDurdur(bot)
+        karaListe.add(anahtar) // ulaşamadık, bir daha deneme
       }
-      pathfinderDurdur(bot)
-      karaListe.add(anahtar) // ulaşamadık, bir daha deneme
+    }
+
+    // DÜŞENLERİ HEMEN TOPLA.
+    //
+    // Eskiden toplama sadece en sonda, BAŞLANGIÇ konumunun 16 blok
+    // çevresinde yapılıyordu. Bot yerin 100 blok altında, başlangıçtan
+    // yüzlerce blok ötede kazıyor — o yarıçapa hiçbir şey girmiyordu.
+    // Kırdığı elmas yerde kalıyor, envantere hiç girmiyordu.
+    if (kirilan > 0) {
+      await kontrol.bekle(400)
+      await dusenleriTopla(bot, bot.entity.position.clone(), kontrol, { yaricap: 10, maksTur: 3 })
+    }
+
+    // Damarın kalanı ulaşılamıyorsa sonsuza kadar aynı damara dönme
+    for (const konum of damar) {
+      const b = bot.blockAt(konum)
+      if (b && cevher.bloklar.includes(b.name)) {
+        karaListe.add(`${konum.x},${konum.y},${konum.z}`)
+      }
     }
   }
 
@@ -257,13 +548,69 @@ async function kaz (bot, kontrol, istek, adet = 8) {
     await dusenleriTopla(bot, baslangic, kontrol, { yaricap: 16 })
   }
 
+  if (kazmaBitti) {
+    await yuzeyeDon(bot, baslangicKonum, kontrol)
+    return {
+      basarili: kirilan > 0,
+      kirilan,
+      mesaj: `${kirilan} ${ad} kırdım, sonra kazmam bitti. Yukarı döndüm.`
+    }
+  }
+
+  // İŞ BİTİNCE YUKARI DÖN.
+  //
+  // Eskiden bot kazdığı yerde kalıyordu. Log'da bunu gördük: bot y=17'de
+  // takılı kaldı ve oradan yüzeydeki ağaçlara ulaşmaya çalışıp her
+  // seferinde başarısız oldu. Bir sonraki komut ne olursa olsun yeraltı
+  // kötü bir başlangıç noktası.
+  const derinlik = baslangicKonum.y - bot.entity.position.y
+  if (derinlik > 6) await yuzeyeDon(bot, baslangicKonum, kontrol)
+
   return {
     basarili: kirilan > 0,
     kirilan,
     mesaj: kirilan > 0
-      ? `${kirilan} ${ad} kırdım (y=${Math.floor(bot.entity.position.y)}).`
+      ? `${kirilan} ${ad} kırdım, yukarı döndüm (y=${Math.floor(bot.entity.position.y)}).`
       : `${ad} bulamadım (y=${Math.floor(bot.entity.position.y)}).`
   }
 }
 
-module.exports = { kaz, kazmaSeviyesi, ileriYon, seviyeyeIn, birBasamakIn, CEVHERLER, SEVIYELER }
+/**
+ * Başladığımız yere geri yürü.
+ * Kazdığımız merdiven duruyor, o yüzden aletsiz de olsa çıkış yolu var —
+ * yeter ki merdiveni kendi arkamızdan kapatmayalım.
+ */
+async function yuzeyeDon (bot, hedef, kontrol) {
+  log.bilgi('Yüzeye dönüyorum...')
+  try {
+    pathfinderHazirla(bot)
+    await sinirli(
+      bot.pathfinder.goto(new goals.GoalNear(hedef.x, hedef.y, hedef.z, 3)),
+      60000, kontrol
+    )
+    return true
+  } catch (err) {
+    if (err instanceof IptalEdildi) { pathfinderDurdur(bot); throw err }
+    pathfinderDurdur(bot)
+    log.uyari('Yüzeye dönemedim — merdiveni takip ederek beni bulabilirsin.')
+    return false
+  }
+}
+
+module.exports = {
+  kaz,
+  kazmaSeviyesi,
+  ileriYon,
+  seviyeyeIn,
+  birBasamakIn,
+  yuzeyeDon,
+  damarTopla,
+  birAdimIlerle,
+  kalanDayaniklilik,
+  kazmaGucu,
+  kazmaStokla,
+  CEVHERLER,
+  SEVIYELER,
+  KRITIK_DAYANIKLILIK,
+  YEDEK_KAZMA
+}

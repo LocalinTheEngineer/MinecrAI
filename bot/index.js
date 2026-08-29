@@ -50,9 +50,11 @@ const KOMUTLAR = [
   { ad: 'ver odun 10', aciklama: 'adet belirtirsin' },
   { ad: 'balta', aciklama: 'odundan tahta balta yapar' },
   { ad: 'uret tas kazma', aciklama: 'tarif agacini kendi cozer' },
+  { ad: 'uret demir kazma', aciklama: 'odun/tas/cevheri kendi toplar, eritir' },
   { ad: 'uret cubuk 8', aciklama: 'adet belirtirsin' },
   { ad: 'kaz demir', aciklama: 'merdivenle inip cevher kazar' },
   { ad: 'kaz elmas 5', aciklama: 'adet belirtirsin' },
+  { ad: 'cik', aciklama: 'sutun orerek yuzeye cikar (magarada kalirsa)' },
   { ad: 'koru', aciklama: 'durduğun yeri korur, orada kesmez' },
   { ad: 'koru 40', aciklama: 'koruma yarıçapı (4-200)' },
   { ad: 'korumalar', aciklama: 'koruma bölgelerini listeler' },
@@ -97,7 +99,7 @@ function botOlustur () {
   // --- Bağlantı olayları -------------------------------------------------
   bot.once('spawn', () => {
     const movements = new Movements(bot)
-    movements.canDig = true           // yolunu açmak için blok kırabilsin
+    movements.canDig = true // yolunu açmak için blok kırabilsin
     movements.allow1by1towers = false // gereksiz kule dikmesin
     bot.pathfinder.setMovements(movements)
 
@@ -195,7 +197,8 @@ function botOlustur () {
 
     if (komut === 'ver') {
       const adet = parcalar[2] && !isNaN(parseInt(parcalar[2], 10))
-        ? parseInt(parcalar[2], 10) : null
+        ? parseInt(parcalar[2], 10)
+        : null
       await gorevCalistir('ver', () => skills.ver(bot, username, arguman, adet))
       return
     }
@@ -245,6 +248,17 @@ function botOlustur () {
     // "uret" komutu sessizce hiçbir şey yapmıyordu. Argümanlar `parcalar`
     // dizisinin geri kalanında.
     // "kaz demir" / "kaz elmas 5" / "kaz" (varsayilan: tas)
+    if (komut === 'cik') {
+      await gorevCalistir('cik', async () => {
+        bot.chat('Yüzeye çıkıyorum...')
+        const r = await skills.yuzeyeSutunla(bot, kontrol)
+        bot.chat(r.ok
+          ? `Çıktım (${r.cikilan} kat, y=${Math.floor(bot.entity.position.y)}).`
+          : `Çıkamadım (${r.sebep}) — blok lazım, toprak veya taş ver.`)
+      })
+      return
+    }
+
     if (komut === 'kaz') {
       const argumanlar = parcalar.slice(1)
       let adet = 8
@@ -255,7 +269,7 @@ function botOlustur () {
 
       await gorevCalistir('kaz', async () => {
         bot.chat(`${ne} kazmaya gidiyorum (${adet} tane)...`)
-        const sonuc = await skills.kaz(bot, kontrol, ne, adet)
+        const sonuc = await skills.kaz(bot, kontrol, ne, adet, { tedarikci: skills.tedarikciYap() })
         bot.chat(sonuc.mesaj)
       })
       return
@@ -276,8 +290,9 @@ function botOlustur () {
       const istek = argumanlar.join(' ')
 
       await gorevCalistir('uret', async () => {
-        bot.chat(`${istek} yapmayı deniyorum...`)
-        const sonuc = await skills.uret(bot, kontrol, istek, adet)
+        bot.chat(`${istek} için gerekeni toplayıp yapmayı deniyorum...`)
+        // getir = uret + tedarikçi: eksik ham maddeyi kendisi toplar
+        const sonuc = await skills.getir(bot, kontrol, istek, adet)
         bot.chat(sonuc.mesaj)
       })
       return
