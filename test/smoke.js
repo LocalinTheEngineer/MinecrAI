@@ -127,6 +127,106 @@ async function main () {
     if (!r.terminated) throw new Error('olumde bolum bitmedi')
   })
 
+  await dene('yerinde sayan bolum TRUNCATE oluyor (yaprakta sikisma)', async () => {
+    // Egitim kaydindaki gercek olay: 455 adim, 0 odun, -4.53 odul.
+    // Ajan bir agacin tepesinde yapraklara gomulmus.
+    //
+    // KRITIK AYRINTI: bot HIC KIMILDAMIYOR degil, SUREKLI BIRAZ
+    // KIMILDIYOR. `durgunlukSayaci` "hedefe yaklasma" degisimine bakiyor
+    // ve en ufak kipirdanmada sifirlaniyor -- bu yuzden 455 adim boyunca
+    // hic dolmadi. Bu testte sahte bot da oyle yapiyor: her adimda
+    // yarim blok saga sola oynuyor ama BIR YERE GITMIYOR.
+    const b3 = sahteBot()
+    b3.entity.position = new Vec3(0, 64, 0)
+
+    // Ulasilamayan bir agac: hedef var, yaklasma hesaplanıyor
+    b3.findBlocks = () => [new Vec3(10, 64, 10)]
+    b3.blockAt = (p) => {
+      const kutuk = (p.x === 10 && p.z === 10 && Math.floor(p.y) >= 64 && Math.floor(p.y) <= 66)
+      const yaprak = (p.x === 10 && p.z === 10 && Math.floor(p.y) >= 67 && Math.floor(p.y) <= 68)
+      return {
+        name: kutuk ? 'oak_log' : (yaprak ? 'oak_leaves' : 'air'),
+        boundingBox: kutuk ? 'block' : 'empty',
+        position: new Vec3(p.x, Math.floor(p.y), p.z)
+      }
+    }
+
+    const e3 = new MinecraftEnvironment(b3, { zamanCarpani: 0 })
+    await e3.reset()
+
+    // Her adimda yarim blok kipirdan -- ama net yer degistirme yok
+    let salinim = 0
+    b3.look = async () => {
+      salinim++
+      b3.entity.position = new Vec3(salinim % 2 === 0 ? 0 : 0.6, 64, 0)
+    }
+
+    let sonuc = null
+    for (let i = 0; i < 200; i++) {
+      sonuc = await e3.step(1) // saga don: bot kipirdaniyor ama gitmiyor
+      if (sonuc.truncated || sonuc.terminated) break
+    }
+    if (!sonuc.truncated) throw new Error('200 adim yerinde saydi, bolum bitmedi')
+    if (e3.adim > 100) throw new Error(`${e3.adim} adim surdu — ~60'ta bitmeliydi`)
+  })
+
+  await dene('suyunIcindeMi() suyu taniyor', async () => {
+    // Gercek olay: bot bogularak oldu, sonra 50+ bolum ust uste
+    // "0 odun, 60 adim, -0.60" ile bitti. Ajanin aksiyon uzayinda yuzme
+    // yok; suya dusunce yapabilecegi bir sey kalmiyor. Ogrenemeyecegi
+    // bir durumda ceza yemesi ogrenme degil GURULTU -- ortam duzeltmeli.
+    const b4 = sahteBot()
+    const e4 = new MinecraftEnvironment(b4, { zamanCarpani: 0 })
+
+    b4.blockAt = () => ({ name: 'air', boundingBox: 'empty', position: new Vec3(0, 0, 0) })
+    if (e4.suyunIcindeMi()) throw new Error('havada su gordu')
+
+    b4.blockAt = () => ({ name: 'water', boundingBox: 'empty', position: new Vec3(0, 0, 0) })
+    if (!e4.suyunIcindeMi()) throw new Error('suyun icinde suyu gormedi')
+  })
+
+  await dene('sudanCik() ziplayarak yuzmeyi deniyor', async () => {
+    const b4 = sahteBot()
+    const e4 = new MinecraftEnvironment(b4, { zamanCarpani: 0 })
+    let sudayim = true
+    b4.blockAt = () => ({
+      name: sudayim ? 'water' : 'air',
+      boundingBox: 'empty',
+      position: new Vec3(0, 0, 0)
+    })
+    const basilan = []
+    b4.setControlState = (ad, deger) => {
+      if (ad === 'jump' && deger) { basilan.push(ad); sudayim = false }
+    }
+
+    const r = await e4.sudanCik()
+    if (!r) throw new Error('sudayken cikmayi denemedi')
+    if (!basilan.includes('jump')) throw new Error('yuzmek icin ziplamadi')
+  })
+
+  await dene('acikHavadaMi() BUYUK magarada yanilmiyor', async () => {
+    // Gercek olay: bot bir madene dustu ve cikamadi. Eski kontrol sadece
+    // 5 blok yukari bakiyordu; tavan 20 blok yukarida oldugu icin
+    // "ustum acik" dedi ve kurtarma HIC tetiklenmedi -- oysa bot yerin
+    // 40 blok altindaydi. Dogru soru "yakinimda tavan var mi" degil,
+    // "yukarisi SONUNA KADAR acik mi".
+    const b5 = sahteBot()
+    const e5 = new MinecraftEnvironment(b5, { zamanCarpani: 0 })
+    b5.entity.position = new Vec3(0, 20, 0)
+
+    // BUYUK magara: 20 blok bosluk, sonra tavan
+    b5.blockAt = (p) => {
+      const y = Math.floor(p.y)
+      const dolu = y >= 42 // tavan cok yukarida
+      return { name: dolu ? 'stone' : 'air', boundingBox: dolu ? 'block' : 'empty', position: p }
+    }
+    if (e5.acikHavadaMi()) throw new Error('magarada gokyuzu gordu')
+
+    // Gercek yuzey: yukarisi sonuna kadar bos
+    b5.blockAt = (p) => ({ name: 'air', boundingBox: 'empty', position: p })
+    if (!e5.acikHavadaMi()) throw new Error('acik havada tavan gordu')
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()

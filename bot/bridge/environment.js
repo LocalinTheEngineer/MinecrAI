@@ -55,6 +55,9 @@ class MinecraftEnvironment {
     this.bolumBaslangicOdun = 0 // bölüm başındaki envanter — aşağıya bak
     this.takilmaSayaci = 0      // üst üste kaç adımdır ilerleyemiyoruz
     this.durgunlukSayaci = 0    // üst üste kaç adımdır hiçbir ilerleme yok
+    this.yerindeSayma = 0       // kaç adımdır fiilen yer değiştirmiyor
+    this.sonOlcum = null
+    this.sonOlcumOdun = 0
     this.kacinmaAdimi = 0       // engelden kaçınma modunda kalan adım
     this.kacinmaYonu = 1        // 1 = sağa, 2 = sola
     this.karaListe = new Set()  // ulaşılamadığı anlaşılan hedefler
@@ -453,6 +456,9 @@ class MinecraftEnvironment {
     this.hedefKonum = null
     this.takilmaSayaci = 0
     this.durgunlukSayaci = 0
+    this.yerindeSayma = 0
+    this.sonOlcum = null
+    this.sonOlcumOdun = 0
     this.kacinmaAdimi = 0
     this.karaListe.clear()
     this.hedefDenemesi = 0
@@ -477,13 +483,56 @@ class MinecraftEnvironment {
     await this.bot.look(Math.random() * 2 * Math.PI - Math.PI, 0, true)
 
     // Yer altina/magaraya dustuyse once yuzeye cik.
+    await this.sudanCik()
     await this.yuzeyeCik()
+
+    // YERALTINDA KALMAYI SESSİZ GEÇME.
+    //
+    // Bot bir mağaraya düştü ve çıkamadı. `yuzeyeCik` yol bulamayınca
+    // bölüm yeraltında başlıyordu: ağaç yok, ödül yok, 60 adımda kesilen
+    // boş bölümler. Ajanın aksiyon uzayında "yüzeye tırman" diye bir şey
+    // yok; bu ORTAMIN sorumluluğu.
+    if (!this.acikHavadaMi()) {
+      log.uyari('Yeraltındayım — yüzeye ışınlanıyorum.')
+      await this.tazeAlanaIsinla()
+      if (!this.acikHavadaMi()) {
+        const p = this.bot.entity.position
+        log.hata(
+          'Yüzeye çıkamadım! Konum: ' +
+          `x=${p.x.toFixed(0)} y=${p.y.toFixed(0)} z=${p.z.toFixed(0)}. ` +
+          'Eğitimi durdurup botu elle ışınla — bu bölümler eğitime zarar veriyor.'
+        )
+      }
+    }
 
     // Etrafta agac kalmadiysa taze bir bolgeye isinlan.
     // Ajan ogrendigi ormani kesiyor; ortam sabit kalmazsa ogrenme egrisi
     // olculemez hale geliyor.
     if (!this.enYakinKutuk()) {
       await this.tazeAlanaIsinla()
+    }
+
+    // AĞAÇSIZ BÖLÜMLERİ SESSİZ GEÇME.
+    //
+    // Bot boğulup öldükten sonra ağaçsız bir yere doğdu ve 50'den fazla
+    // bölüm üst üste "0 odun, 60 adım, -0.60 ödül" ile bitti. Rakamlar
+    // akıp gidiyordu ama hiçbir şey "burada öğrenilecek bir şey yok"
+    // demiyordu. PPO o gürültüden öğrenmeye çalıştı.
+    //
+    // Ölçebildiğimiz bir arıza sessiz kalmamalı.
+    if (!this.enYakinKutuk()) {
+      this.agacsizBolum = (this.agacsizBolum || 0) + 1
+      if (this.agacsizBolum >= 3) {
+        const p = this.bot.entity.position
+        log.hata(
+          `${this.agacsizBolum} bölümdür ağaç bulamıyorum! ` +
+          `Konum: x=${p.x.toFixed(0)} y=${p.y.toFixed(0)} z=${p.z.toFixed(0)}. ` +
+          'Bu bölümler eğitime ZARAR veriyor — eğitimi durdurup botu ' +
+          'ormanlık bir yere ışınla (/tp MinecrAI <x> <y> <z>).'
+        )
+      }
+    } else {
+      this.agacsizBolum = 0
     }
 
     // Bolum baslangicini agaca makul bir mesafeye tasi.
@@ -547,17 +596,32 @@ class MinecraftEnvironment {
    * oradan çıkması pratikte imkânsız, bölüm de boşa gidiyor. Bu bir ajan
    * aksiyonu değil, bölüm kurulumu — tıpkı başlangıç konumunu ayarlamak gibi.
    */
+  /**
+   * Başımın üstü gökyüzü mü?
+   *
+   * Eski kontrol sadece 5 blok yukarı bakıyordu ve BÜYÜK bir mağarada
+   * yanılıyordu: tavan 20 blok yukarıdaysa "üstüm açık" diyordu, oysa
+   * bot yerin 40 blok altındaydı. Bot madene düşüp çıkamadığında olan
+   * buydu — kurtarma hiç tetiklenmedi çünkü ortam sıkışmış olduğunu
+   * fark etmedi.
+   *
+   * Doğru soru "yakınımda tavan var mı" değil, "yukarısı SONUNA KADAR
+   * açık mı". Gökyüzünü görüyorsam yüzeydeyim.
+   */
+  acikHavadaMi (tavan = 200) {
+    const p = this.bot.entity.position.floored()
+    for (let y = p.y + 2; y < tavan; y++) {
+      const b = this.bot.blockAt(new Vec3(p.x, y, p.z))
+      if (b && b.boundingBox === 'block') return false
+    }
+    return true
+  }
+
   async yuzeyeCik (zamanAsimi = 20000) {
     const bot = this.bot
     const p = bot.entity.position.floored()
 
-    // Üstüm kapalı mı? Değilse zaten açıktayım.
-    let kapali = false
-    for (let dy = 2; dy <= 5; dy++) {
-      const b = bot.blockAt(p.offset(0, dy, 0))
-      if (b && b.boundingBox === 'block') { kapali = true; break }
-    }
-    if (!kapali) return false
+    if (this.acikHavadaMi()) return false
 
     // Yukarı doğru ilk "ayak basılacak zemin + üstünde iki blok hava" noktası
     for (let y = p.y + 2; y < p.y + 48; y++) {
@@ -620,6 +684,44 @@ class MinecraftEnvironment {
       if (this.enYakinKutuk()) return true
     }
     return false
+  }
+
+  /** Ayak veya göz hizasında su var mı? */
+  suyunIcindeMi () {
+    const p = this.bot.entity.position
+    for (const dy of [0, 1]) {
+      const b = this.bot.blockAt(p.offset(0, dy, 0))
+      if (b && /water|bubble_column/.test(b.name)) return true
+    }
+    return false
+  }
+
+  /**
+   * Sudan çık.
+   *
+   * Ajanın aksiyon uzayında yüzme yok — ileri, sağa, sola, kır, bekle.
+   * Suya düşerse boğulmaktan başka yapabileceği bir şey yok ve gerçekten
+   * boğuldu: eğitim kaydında ölümden sonra 50'den fazla bölüm üst üste
+   * "0 odun, 60 adım, -0.60 ödül" ile bitti. Ajanın öğrenemeyeceği bir
+   * durumda ceza yemesi öğrenme değil gürültüdür — ORTAM düzeltmeli.
+   */
+  async sudanCik () {
+    if (!this.suyunIcindeMi()) return false
+
+    log.uyari('Sudayım — çıkmaya çalışıyorum.')
+    this.bot.setControlState('jump', true) // suda zıplamak = yüzerek yükselmek
+    const bitis = Date.now() + 6000
+    while (Date.now() < bitis && this.suyunIcindeMi()) {
+      await this.bekle(300)
+    }
+    this.bot.setControlState('jump', false)
+
+    // Hâlâ sudaysak karaya ışınlanmak tek çare
+    if (this.suyunIcindeMi()) {
+      await this.tazeAlanaIsinla()
+      return true
+    }
+    return true
   }
 
   /** Bölüm kurulumu: yakınlarda ağaç varsa makul bir mesafeye yürü */
@@ -714,8 +816,35 @@ class MinecraftEnvironment {
     }
 
     const bolumOdun = Math.max(0, this.bolumOdunu())
+
+    // YERİNDE SAYMA TESPİTİ.
+    //
+    // `durgunlukSayaci` "hedefe yaklaşma" değişimine bakıyor ve en ufak
+    // kıpırdanmada sıfırlanıyor. Yaprakların içine gömülen ajan sürekli
+    // biraz sağa biraz sola oynadığı için sayaç hiç dolmuyordu: eğitim
+    // kaydında 455 adımlık, 0 odunlu, -4.53 ödüllü bir bölüm var —
+    // bölüm sınırının neredeyse tamamı bir ağacın tepesinde harcandı.
+    //
+    // Bu ölçüt farklı: 20 adımda bir GERÇEK KONUMU işaretliyoruz. Ajan
+    // 60 adımda 2 bloktan az yer değiştirdiyse ve odun da toplamadıysa,
+    // ne kadar kıpırdanırsa kıpırdansın ilerlemiyor demektir.
+    if (this.adim % 20 === 0) {
+      const suan = this.bot.entity.position
+      if (this.sonOlcum &&
+          suan.distanceTo(this.sonOlcum) < 2 &&
+          bolumOdun === this.sonOlcumOdun) {
+        this.yerindeSayma += 20
+      } else {
+        this.yerindeSayma = 0
+      }
+      this.sonOlcum = suan.clone()
+      this.sonOlcumOdun = bolumOdun
+    }
+
     const terminated = bolumOdun >= HEDEF_ODUN || this.oldu
-    const truncated = this.adim >= MAX_ADIM || this.durgunlukSayaci >= DURGUNLUK_SINIRI
+    const truncated = this.adim >= MAX_ADIM ||
+      this.durgunlukSayaci >= DURGUNLUK_SINIRI ||
+      this.yerindeSayma >= 60
 
     return {
       obs: this.gozlem(),
