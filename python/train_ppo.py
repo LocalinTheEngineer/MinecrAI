@@ -28,6 +28,11 @@ from stable_baselines3.common.utils import get_schedule_fn
 from minecrai import MinecraftEnv
 
 KOK = Path(__file__).parent.parent
+# Ust uste kac bos bolumden sonra egitim kendini durdurur.
+# 25 bolum ~ 25 dakika: gercek bir kotu sansi (ormanin kenari) atlatacak
+# kadar uzun, bozuk bir ortamda saatler harcamayacak kadar kisa.
+BOS_BOLUM_SINIRI = 25
+
 MODEL_KLASORU = KOK / "models"
 KAYIT = MODEL_KLASORU / "ppo_gecmis.csv"
 SON_MODEL = MODEL_KLASORU / "ppo_son.zip"
@@ -111,6 +116,7 @@ class BolumKaydedici(BaseCallback):
         self.son_kontrol = 0
         self.son_oduller = []
         self.cokus_uyarildi = False
+        self.ust_uste_bos = 0
 
     def _on_training_start(self) -> None:
         self.kayit_yolu.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +158,29 @@ class BolumKaydedici(BaseCallback):
                 print("\n  !! UYARI: son 15 bolum neredeyse ayni ve dusuk odulle bitti.")
                 print("     Politika tek bir aksiyona kilitlenmis olabilir (entropi")
                 print("     cokusu). Ctrl+C ile durdurup --entropi 0.02 dene.\n")
+
+            # SIGORTA: uzun sure hicbir bolum odun toplayamiyorsa ortam
+            # bozulmustur (bot suya dustu, magarada kaldi, agacsiz bolgeye
+            # isinlandi). Bu bolumler egitime ZARAR veriyor: PPO gurultuden
+            # ogrenmeye calisiyor.
+            #
+            # Bir kez yasandi: bot bogulup oldu, sonra 50+ bolum ust uste
+            # "0 odun, 60 adim, -0.60" ile bitti ve egitim saatlerce devam
+            # etti. Gece calistirmayi guvenli kilan sey bu sigorta: en kotu
+            # ihtimalle egitim erken durur, bozuk veri birikmez.
+            if odun == 0:
+                self.ust_uste_bos += 1
+            else:
+                self.ust_uste_bos = 0
+
+            if self.ust_uste_bos >= BOS_BOLUM_SINIRI:
+                print(f"\n{'=' * 60}")
+                print(f"  DURDURULDU: {self.ust_uste_bos} bolum ust uste 0 odun.")
+                print("  Ortam bozulmus olmali - bot suda, magarada veya")
+                print("  agacsiz bir yerde. BOT penceresindeki son satirlara bak.")
+                print("  Model kaydedildi; botu ormana isinlayip --devam ile surdur.")
+                print(f"{'=' * 60}\n")
+                return False  # SB3 egitimi burada durdurur
 
             self.bolum_odul = 0.0
             self.bolum_adim = 0
