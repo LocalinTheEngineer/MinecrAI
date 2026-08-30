@@ -118,8 +118,11 @@ class MinecraftEnvironment {
     if (adaylar.length === 0) return null
 
     // Yakından uzağa sırala, oyuncunun yapılarını atlayarak ilk DOĞAL ağacı seç
-    adaylar.sort((a, b) =>
-      a.distanceTo(this.bot.entity.position) - b.distanceTo(this.bot.entity.position))
+    // Maliyet ölçüsü GÖREVE bağlı: ormanda kuş uçuşu mesafe, madende
+    // dikey farkı cezalandıran bir ölçü (ajan yatay hareket ediyor).
+    const maliyet = this.gorev.hedefMaliyeti ||
+      ((bot, konum) => konum.distanceTo(bot.entity.position))
+    adaylar.sort((a, b) => maliyet(this.bot, a) - maliyet(this.bot, b))
 
     for (const konum of adaylar) {
       const anahtar = `${konum.x},${konum.y},${konum.z}`
@@ -140,6 +143,23 @@ class MinecraftEnvironment {
       return this.bot.blockAt(dip)
     }
     return null
+  }
+
+  /**
+   * Şu anki hedefi bırak ve bir daha seçme.
+   *
+   * Uzman bazen hedefin ULAŞILAMAZ olduğunu ortamdan önce anlıyor
+   * (örneğin tam tepemizdeki bir cevher: aksiyon uzayında yukarı
+   * gitmek yok). Böyle bir hedefin etrafında dönüp durmak yerine
+   * onu bırakıp başkasına geçmesi gerekiyor.
+   */
+  hedefiBirak () {
+    if (!this.hedefKonum) return false
+    const k = this.hedefKonum
+    this.karaListe.add(`${k.x},${k.y},${k.z}`)
+    this.hedefKonum = null
+    this.hedefDenemesi = 0
+    return true
   }
 
   /**
@@ -553,6 +573,18 @@ class MinecraftEnvironment {
     // ortam sorumlu.
     await this.sudanCik()
 
+    // ENVANTERİ ÖNCE TEMİZLE, SONRA KURULUM.
+    //
+    // Sıra kritik: kurulum ajana kazma veriyor. Temizliği sonra yapsaydık
+    // az önce verdiğimiz kazmayı silerdik. Bir kez tersini yazdım ve
+    // envanter bölümden bölüme dolarak `/give`i işlevsiz bıraktı.
+    if (this.gorev.temizlemeEtiketi === '*') {
+      this.bot.chat(`/clear ${this.bot.username}`)
+      await this.bekle(300)
+    } else if (this.gorev.temizlemeEtiketi) {
+      this.bot.chat(`/clear ${this.bot.username} ${this.gorev.temizlemeEtiketi}`)
+    }
+
     if (this.gorev.yuzeyGorevi) {
       await this.yuzeyKurulumu()
     } else {
@@ -589,7 +621,9 @@ class MinecraftEnvironment {
     // sadece her bolume benzer bir baslangic dagilimindan basliyoruz.
     // Aksi halde agaclar kesildikce bot ormanin ortasinda kalip bos
     // bolumler uretiyor ve egitim verisi bozuluyor.
-    await this.baslangicaTasi()
+    // Bölüm başında hedefe yaklaştırma — sadece bunun görevi çözmediği
+    // görevlerde. Madende pathfinder tüneli ajan adına kazardı.
+    if (this.gorev.baslangictaYurut !== false) await this.baslangicaTasi()
     // ENVANTERİ BOŞALT.
     //
     // Bölümler arasında odun birikiyor ve envanter (36 slot × 64) eninde
@@ -607,9 +641,6 @@ class MinecraftEnvironment {
     // Görev hangi kaynağı topluyorsa onu temizliyoruz. Madencilikte
     // etiket yok (cevherler tek bir etikette toplanmıyor), o yüzden
     // temizleme atlanıyor ve envanter sayacı bölüm başında sıfırlanıyor.
-    if (this.gorev.temizlemeEtiketi) {
-      this.bot.chat(`/clear ${this.bot.username} ${this.gorev.temizlemeEtiketi}`)
-    }
 
     // YERDEKİ EŞYALARI DA TEMİZLE.
     //
@@ -861,10 +892,14 @@ class MinecraftEnvironment {
         // tam olarak bunu gördük: %63 "önümde cevher var", 0 kaynak.
         // Sessiz başarısızlık en pahalı hata türü.
         if (!uygunAlet(bot, { name: 'iron_ore' })) {
+          // Sunucu log'u `/give`in BAŞARILI olduğunu gösteriyordu; eşya
+          // envantere giremiyordu çünkü 36 slot doluydu. "Op değilsin"
+          // demek yanlış teşhisti ve beni saatlerce yanlış yere baktırdı.
+          const dolu = bot.inventory.items().length
           log.hata(
-            `${this.gorev.aletVer} veremedim! Bot muhtemelen op değil. ` +
-            `Sunucuda "op ${bot.username}" çalıştır — kazmasız kırılan ` +
-            'cevher yok oluyor, bölümler boşa gidiyor.'
+            `${this.gorev.aletVer} envantere giremedi (${dolu} slot dolu). ` +
+            'Envanter dolu olabilir ya da bot op değildir — sunucu ' +
+            'konsolunda /give çıktısına bak.'
           )
         }
       }

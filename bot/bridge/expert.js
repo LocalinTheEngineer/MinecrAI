@@ -133,10 +133,27 @@ function madenUzmani (bot, env) {
       hedef.position.z + 0.5 - bot.entity.position.z
     )
     if (yatay < 2) {
+      // Menzilimizdeyse kır (kırma zaten 3 boyutlu bakıyor)
       if (env.onumuKapatan()) {
         return { action: 3, sebep: 'dikey_hedef_kiriyorum' }
       }
-      return { action: 0, sebep: 'dikey_hedef_uzaklasiyorum' }
+
+      // KIRAMIYORSAK HEDEFİ BIRAK.
+      //
+      // Buraya ilk yazdığım şey "ilerle, açıyı aç"tı ve YENİ BİR DÖNGÜ
+      // açtı: bot uzaklaşıyor, yatay mesafe 2'yi geçiyor, hedefe geri
+      // dönüyor, tekrar yaklaşıyor, tekrar uzaklaşıyor. Net yer
+      // değiştirme sıfır. Ölçümde bölümlerin 13/15'i TAM 60 adımda,
+      // TAM -0.60 ödülle bitti — yerinde sayma kesme eşiği.
+      //
+      // Doğru davranış dolanmak değil VAZGEÇMEK: aksiyon uzayımızda
+      // yukarı gitmek yok, bu hedef bize göre değil. Kara listeye yaz,
+      // bir sonrakine bak.
+      env.hedefiBirak()
+      const yeni = env.enYakinKutuk()
+      if (yeni) return hedefeYonel(bot, env, yeni.position, 'cevhere')
+      if (env.onumuKapatan()) return { action: 3, sebep: 'tunel_aciyorum' }
+      return { action: 0, sebep: 'tunelde_ilerliyorum' }
     }
     return hedefeYonel(bot, env, hedef.position, 'cevhere')
   }

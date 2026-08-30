@@ -675,6 +675,90 @@ async function main () {
     }
   })
 
+  await dene('maden ULASILABILIR hedefi seciyor (dikey pahali)', () => {
+    // Kus ucusu mesafe madende YANLIS olcu. Ajanin aksiyonlari yatay:
+    // ileri, saga, sola. Yukari cikmak icin altina blok koymak ya da
+    // tavani kirip ziplamak gerekiyor -- ikisi de aksiyon uzayinda yok.
+    // 8 blok TAM YUKARIDAKI cevher, 12 blok otedeki acik tunelin
+    // ucundakinden "daha yakin" sayiliyordu.
+    const g = require('../bot/bridge/gorevler')
+    const b19 = sahteBot()
+    b19.entity.position = new Vec3(0, 15, 0)
+
+    const yukarida = new Vec3(0, 23, 0)   // 8 blok yukari
+    const ileride = new Vec3(12, 15, 0)   // 12 blok ileri, ayni seviye
+
+    const m = g.GOREVLER.maden.hedefMaliyeti
+    if (!(m(b19, ileride) < m(b19, yukarida))) {
+      throw new Error(`ileri ${m(b19, ileride).toFixed(1)} vs yukari ${m(b19, yukarida).toFixed(1)} — dikey ucuz kaldi`)
+    }
+
+    // Odun gorevinde kus ucusu mesafe DOGRU olcu, degismemeli
+    const o = g.GOREVLER.odun.hedefMaliyeti
+    if (!(o(b19, yukarida) < o(b19, ileride))) {
+      throw new Error('odun gorevinin olcusu degismis')
+    }
+  })
+
+  await dene('madende bolum basinda pathfinder TUNEL KAZMIYOR', async () => {
+    // baslangicaTasi() pathfinder ile hedefe yaklasiyor ve pathfinder
+    // canDig:true -- yani tasin icinden TUNEL KAZARAK gidiyor. Ormanda
+    // masum (acik arazide yurumek gorev degil), madende GOREVIN KENDISI.
+    // Ortam ajan adina tuneli kazip onu cevherin dibine birakirdi.
+    const g = require('../bot/bridge/gorevler')
+    if (g.GOREVLER.maden.baslangictaYurut !== false) {
+      throw new Error('maden gorevinde baslangic yurutmesi acik')
+    }
+    if (g.GOREVLER.odun.baslangictaYurut === false) {
+      throw new Error('odun gorevinde baslangic yurutmesi kapanmis')
+    }
+
+    // Ortam bayragi gercekten okuyor mu?
+    const b19 = sahteBot()
+    b19.entity.position = new Vec3(0, 15, 0)
+    b19.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 0, type: 1 }] }
+    const e19 = new MinecraftEnvironment(b19, { zamanCarpani: 0, gorev: 'maden' })
+    let yurudu = false
+    e19.baslangicaTasi = async () => { yurudu = true; return false }
+    await e19.reset()
+    if (yurudu) throw new Error('maden gorevinde baslangicaTasi cagrildi')
+  })
+
+  await dene('maden gorevi envanteri TAMAMEN bosaltiyor', async () => {
+    // Gercek olay: madende temizleme etiketi yoktu, envanter bolumden
+    // bolume doldu. 36 slot dolunca `/give iron_pickaxe` sunucu tarafinda
+    // BASARILI oluyor ("Gave 1 [Iron Pickaxe]") ama esya envantere
+    // giremiyor. Kazmasiz bot cevheri yok ediyor.
+    const b20 = sahteBot()
+    const komutlar = []
+    b20.chat = (m) => komutlar.push(m)
+    const e20 = new MinecraftEnvironment(b20, { zamanCarpani: 0, gorev: 'maden' })
+    await e20.reset()
+
+    const temizle = komutlar.findIndex((m) => /^\/clear \S+$/.test(m))
+    if (temizle < 0) throw new Error(`envanter temizlenmedi: ${komutlar.join(' | ')}`)
+
+    // SIRA KRITIK: temizlik kazmadan ONCE olmali, yoksa verilen kazma silinir
+    const kazma = komutlar.findIndex((m) => /give .*iron_pickaxe/.test(m))
+    if (kazma >= 0 && temizle > kazma) {
+      throw new Error('once kazma verildi sonra envanter silindi — kazma yok olur')
+    }
+  })
+
+  await dene('odun gorevi SADECE kutukleri siliyor (baltasi kalsin)', async () => {
+    const b20 = sahteBot()
+    const komutlar = []
+    b20.chat = (m) => komutlar.push(m)
+    const e20 = new MinecraftEnvironment(b20, { zamanCarpani: 0 })
+    await e20.reset()
+    if (komutlar.some((m) => /^\/clear \S+$/.test(m))) {
+      throw new Error('odun gorevinde envanterin TAMAMI silindi — balta gider')
+    }
+    if (!komutlar.some((m) => /clear .*minecraft:logs/.test(m))) {
+      throw new Error('kutukler silinmedi')
+    }
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()

@@ -102,14 +102,35 @@ const GOREVLER = {
     hedefiDuzelt: (bot, blok) => govdeninDibi(bot, blok),
 
     // Yolu kapatan neyi kırabiliriz? Odunda sadece yumuşak bitki blokları.
-    engelKirilabilirMi: (bot, blok) => !!blok && YUMUSAK.test(blok.name)
+    engelKirilabilirMi: (bot, blok) => !!blok && YUMUSAK.test(blok.name),
+
+    // Hedef seçerken maliyet: ormanda düz kuş uçuşu mesafe doğru ölçü.
+    hedefMaliyeti: (bot, konum) => konum.distanceTo(bot.entity.position),
+
+    // Bölüm başında ajanı hedefe yakın bir yere yürüt.
+    // Ormanda meşru: açık arazide yürümek görevi çözmüyor.
+    baslangictaYurut: true
   },
 
   /** Milestone 5: yeraltında cevher topla. */
   maden: {
     ad: 'maden',
     hedefAdet: 5,
-    temizlemeEtiketi: null, // cevher etiketi yok, envanteri elle temizliyoruz
+    // ENVANTERİ TAMAMEN BOŞALT.
+    //
+    // Odunda tek bir etiket (`#minecraft:logs`) bütün kütükleri
+    // kapsıyordu ve balta envanterde kalıyordu. Cevherlerin böyle tek
+    // bir etiketi yok, ben de "o zaman temizlemeyelim" dedim — ve
+    // envanter bölümden bölüme doldu.
+    //
+    // Sonucu ölçtük: 36 slot dolunca `/give iron_pickaxe` sunucu
+    // tarafında BAŞARILI oluyor ("Gave 1 [Iron Pickaxe]") ama eşya
+    // envantere giremiyor. Kazmasız kalan bot cevheri yok ediyor ve
+    // bölümler boşa gidiyor. Aynı hatayı odun görevinde de yaşamıştık.
+    //
+    // '*' = her şeyi sil. Kazma zaten bölüm kurulumunda veriliyor,
+    // yani her bölüm aynı temiz durumdan başlıyor — RL için doğrusu da bu.
+    temizlemeEtiketi: '*',
     yuzeyGorevi: false,
 
     // Bölüm bu derinlikte başlar. Demir y=15 civarında yoğun; elmas
@@ -153,7 +174,45 @@ const GOREVLER = {
       if (MADEN_TEHLIKE.test(blok.name)) return false
       const { uygunAlet } = require('../skills/alet')
       return !!uygunAlet(bot, blok) || /dirt|gravel|sand/.test(blok.name)
-    }
+    },
+
+    /**
+     * DİKEY MESAFE YATAYDAN PAHALI.
+     *
+     * Kuş uçuşu mesafe madende yanlış ölçü. Ajanın aksiyonları yatay:
+     * ileri yürü, sağa dön, sola dön. Yukarı çıkmak için altına blok
+     * koyması ya da tavanı kırıp zıplaması gerekiyor — ikisi de aksiyon
+     * uzayında yok.
+     *
+     * Sonuç: 8 blok TAM YUKARIDAKİ bir cevher, 12 blok ötede açık bir
+     * tünelin ucundaki cevherden "daha yakın" sayılıyordu. Bot ulaşamadığı
+     * hedefe kilitleniyordu.
+     *
+     * Dikey farkı 3 katına sayıyoruz: 8 blok yukarısı 24 birim, 12 blok
+     * ileri 12 birim. Artık ulaşılabilir olan seçiliyor.
+     */
+    hedefMaliyeti: (bot, konum) => {
+      const p = bot.entity.position
+      const yatay = Math.hypot(konum.x + 0.5 - p.x, konum.z + 0.5 - p.z)
+      const dikey = Math.abs(konum.y - p.y)
+      return yatay + dikey * 3
+    },
+
+    /**
+     * MADENDE BÖLÜM BAŞINDA YÜRÜTME.
+     *
+     * `baslangicaTasi()` pathfinder ile hedefe yaklaşıyor ve pathfinder
+     * `canDig: true` — yani taşın içinden TÜNEL KAZARAK gidiyor.
+     *
+     * Ormanda bu masum: açık arazide yürümek görevin kendisi değil.
+     * Madende ise görevin TAM KENDİSİ. Ortam ajan adına tüneli kazıp
+     * onu cevherin dibine bırakıyor; ajan hiçbir şey öğrenmeden ödül
+     * alıyor ve öğrenme eğrisi anlamsızlaşıyor.
+     *
+     * Bu, ajanın aksiyon uzayından "pathfinder ile ağaca git" aksiyonunu
+     * kaldırmamızla aynı sebep — sadece bu sefer arka kapıdan giriyordu.
+     */
+    baslangictaYurut: false
   }
 }
 
