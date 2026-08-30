@@ -1,39 +1,47 @@
 'use strict'
 
 /**
- * UZMAN POLİTİKA (expert policy)
+ * UZMAN POLİTİKALAR (expert policies)
  *
- * Milestone 3'ün temeli. Her adımda "bu gözlemde uzman ne yapardı?" sorusuna
- * cevap veriyor; bu (gözlem, aksiyon) çiftleri taklit ederek öğrenmenin
- * eğitim verisi oluyor.
+ * Milestone 3'ün temeli. Her adımda "bu gözlemde uzman ne yapardı?"
+ * sorusuna cevap veriyor; bu (gözlem, aksiyon) çiftleri taklit ederek
+ * öğrenmenin eğitim verisi oluyor.
  *
- * TASARIM: uzman PATHFINDER KULLANIR, ajan kullanmaz.
+ * TASARIM: UZMAN TEPKİSELDİR, PLANLAMAZ.
  *
- * Bu ayrım kritik. Aksiyon uzayından "pathfinder ile ağaca git" aksiyonunu
- * bilerek kaldırdık: ajana tek tuşla navigasyon vermek öğrenmeyi anlamsız
- * kılıyordu. Ama UZMANIN akıllı olması gerekir — o öğretmen. Taklitle
- * öğrenmede uzmanın bir planlayıcı olması standarttır.
+ * Bu dosya bir kez A* yol planlayıcısına çevrildi ve geri alındı. Sebep
+ * ölçüldü: taklit doğruluğu %88'den %52'ye düştü, eğitim ve doğrulama
+ * kaybı BİRLİKTE platoya oturdu. Bu ezberleme imzası değil,
+ * ÖĞRENİLEMEZLİK imzası.
  *
- * Ajan hâlâ 13 sayılık gözleme bakıp 5 aksiyondan birini seçmeyi öğreniyor.
- * Sadece taklit ettiği örnekler artık daha iyi.
+ * Kural şu: uzman, öğrencinin GÖREMEDİĞİ bilgiye dayanamaz. Ajan 19
+ * sayılık bir gözlem görüyor; planlayıcı uzman ise bütün haritayı
+ * biliyordu. Aynı gözleme bazen "sol" bazen "sağ" etiketi düşüyordu ve
+ * ağ ikisinin ortalamasını öğreniyordu.
  *
- * Bundan önce uzman tamamen tepkiseldi ("ağaç şu tarafta, o tarafa yürü") ve
- * arazi hakkında hiçbir şey bilmiyordu. Duvara toslayınca zıplama, kaçınma,
- * kara liste gibi yamalarla kurtarmaya çalıştık; hepsi tek tek sorunları
- * çözdü ama bot hâlâ saçma yerlerde takılıyordu. Asıl eksik yol planlamaydı.
+ * Bu yüzden buradaki her karar, ajanın da gördüğü şeylerden türetiliyor:
+ * hedefin yönü, önüm/solum/sağım kapalı mı, menzilimde ne var.
+ *
+ * İKİ GÖREV, İKİ UZMAN. `odunUzmani` ve `madenUzmani` aynı yardımcıları
+ * paylaşıyor; ayrıldıkları yer sadece öncelik listesi.
  */
-
 
 // Bu açıdan fazla sapma varsa önce dönmek gerekir.
 // environment.js'teki DONUS_ACISI (22.5°) ile uyumlu olmalı: dönüş adımı
 // toleransın iki katından büyükse hedef hiç tutturulamaz, bot salınır.
 const YAW_TOLERANS = 0.22
 
-// Yol kaç ms sonra yeniden hesaplansın (A* pahalı, her adımda çalıştırılmaz)
-const YOL_TAZELEME_MS = 1500
-
-// A* için düşünme süresi. Her adım zaten ~400ms sürüyor, bu kabul edilebilir.
-const PLAN_SURESI_MS = 250
+// Aynı düşmüş eşyanın peşinde en fazla kaç adım koşulur.
+//
+// ÖLÇÜM: maden görevinde adımların %79'u "yakındaki cevheri alıyorum"du —
+// kırıyor, yürüyor, dönüyor, ama eşya envantere hiç girmiyordu. Yerde
+// duran ama ULAŞILAMAYAN bir eşya (kırdığı deliğin içine düşmüş, duvarın
+// ardında kalmış) uzmanı bölümün tamamı boyunca meşgul ediyordu.
+//
+// Ağaçlarda aynı sorunu kara listeyle çözmüştük; burada sabır sayacı
+// daha basit, çünkü eşyalar hareket eden varlıklar — konumlarını
+// kara listeye almak işe yaramaz.
+const ESYA_SABRI = 25
 
 /** Bir hedefe bakmak için gereken yaw (Minecraft konvansiyonu) */
 function hedefYaw (botPos, hedefPos) {
@@ -75,7 +83,57 @@ function yonel (bot, hedefPos, donSebebi, yuruSebebi) {
  *
  * @returns {{action: number, sebep: string}}
  */
-function uzmanAksiyonu (bot, env) {
+/**
+ * MADEN UZMANI
+ *
+ * Odun uzmanıyla aynı iskelet, iki yerde ayrılıyor:
+ *
+ *  - Odunda "hedef yoksa bekle" doğru cevaptı: ormanda ağaç göremiyorsan
+ *    dönüp bakman gerekir, kazacak bir şey yok. Madende TERSİ — cevher
+ *    zaten taşın içinde saklı, göremiyor olman normal. Doğru cevap
+ *    beklemek değil TÜNEL AÇMAK.
+ *  - Odunda taş kırmak yasaktı, madende görevin kendisi.
+ *
+ * Ajan yine aynı 19 sayılık gözleme bakıp aynı 5 aksiyondan birini
+ * seçiyor. Değişen tek şey taklit ettiği örnekler.
+ */
+function madenUzmani (bot, env) {
+  // 1) Yerdeki cevher/külçe — ödülün asıl kaynağı (1.0), kırmak 0.2
+  const yakinEsya = env.yakinEsya(5)
+  if (yakinEsya && env.esyaKovalama < ESYA_SABRI) {
+    env.esyaKovalama++
+    return hedefeYonel(bot, env, yakinEsya.position, 'yakin_cevheri_aliyorum')
+  }
+
+  // 2) Menzilimde cevher varsa kır
+  if (env.onundekiKutuk()) {
+    return { action: 3, sebep: 'onumde_cevher_var' }
+  }
+
+  // 3) Görünürde cevher var ama uzakta: ona dön/yürü
+  const hedef = env.enYakinKutuk()
+  if (hedef) {
+    return hedefeYonel(bot, env, hedef.position, 'cevhere')
+  }
+
+  // 4) Biraz uzaktaki düşmüş eşyalar
+  const esya = env.yakinEsya()
+  if (esya) {
+    return hedefeYonel(bot, env, esya.position, 'uzak_cevheri_aliyorum')
+  }
+
+  // 5) Cevher göremiyorum — TÜNEL AÇ.
+  //
+  // Odun uzmanı burada 'bekle' diyordu ve madende bu ölümcül olurdu:
+  // ajan hiç ödül görmeden 500 adım bekler, taklit verisinin tamamı
+  // "bekle" olurdu. Cevher taşın ardında; önünü kır ve ilerle.
+  if (env.onumuKapatan()) {
+    return { action: 3, sebep: 'tunel_aciyorum' }
+  }
+  return { action: 0, sebep: 'tunelde_ilerliyorum' }
+}
+
+function odunUzmani (bot, env) {
   // 1) YAKINDA DÜŞMÜŞ ODUN VARSA ÖNCE ONU AL.
   //
   // Bu sıra bilerek en başta. Önceden "menzilde kütük varsa kır" kuralı
@@ -86,7 +144,8 @@ function uzmanAksiyonu (bot, env) {
   // Ödül zaten bunu söylüyordu: odun toplamak 1.0, kütük kırmak 0.2.
   // Toplamak beş kat değerli, o yüzden önce gelmeli.
   const yakinEsya = env.yakinEsya(5)
-  if (yakinEsya) {
+  if (yakinEsya && env.esyaKovalama < ESYA_SABRI) {
+    env.esyaKovalama++
     return hedefeYonel(bot, env, yakinEsya.position, 'yakin_odunu_aliyorum')
   }
 
@@ -126,6 +185,24 @@ function uzmanAksiyonu (bot, env) {
  * Artık yön, ajanın da gördüğü bilgiden türetiliyor: solum/sağım kapalı mı.
  */
 function hedefeYonel (bot, env, hedefPos, etiket) {
+  // KAÇINMA MODU: dolaşmaya karar verdiysek BİRKAÇ ADIM YÜRÜ.
+  //
+  // Bu olmadan uzman iki adımlık bir döngüye giriyordu:
+  //   hizalan → önüm kapalı → sola dolaş (döndüm, artık hizalı değilim)
+  //   → hedefe geri dön → önüm kapalı → sola dolaş → ...
+  //
+  // Ölçüm bunu net gösterdi: bölümlerin %43'ü "hedefe dönüyorum",
+  // %31'i "engelden dolaşıyorum", ve YÜRÜME sadece %3. Bot yerinde
+  // dönüp duruyordu ve hiçbir bölümde tek bir kaynak toplayamadı.
+  //
+  // Dolaşmaya karar vermek, o yöne GİTMEYİ de göze almak demek.
+  if (env.kacinmaAdimi > 0) {
+    env.kacinmaAdimi--
+    if (!env.onumdeEngelVar()) {
+      return { action: 0, sebep: etiket + '_kacinirken_yuruyorum' }
+    }
+  }
+
   const istenen = hedefYaw(bot.entity.position, hedefPos)
   const fark = aciFarki(istenen, bot.entity.yaw)
   const hizali = Math.abs(fark) <= YAW_TOLERANS
@@ -135,16 +212,31 @@ function hedefeYonel (bot, env, hedefPos, etiket) {
     return { action: 0, sebep: etiket + '_yuruyorum' }
   }
 
-  // Hizalı ama önümüz kapalı: açık olan tarafa dön
   if (hizali) {
+    // ÖNCE KIRMAYI DENE, SONRA DOLAŞMAYI.
+    //
+    // Eskiden bu kontrol yoktu ve sıra hiç kırmaya gelmiyordu: uzmanın
+    // öncelik listesinde "yolumu açan bloğu kır" maddesi VAR, ama daha
+    // yukarıdaki "yakındaki eşyayı al" maddesi önce eşleşip buraya
+    // dallanıyordu. Yani yaprağın ardındaki odunu görüp sonsuza kadar
+    // etrafından dolaşmaya çalışıyordu.
+    //
+    // Madende bu daha da kritik: cevhere giden yol TANIMI GEREĞİ taşın
+    // içinden geçiyor. Kırmadan varılamaz.
+    if (env.onumuKapatan()) {
+      return { action: 3, sebep: etiket + '_engeli_kiriyorum' }
+    }
+
+    // Kıramıyoruz (kaya, oyuncunun evi, koruma bölgesi): dolaş.
+    // Kaçınma sayacını kur ki dönüp hemen geri dönmeyelim.
+    env.kacinmaAdimi = 3
+
     const sol = env.solumKapali()
     const sag = env.sagimKapali()
-
     if (sol && !sag) return { action: 1, sebep: etiket + '_engel_sagdan_dolasiyorum' }
     if (sag && !sol) return { action: 2, sebep: etiket + '_engel_soldan_dolasiyorum' }
 
-    // İkisi de açık ya da ikisi de kapalı: hedefe daha yakın olan yöne dön.
-    // Deterministik — aynı gözlem hep aynı cevabı verir.
+    // İkisi de aynıysa hedefe daha yakın olan yöne dön (deterministik)
     return fark >= 0
       ? { action: 2, sebep: etiket + '_engel_soldan_dolasiyorum' }
       : { action: 1, sebep: etiket + '_engel_sagdan_dolasiyorum' }
@@ -156,4 +248,19 @@ function hedefeYonel (bot, env, hedefPos, etiket) {
     : { action: 1, sebep: etiket + '_donuyorum_saga' }
 }
 
-module.exports = { uzmanAksiyonu, hedefeYonel, yonel, hedefYaw, aciFarki }
+/**
+ * Uzmanı göreve göre seç.
+ *
+ * Ortam hangi görevdeyse onun uzmanı konuşuyor. İki uzman aynı yardımcı
+ * fonksiyonları (`hedefeYonel`, açı hesapları) paylaşıyor — ayrıldıkları
+ * tek yer öncelik listesi.
+ */
+function uzmanAksiyonu (bot, env) {
+  return env.gorev && env.gorev.ad === 'maden'
+    ? madenUzmani(bot, env)
+    : odunUzmani(bot, env)
+}
+
+module.exports = {
+  uzmanAksiyonu, odunUzmani, madenUzmani, hedefeYonel, yonel, hedefYaw, aciFarki
+}

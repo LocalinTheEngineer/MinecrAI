@@ -20,7 +20,6 @@ const DONUS_ACISI = Math.PI / 8  // 22.5 derece
 // Yolu kapattiginda kirilmasi mantikli olan bloklar: yaprak, sarmasik, fidan,
 // mantar vb. Tas, toprak, cevher BILEREK disarida — elle kazmak cok uzun surer
 // ve gorevle ilgisi yok.
-const YUMUSAK = /_leaves$|vine|_sapling$|bamboo|cobweb|azalea|moss_|snow|sugar_cane|cactus|_mushroom_block$|shroomlight|_wart_block$/
 const HEDEF_ODUN = 5
 
 // Ölüm cezası. Envanter kaybını ödüle yazmak yerine sabit bir ceza:
@@ -64,6 +63,7 @@ class MinecraftEnvironment {
     this.takilmaSayaci = 0      // üst üste kaç adımdır ilerleyemiyoruz
     this.durgunlukSayaci = 0    // üst üste kaç adımdır hiçbir ilerleme yok
     this.yerindeSayma = 0       // kaç adımdır fiilen yer değiştirmiyor
+    this.esyaKovalama = 0       // kaç adımdır aynı düşmüş eşyanın peşinde
     this.sonOlcum = null
     this.sonOlcumOdun = 0
     this.kacinmaAdimi = 0       // engelden kaçınma modunda kalan adım
@@ -348,7 +348,9 @@ class MinecraftEnvironment {
     const kirilabilir = (blok) => {
       if (!blok || blok.name === 'air') return false
       if (blok.boundingBox !== 'block') return false // su, çimen vs. engel değil
-      if (!YUMUSAK.test(blok.name)) return false // taş/toprak kazmıyoruz
+      // Neyi kırabileceğimiz GÖREVE bağlı: odunda sadece yaprak vb.,
+      // madende taşın kendisi. Karar gorevler.js'te.
+      if (!this.gorev.engelKirilabilirMi(bot, blok)) return false
       return bot.canDigBlock(blok)
     }
 
@@ -511,6 +513,7 @@ class MinecraftEnvironment {
     this.takilmaSayaci = 0
     this.durgunlukSayaci = 0
     this.yerindeSayma = 0
+    this.esyaKovalama = 0
     this.sonOlcum = null
     this.sonOlcumOdun = 0
     this.kacinmaAdimi = 0
@@ -541,6 +544,15 @@ class MinecraftEnvironment {
     // Odun ve maden görevlerinin kurulumu birbirinin TERSİ: biri yüzeye
     // çıkmak ister, diğeri yeraltına inmek. Ortak olan tek şey, bölüm
     // başlamadan önce ortamda toplanacak bir şey OLDUĞUNDAN emin olmak.
+    // SUDAN ÇIKMAK GÖREVDEN BAĞIMSIZ.
+    //
+    // Bunu yüzey kurulumunun içine koymuştum ve maden görevinde bot
+    // boğularak öldü: yeraltında su cebine girmek çok olağan, ama
+    // kurtarma sadece odun görevinde çalışıyordu. Ajanın aksiyon
+    // uzayında yüzme yok — hangi görevde olursa olsun boğulmaktan
+    // ortam sorumlu.
+    await this.sudanCik()
+
     if (this.gorev.yuzeyGorevi) {
       await this.yuzeyKurulumu()
     } else {
@@ -769,7 +781,6 @@ class MinecraftEnvironment {
    * etrafta ağaç kalmadıysa taze bir bölgeye ışınla.
    */
   async yuzeyKurulumu () {
-    await this.sudanCik()
     await this.yuzeyeCik()
 
     // Ajanın aksiyon uzayında "yüzeye tırman" diye bir şey yok;
@@ -804,22 +815,52 @@ class MinecraftEnvironment {
       const { uygunAlet } = require('../skills/alet')
       if (!uygunAlet(bot, { name: 'iron_ore' })) {
         bot.chat(`/give ${bot.username} ${this.gorev.aletVer} 1`)
-        await this.bekle(400)
+        await this.bekle(600)
+
+        // VERDİĞİMİZİ DOĞRULA.
+        //
+        // `/give` op yetkisi ister ve sessizce başarısız olur. Kazmasız
+        // bir bot cevheri kırıyor ama HİÇBİR ŞEY DÜŞMÜYOR — ölçümde
+        // tam olarak bunu gördük: %63 "önümde cevher var", 0 kaynak.
+        // Sessiz başarısızlık en pahalı hata türü.
+        if (!uygunAlet(bot, { name: 'iron_ore' })) {
+          log.hata(
+            `${this.gorev.aletVer} veremedim! Bot muhtemelen op değil. ` +
+            `Sunucuda "op ${bot.username}" çalıştır — kazmasız kırılan ` +
+            'cevher yok oluyor, bölümler boşa gidiyor.'
+          )
+        }
       }
     }
 
-    // 2) Zaten cevher görüyorsak inmeye gerek yok
-    if (this.enYakinKutuk()) return
-
-    // 3) Hedef derinliğe in. `kaz.js`'in merdiven inişi lav taraması ve
-    //    can kontrolüyle birlikte geliyor — burada yeniden yazmıyoruz.
+    // 2) DERİNLİĞE GÖRE İN, "cevher görüyor muyum"a göre DEĞİL.
+    //
+    // Burada bir kez "zaten cevher görüyorsam inmeye gerek yok" yazdım ve
+    // görev hiç çalışmadı. Sebep: yüzeyde de cevher görünüyor — uçurum
+    // yüzündeki bir kömür damarı, mağara ağzındaki demir. Bot 30 blok
+    // ötedeki ulaşılamaz bir cevhere kilitlenip yüzeyde dönüp duruyordu.
+    //
+    // Ölçüm bunu söylüyordu: %63 "cevhere dönüyorum", %10 yürüme ve
+    // HİÇ kırma yok. Yerin altında olsaydı önü taş olurdu ve kırardı.
+    //
+    // Görev "cevher seviyesinde başla" diyor; ölçüt derinlik.
     const hedefY = this.gorev.baslangicY ?? 15
     if (Math.floor(bot.entity.position.y) > hedefY + 6) {
-      log.bilgi(`Maden görevi: y=${hedefY} seviyesine iniliyor...`)
+      // İNİŞİ BÖLÜMLERE YAY.
+      //
+      // y=70'ten y=15'e inmek ~55 basamak, her basamak 3 blok kırmak:
+      // dakikalar sürüyor. İlk denemede Python soketi zaman aşımına
+      // uğrayıp eğitimi düşürdü. Reset dakikalarca bloke olmamalı.
+      //
+      // Çözüm: her reset en fazla 12 basamak insin. Bot yeraltında
+      // kaldığı için birkaç bölüm sonra hedefe varıyor ve o noktadan
+      // sonra iniş hiç çalışmıyor. Toplam süre aynı, ama tek bir
+      // çağrıda kilitlenmiyor.
+      log.bilgi(`Maden görevi: y=${hedefY} hedefi, şu an y=${Math.floor(bot.entity.position.y)}`)
       const { seviyeyeIn } = require('../skills/kaz')
       const sahteKontrol = { kontrolEt () {}, bekle: (ms) => this.bekle(ms) }
       try {
-        await seviyeyeIn(bot, hedefY, sahteKontrol, { seviye: 'stone' })
+        await seviyeyeIn(bot, hedefY, sahteKontrol, { seviye: 'stone', maksBasamak: 12 })
       } catch (err) {
         log.uyari(`İniş yarıda kaldı: ${err.message}`)
       }
@@ -893,6 +934,10 @@ class MinecraftEnvironment {
     // Ajanın öğrenmesi gereken şey odun toplamak; envanter kaybını ödüle
     // yazmak devasa negatif aykırı değerler üretiyor.
     const yeniOdun = Math.max(0, odun - this.oncekiOdun)
+
+    // Bir şey topladıysak eşya kovalama sayacı sıfırlanır — demek ki
+    // kovalamak işe yarıyormuş.
+    if (yeniOdun > 0) this.esyaKovalama = 0
     this.oncekiOdun = odun
 
     const mesafe = this.hamMesafe()

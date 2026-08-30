@@ -369,6 +369,216 @@ async function main () {
     }
   })
 
+  await dene('maden uzmani cevher gormeyince TUNEL ACIYOR (beklemiyor)', () => {
+    // Odun uzmani "hedef yoksa bekle" diyordu ve orada dogruydu: ormanda
+    // agac goremiyorsan kazacak bir sey yok. Madende TERSI -- cevher zaten
+    // tasin icinde sakli, gorememek NORMAL. 'bekle' deseydi taklit
+    // verisinin tamami "bekle" olurdu ve ajan hicbir sey ogrenemezdi.
+    const uzman = require('../bot/bridge/expert')
+    const b10 = sahteBot()
+    const e10 = new MinecraftEnvironment(b10, { zamanCarpani: 0, gorev: 'maden' })
+
+    // Hicbir cevher, hicbir esya yok; her yer tas
+    b10.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
+    b10.canDigBlock = () => true
+    b10.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+
+    const karar = uzman.uzmanAksiyonu(b10, e10)
+    if (karar.action === 4) throw new Error('cevher gormeyince bekledi — tunel acmali')
+    if (!/tunel/.test(karar.sebep)) throw new Error(`beklenmedik karar: ${karar.sebep}`)
+  })
+
+  await dene('odun uzmani agac gormeyince hala BEKLIYOR (geriye donuk)', () => {
+    const uzman = require('../bot/bridge/expert')
+    const b10 = sahteBot()
+    const e10 = new MinecraftEnvironment(b10, { zamanCarpani: 0 })
+    const karar = uzman.uzmanAksiyonu(b10, e10)
+    if (karar.sebep !== 'AGAC_BULAMIYORUM') {
+      throw new Error(`odun uzmani degisti: ${karar.sebep}`)
+    }
+  })
+
+  await dene('engel kirma kurali goreve gore ayriliyor', () => {
+    const g = require('../bot/bridge/gorevler')
+    const b10 = sahteBot()
+    b10.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    const tas = { name: 'stone', boundingBox: 'block' }
+    const yaprak = { name: 'oak_leaves', boundingBox: 'block' }
+
+    // Odun: tasi kirma (elle tas kazmak dakikalar surer, gorevle ilgisi yok)
+    if (g.GOREVLER.odun.engelKirilabilirMi(b10, tas)) throw new Error('odun gorevinde tas kirilabilir sayildi')
+    if (!g.GOREVLER.odun.engelKirilabilirMi(b10, yaprak)) throw new Error('yapragi kiramadi')
+
+    // Maden: tasi kirmak GOREVIN KENDISI
+    if (!g.GOREVLER.maden.engelKirilabilirMi(b10, tas)) throw new Error('madende tas kirilamaz sayildi')
+    const lav = { name: 'lava', boundingBox: 'block' }
+    if (g.GOREVLER.maden.engelKirilabilirMi(b10, lav)) throw new Error('lavi kirilabilir saydi')
+  })
+
+  await dene('uzman engeli KIRIYOR, sonsuza kadar dolasmiyor', () => {
+    // Olculen hata: bolumlerin %43'u "hedefe donuyorum", %31'i "engelden
+    // dolasiyorum", YURUME sadece %3. Iki adimlik dongu:
+    //   hizalan -> onum kapali -> sola dolas (artik hizali degilim)
+    //   -> hedefe geri don -> onum kapali -> sola dolas -> ...
+    // Iki bolumde de tek bir kaynak toplanamadi.
+    const uzman = require('../bot/bridge/expert')
+    const b11 = sahteBot()
+    const e11 = new MinecraftEnvironment(b11, { zamanCarpani: 0, gorev: 'maden' })
+    b11.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b11.canDigBlock = () => true
+    // Her yer tas: hizali olsak da onumuz kapali
+    b11.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
+
+    const karar = uzman.hedefeYonel(b11, e11, new Vec3(0, 64, -5), 'test')
+    if (karar.action !== 3) {
+      throw new Error(`kirmak yerine ${karar.action} sectiledi (${karar.sebep})`)
+    }
+  })
+
+  await dene('kacinma sayaci dolastiktan sonra YURUMEYI dayatiyor', () => {
+    const uzman = require('../bot/bridge/expert')
+    const b11 = sahteBot()
+    const e11 = new MinecraftEnvironment(b11, { zamanCarpani: 0 })
+    // Kirilamayan engel (odun gorevinde tas kirilamaz) -> dolasmali
+    b11.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
+
+    const ilk = uzman.hedefeYonel(b11, e11, new Vec3(0, 64, -5), 'test')
+    if (!/dolasiyorum/.test(ilk.sebep)) throw new Error(`dolasmadi: ${ilk.sebep}`)
+    if (e11.kacinmaAdimi <= 0) throw new Error('kacinma sayaci kurulmadi')
+
+    // Onu acilinca kacinma modunda YURUMELI, hedefe geri donmemeli
+    b11.blockAt = () => ({ name: 'air', boundingBox: 'empty', position: new Vec3(0, 0, 0) })
+    const ikinci = uzman.hedefeYonel(b11, e11, new Vec3(0, 64, -5), 'test')
+    if (ikinci.action !== 0) throw new Error(`kacinirken yurumedi: ${ikinci.sebep}`)
+  })
+
+  await dene('maden kurulumu YUZEYDE cevher gorse bile iniyor', async () => {
+    // Gercek hata: "zaten cevher goruyorsam inmeye gerek yok" yazmistim.
+    // Yuzeyde de cevher gorunuyor (ucurum yuzundeki komur, magara agzindaki
+    // demir). Bot 30 blok otedeki ulasilamaz cevhere kilitlenip yuzeyde
+    // donup duruyordu: %63 "cevhere donuyorum", %10 yurume, HIC kirma yok.
+    const b12 = sahteBot()
+    b12.entity.position = new Vec3(0, 70, 0) // YUZEYDE
+    b12.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    // Yakinda cevher GORUNUYOR
+    b12.findBlocks = () => [new Vec3(5, 70, 5)]
+    // Gercekci dunya: y<70 TAS (kazilacak), ustu hava, bir yerde cevher
+    b12.blockAt = (p) => {
+      const x = Math.floor(p.x); const y = Math.floor(p.y); const z = Math.floor(p.z)
+      if (x === 5 && z === 5 && y === 70) {
+        return { name: 'iron_ore', boundingBox: 'block', position: new Vec3(x, y, z) }
+      }
+      const dolu = y < 70
+      return {
+        name: dolu ? 'stone' : 'air',
+        boundingBox: dolu ? 'block' : 'empty',
+        position: new Vec3(x, y, z)
+      }
+    }
+    b12.registry = { blocksByName: { iron_ore: { id: 1 } } }
+
+    const e12 = new MinecraftEnvironment(b12, { zamanCarpani: 0, gorev: 'maden' })
+    let inmeyiDenedi = false
+    // seviyeyeIn cagrilirsa bunu yakalayalim: kaz.js'i sarmalamak yerine
+    // log'a bakmak yerine, bot.dig cagrilarini sayiyoruz (merdiven kazar)
+    b12.canDigBlock = () => true
+    b12.dig = async () => { inmeyiDenedi = true }
+
+    await e12.yeraltiKurulumu()
+    if (!inmeyiDenedi) {
+      throw new Error('yuzeyde cevher gorunce inmekten vazgecti')
+    }
+  })
+
+  await dene('MADEN gorevinde de sudan cikiyor (bogulma gorevden bagimsiz)', async () => {
+    // Gercek olay: bot maden gorevinde bogularak oldu. `sudanCik` yuzey
+    // kurulumunun ICINDEYDI, yani kurtarma sadece odun gorevinde
+    // calisiyordu. Yeraltinda su cebine girmek cok olagan.
+    const b13 = sahteBot()
+    let sudayim = true
+    b13.blockAt = () => ({
+      name: sudayim ? 'water' : 'stone',
+      boundingBox: sudayim ? 'empty' : 'block',
+      position: new Vec3(0, 0, 0)
+    })
+    const basilan = []
+    b13.setControlState = (ad, deger) => {
+      if (ad === 'jump' && deger) { basilan.push(ad); sudayim = false }
+    }
+    const e13 = new MinecraftEnvironment(b13, { zamanCarpani: 0, gorev: 'maden' })
+    await e13.reset()
+    if (!basilan.includes('jump')) throw new Error('maden gorevinde sudan cikmayi denemedi')
+  })
+
+  await dene('kazma verilemezse GURULTULU hata (sessiz basarisizlik yok)', async () => {
+    // `/give` op yetkisi ister ve sessizce basarisiz olur. Kazmasiz bot
+    // cevheri kiriyor ama HICBIR SEY DUSMUYOR: olcumde %63 "onumde cevher
+    // var" ve 0 kaynak gorduk. Sessiz basarisizlik en pahali hata turu.
+    const log = require('../bot/utils/log')
+    const orjinal = log.hata
+    const hatalar = []
+    log.hata = (...a) => hatalar.push(a.join(' '))
+    try {
+      const b13 = sahteBot()
+      b13.inventory = { items: () => [] } // /give calismiyor: hep bos
+      const e13 = new MinecraftEnvironment(b13, { zamanCarpani: 0, gorev: 'maden' })
+      await e13.yeraltiKurulumu()
+    } finally {
+      log.hata = orjinal
+    }
+    if (!hatalar.some((h) => /op de[gğ]il|iron_pickaxe/.test(h))) {
+      throw new Error(`kazma verilemedi ama uyarmadi. hatalar: ${hatalar.join(' | ')}`)
+    }
+  })
+
+  await dene('maden reset() inisi SINIRLIYOR (soket zaman asimi olmasin)', async () => {
+    // Gercek hata: y=70'ten y=15'e inmek ~55 basamak x 3 blok = dakikalar.
+    // Python soketi 60 sn'de zaman asimina ugradi ve egitim dustu.
+    // Reset dakikalarca bloke olmamali; inis bolumlere yayilmali.
+    const b14 = sahteBot()
+    b14.entity.position = new Vec3(0, 70, 0)
+    b14.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b14.canDigBlock = () => true
+    let kazilan = 0
+    b14.dig = async () => { kazilan++ }
+    b14.blockAt = (p) => {
+      const y = Math.floor(p.y)
+      const dolu = y < 70
+      return { name: dolu ? 'stone' : 'air', boundingBox: dolu ? 'block' : 'empty', position: new Vec3(0, y, 0) }
+    }
+
+    const e14 = new MinecraftEnvironment(b14, { zamanCarpani: 0, gorev: 'maden' })
+    await e14.yeraltiKurulumu()
+
+    // 12 basamak x 3 blok = 36. Sinir yoksa 55 basamak x 3 = 165 olurdu.
+    if (kazilan > 60) throw new Error(`${kazilan} blok kazdi — inis sinirlanmamis`)
+  })
+
+  await dene('uzman ULASILAMAYAN esyayi sonsuza kadar kovalamiyor', async () => {
+    // Olcum: maden gorevinde adimlarin %79'u "yakindaki cevheri
+    // aliyorum"du -- kiriyor, yuruyor, donuyor, ama esya envantere hic
+    // girmiyordu. Kirdigi deligin icine dusmus, ulasilamayan bir esya
+    // uzmani bolumun TAMAMI boyunca mesgul ediyordu.
+    const uzman = require('../bot/bridge/expert')
+    const b15 = sahteBot()
+    const e15 = new MinecraftEnvironment(b15, { zamanCarpani: 0, gorev: 'maden' })
+    b15.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b15.canDigBlock = () => true
+    b15.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
+    // ULASILAMAYAN esya: hep orada, hic toplanmiyor
+    b15.entities = {
+      1: { name: 'item', isValid: true, position: new Vec3(2, 64, 2) }
+    }
+
+    let esyaAdimi = 0
+    for (let i = 0; i < 60; i++) {
+      const karar = uzman.uzmanAksiyonu(b15, e15)
+      if (/yakin_cevheri/.test(karar.sebep)) esyaAdimi++
+    }
+    if (esyaAdimi >= 60) throw new Error('60 adim boyunca ayni esyayi kovaladi')
+    if (esyaAdimi > 30) throw new Error(`${esyaAdimi} adim kovaladi — sabir sayaci calismiyor`)
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()

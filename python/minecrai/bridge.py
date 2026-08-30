@@ -23,7 +23,9 @@ class BridgeClient:
     def __init__(
         self,
         url: str = "ws://localhost:8765",
-        timeout: float = 60.0,
+        # Maden gorevinde reset merdiven kaziyor: tek cagri dakikalara
+        # cikabiliyor. 60 sn yetmedi ve egitim soket zaman asimiyla dustu.
+        timeout: float = 180.0,
         retries: int = 20,
         retry_delay: float = 1.5,
     ) -> None:

@@ -118,9 +118,18 @@ def main() -> None:
     ap.add_argument("--gurultu", type=float, default=0.25,
                     help="bu olasilikla rastgele aksiyon uygula (etiket yine uzmanin)")
     ap.add_argument("--tohum", type=int, default=0)
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"],
+                    help="hangi gorevin demolari toplanacak")
     args = ap.parse_args()
 
-    env = MinecraftEnv(url=args.url)
+    # Demoları göreve göre AYRI dosyalara yaz. Karıştırmak, iki farklı
+    # görevin (gözlem, aksiyon) çiftlerini tek bir ağa aynı etiketmiş gibi
+    # göstermek olurdu — "önümde taş var" durumunda odun görevi dolaşmayı,
+    # maden görevi kırmayı öğretiyor. Aynı girdi, zıt etiket.
+    if args.gorev != "odun" and args.cikti == VARSAYILAN_CIKTI:
+        args.cikti = args.cikti.with_name(f"demolar_{args.gorev}.npz")
+
+    env = MinecraftEnv(url=args.url, gorev=args.gorev)
     baslangic = time.time()
 
     try:

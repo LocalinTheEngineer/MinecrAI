@@ -174,7 +174,7 @@ The same effect appeared inside behaviour cloning: evaluating the cloned policy 
 | **2** | Node↔Python bridge + Gymnasium environment + random-agent baseline | ✅ Done |
 | **3** | Behaviour cloning from scripted demonstrations | ✅ Done |
 | **4** | PPO training warm-started from the cloned policy, learning curve | ✅ Done |
-| **5** | Extended task set: mining, smelting, recursive crafting | 🟡 Scripted skills done; RL integration pending |
+| **5** | Extended task set: mining, smelting, recursive crafting | 🟡 Skills done; mining as an RL task in progress |
 
 Each milestone stands on its own — the repo is presentable at any point.
 

@@ -27,6 +27,14 @@ const { kutukMu, oduncuSay, dogalAgacMi, govdeninDibi } = require('../skills/cho
  */
 
 const CEVHER = /_ore$/
+
+// Odun görevinde ajanın kırmasına izin verilen "yol açma" blokları.
+// Taş ve toprak BİLEREK dışarıda: bot bir mağaraya düşünce elleriyle taş
+// kazmaya çalışıyordu; elle taş kazmak dakikalar sürer ve görevle ilgisi yok.
+const YUMUSAK = /_leaves$|vine|_sapling$|bamboo|cobweb|azalea|moss_|snow|sugar_cane|cactus|_mushroom_block$|shroomlight|_wart_block$/
+
+// Madende hiçbir koşulda kazılmayacak bloklar
+const MADEN_TEHLIKE = /lava|water|bedrock|_spawner$|chest|obsidian/
 const DEEPSLATE_HARIC = /^(coal|iron|copper|gold|redstone|emerald|lapis|diamond)_ore$|^deepslate_(coal|iron|copper|gold|redstone|emerald|lapis|diamond)_ore$/
 
 /** Envanterdeki cevher ve külçe sayısı (kırılan cevher külçe/parça düşürüyor) */
@@ -50,7 +58,10 @@ const GOREVLER = {
 
     // Ağacın ortasındaki kütüğü değil GÖVDENİN DİBİNİ hedefle: yukarıdan
     // aşağı kesmek hem daha yavaş hem de ajanı tepeye tırmandırıyor.
-    hedefiDuzelt: (bot, blok) => govdeninDibi(bot, blok)
+    hedefiDuzelt: (bot, blok) => govdeninDibi(bot, blok),
+
+    // Yolu kapatan neyi kırabiliriz? Odunda sadece yumuşak bitki blokları.
+    engelKirilabilirMi: (bot, blok) => !!blok && YUMUSAK.test(blok.name)
   },
 
   /** Milestone 5: yeraltında cevher topla. */
@@ -85,7 +96,20 @@ const GOREVLER = {
     },
 
     say: (bot) => cevherSay(bot),
-    hedefiDuzelt: (bot, blok) => blok // damarın kendisi, düzeltme gerekmiyor
+    hedefiDuzelt: (bot, blok) => blok, // damarın kendisi, düzeltme gerekmiyor
+
+    // MADENDE TAŞ KIRMAK GÖREVİN KENDİSİ.
+    //
+    // Odun görevinde taşı kırmayı yasaklamıştık — orada taş kazmak bir
+    // kayıptı. Madende tam tersi: cevhere ulaşmanın tek yolu taşın içinden
+    // geçmek ve ajanın elinde kazma var. Aynı soruya iki görev iki farklı
+    // cevap veriyor; bu yüzden karar burada, ortamda değil.
+    engelKirilabilirMi: (bot, blok) => {
+      if (!blok || blok.boundingBox !== 'block') return false
+      if (MADEN_TEHLIKE.test(blok.name)) return false
+      const { uygunAlet } = require('../skills/alet')
+      return !!uygunAlet(bot, blok) || /dirt|gravel|sand/.test(blok.name)
+    }
   }
 }
 
