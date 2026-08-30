@@ -2,7 +2,8 @@
 
 const Vec3 = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
-const { kutukMu, oduncuSay, dogalAgacMi } = require('../skills/chopTree')
+
+const { gorevGetir } = require('./gorevler')
 const log = require('../utils/log')
 const { aletKusan } = require('../skills/alet')
 const { pathfinderDurdur, pathfinderHazirla } = require('../utils/gorev')
@@ -48,6 +49,13 @@ class MinecraftEnvironment {
     // beklemenin bir anlamı yok. Bu olmadan smoke testi 43 saniye sürüyordu
     // ve süresinin çoğu `tazeAlanaIsinla`nın 4 x 4 saniyelik beklemesiydi.
     this.zamanCarpani = secenekler.zamanCarpani ?? 1
+
+    // HANGİ GÖREV?
+    //
+    // Ortamın değişmeyen kısmı (gözlem, aksiyonlar, ödül şekli, bölüm
+    // mantığı) tek; göreve göre değişen dört soru `gorevler.js`te.
+    // Varsayılan 'odun' — Milestone 1-4 hiç etkilenmiyor.
+    this.gorev = gorevGetir(secenekler.gorev || 'odun')
     this.adim = 0
     this.oncekiOdun = 0
     this.oncekiMesafe = null
@@ -98,12 +106,12 @@ class MinecraftEnvironment {
     // Kilitli hedef hâlâ duruyorsa onu kullan
     if (this.hedefKonum) {
       const mevcut = this.bot.blockAt(this.hedefKonum)
-      if (kutukMu(mevcut)) return mevcut
+      if (this.gorev.hedefMi(mevcut)) return mevcut
       this.hedefKonum = null // kesilmiş, yenisini seç
     }
 
     const adaylar = this.bot.findBlocks({
-      matching: (b) => kutukMu(b),
+      matching: (b) => this.gorev.hedefMi(b),
       maxDistance: config.searchRadius,
       count: 128
     })
@@ -118,7 +126,7 @@ class MinecraftEnvironment {
       if (this.karaListe.has(anahtar)) continue
 
       const blok = this.bot.blockAt(konum)
-      if (!dogalAgacMi(this.bot, blok)) continue
+      if (!this.gorev.dogalMi(this.bot, blok)) continue
 
       // Gövdenin DİBİNİ hedefle, bulduğumuz kütüğü değil.
       //
@@ -126,7 +134,8 @@ class MinecraftEnvironment {
       // Ona kilitlenen bot ulaşamadığı bir noktaya doğru arazide dolanıp
       // duruyordu. Dibi hedefleyince yanına gidip yukarı doğru kırarak
       // çıkabiliyor — insan oyuncunun yaptığı da bu.
-      const dip = this.govdeninDibi(konum)
+      // Odunda gövdenin dibi, madende bloğun kendisi
+      const dip = this.gorev.hedefiDuzelt(this.bot, this.bot.blockAt(konum))?.position || konum
       this.hedefKonum = dip
       return this.bot.blockAt(dip)
     }
@@ -153,7 +162,7 @@ class MinecraftEnvironment {
     const bakis = new Vec3(-Math.sin(bot.entity.yaw), 0, -Math.cos(bot.entity.yaw))
 
     const adaylar = bot.findBlocks({
-      matching: (b) => kutukMu(b), maxDistance: menzil + 1, count: 48
+      matching: (b) => this.gorev.hedefMi(b), maxDistance: menzil + 1, count: 48
     })
 
     let enIyi = null
@@ -178,7 +187,7 @@ class MinecraftEnvironment {
       }
 
       const aday = bot.blockAt(konum)
-      if (!dogalAgacMi(bot, aday)) continue // oyuncunun yapısını kırma
+      if (!this.gorev.dogalMi(bot, aday)) continue // oyuncunun yapısını kırma
 
       // Alttan üste kesmek daha verimli: alçak olana öncelik ver
       const skor = -fark.norm() - Math.max(0, fark.y) * 0.3
@@ -268,7 +277,7 @@ class MinecraftEnvironment {
     let en_alt = konum
     for (let i = 0; i < 24; i++) {
       const alt = en_alt.offset(0, -1, 0)
-      if (!kutukMu(this.bot.blockAt(alt))) break
+      if (!this.gorev.hedefMi(this.bot.blockAt(alt))) break
       en_alt = alt
     }
     return en_alt
@@ -390,10 +399,10 @@ class MinecraftEnvironment {
       mesafe,
       bot.entity.yaw / Math.PI,
       bot.entity.pitch / Math.PI,
-      Math.min(this.bolumOdunu() / HEDEF_ODUN, 1),
+      Math.min(this.bolumOdunu() / this.gorev.hedefAdet, 1),
       (bot.health ?? 20) / 20,
       (bot.food ?? 20) / 20,
-      kutukMu(baktigi) ? 1 : 0,
+      this.gorev.hedefMi(baktigi) ? 1 : 0,
       bot.entity.onGround ? 1 : 0,
       this.adim / MAX_ADIM,
       this.onumdeEngelVar() ? 1 : 0, // önüm kapalı mı
@@ -412,7 +421,7 @@ class MinecraftEnvironment {
    * verisinin neredeyse tamamı kayboluyordu.
    */
   bolumOdunu () {
-    return oduncuSay(this.bot) - this.bolumBaslangicOdun
+    return this.gorev.say(this.bot) - this.bolumBaslangicOdun
   }
 
   /** Ham mesafe (normalize edilmemiş) — ödül hesabı için */
@@ -471,7 +480,7 @@ class MinecraftEnvironment {
       case 3: { // önündeki bloğu kır (kütük yoksa yolu kapatan blok)
         const hedef = this.onundekiKutuk() || this.onumuKapatan()
         if (hedef && bot.canDigBlock(hedef)) {
-          const kutuktu = kutukMu(hedef)
+          const kutuktu = this.gorev.hedefMi(hedef)
           try {
             // Uygun alet varsa eline al — elle kesmek ~8 kat yavas
             await aletKusan(bot, hedef)
@@ -602,7 +611,12 @@ class MinecraftEnvironment {
     //
     // `#minecraft:logs` etiketi bütün kütük türlerini kapsıyor; balta ve
     // diğer aletler envanterde kalıyor.
-    this.bot.chat(`/clear ${this.bot.username} #minecraft:logs`)
+    // Görev hangi kaynağı topluyorsa onu temizliyoruz. Madencilikte
+    // etiket yok (cevherler tek bir etikette toplanmıyor), o yüzden
+    // temizleme atlanıyor ve envanter sayacı bölüm başında sıfırlanıyor.
+    if (this.gorev.temizlemeEtiketi) {
+      this.bot.chat(`/clear ${this.bot.username} ${this.gorev.temizlemeEtiketi}`)
+    }
 
     // YERDEKİ EŞYALARI DA TEMİZLE.
     //
@@ -618,7 +632,7 @@ class MinecraftEnvironment {
     this.bot.chat(`/kill @e[type=item,distance=..${TEMIZLIK_YARICAPI}]`)
     await this.bekle(500)
 
-    const kalanOdun = oduncuSay(this.bot)
+    const kalanOdun = this.gorev.say(this.bot)
     if (kalanOdun > 0) {
       // Bot op değilse /clear çalışmaz — sessizce bozulmaktansa uyar
       log.uyari(
@@ -830,7 +844,7 @@ class MinecraftEnvironment {
     else if (action === 0) this.takilmaSayaci = 0
 
     // --- ödül hesabı ---
-    const odun = oduncuSay(this.bot)
+    const odun = this.gorev.say(this.bot)
 
     // Envanter AZALDIYSA bu toplama değil kayıptır (ölüm, dolu envanter).
     // Ajanın öğrenmesi gereken şey odun toplamak; envanter kaybını ödüle
@@ -907,7 +921,7 @@ class MinecraftEnvironment {
       this.sonOlcumOdun = bolumOdun
     }
 
-    const terminated = bolumOdun >= HEDEF_ODUN || this.oldu
+    const terminated = bolumOdun >= this.gorev.hedefAdet || this.oldu
     const truncated = this.adim >= MAX_ADIM ||
       this.durgunlukSayaci >= DURGUNLUK_SINIRI ||
       this.yerindeSayma >= 60
@@ -945,7 +959,7 @@ class MinecraftEnvironment {
       esyaMesafe: esya ? +esya.position.distanceTo(p).toFixed(1) : null,
       onumKapali: this.onumdeEngelVar(),
       karaListe: this.karaListe.size,
-      envanterOdun: oduncuSay(this.bot)
+      envanterOdun: this.gorev.say(this.bot)
     }
   }
 

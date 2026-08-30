@@ -79,7 +79,8 @@ class MinecraftEnv(gym.Env):
 
     metadata = {"render_modes": ["human"], "render_fps": 2}
 
-    def __init__(self, url: str = "ws://localhost:8765") -> None:
+    def __init__(self, url: str = "ws://localhost:8765", gorev: str = "odun") -> None:
+        self.gorev = gorev
         super().__init__()
 
         self.action_space = spaces.Discrete(len(AKSIYONLAR))
@@ -101,7 +102,11 @@ class MinecraftEnv(gym.Env):
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed)
-        cevap = self.bridge.reset()
+        # Gorevi HER reset'te bildiriyoruz. Node tarafi degismediyse
+        # hicbir sey yapmiyor; degistiyse gecis bolum basinda oluyor.
+        # Cok gorevli egitimde bolumden bolume gorev degistirmek boylece
+        # ek bir protokol gerektirmiyor.
+        cevap = self.bridge.reset(self.gorev)
         self._son_info = cevap.get("info", {})
         return self._obs(cevap["obs"]), self._son_info
 

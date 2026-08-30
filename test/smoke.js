@@ -295,6 +295,39 @@ async function main () {
     if (!basilan.includes('jump')) throw new Error('suda yuzmeyi denemedi')
   })
 
+  console.log('\nGorev tanimlari (odun / maden)')
+  const gorevler = require('../bot/bridge/gorevler')
+
+  await dene('gorevGetir() bilinmeyen gorevde oduna dusuyor', () => {
+    if (gorevler.gorevGetir('zurna').ad !== 'odun') throw new Error('varsayilan odun degil')
+    if (gorevler.gorevGetir('maden').ad !== 'maden') throw new Error('maden bulunamadi')
+  })
+
+  await dene('maden gorevi cevheri taniyor, kutugu tanimiyor', () => {
+    const m = gorevler.GOREVLER.maden
+    for (const ad of ['iron_ore', 'deepslate_diamond_ore', 'coal_ore']) {
+      if (!m.hedefMi({ name: ad })) throw new Error(`${ad} hedef sayilmadi`)
+    }
+    for (const ad of ['oak_log', 'stone', 'deepslate', 'dirt']) {
+      if (m.hedefMi({ name: ad })) throw new Error(`${ad} yanlislikla hedef sayildi`)
+    }
+  })
+
+  await dene('odun gorevi hala kutuk topluyor (geriye donuk uyum)', () => {
+    const o = gorevler.GOREVLER.odun
+    if (!o.hedefMi({ name: 'birch_log' })) throw new Error('kutugu tanimadi')
+    if (o.hedefMi({ name: 'iron_ore' })) throw new Error('cevheri odun sandi')
+    if (o.hedefAdet !== 5) throw new Error('hedef adet degismis')
+  })
+
+  await dene('ortam varsayilan olarak ODUN gorevinde (mevcut egitim bozulmasin)', () => {
+    const b8 = sahteBot()
+    const e8 = new MinecraftEnvironment(b8, { zamanCarpani: 0 })
+    if (e8.gorev.ad !== 'odun') throw new Error(`varsayilan gorev: ${e8.gorev.ad}`)
+    const e9 = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'maden' })
+    if (e9.gorev.ad !== 'maden') throw new Error('maden gorevi secilemedi')
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()

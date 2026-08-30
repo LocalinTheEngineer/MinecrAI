@@ -59,8 +59,11 @@ class BridgeClient:
 
     # ------------------------------------------------------------------ API
 
-    def reset(self) -> Dict[str, Any]:
-        return self._cagir({"cmd": "reset"})
+    def reset(self, gorev: str | None = None) -> Dict[str, Any]:
+        istek: Dict[str, Any] = {"cmd": "reset"}
+        if gorev:
+            istek["gorev"] = gorev
+        return self._cagir(istek)
 
     def step(self, action: int) -> Dict[str, Any]:
         return self._cagir({"cmd": "step", "action": int(action)})

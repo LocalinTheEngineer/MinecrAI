@@ -17,6 +17,7 @@ const collectBlock = require('mineflayer-collectblock').plugin
 const config = require('./../config')
 const log = require('./../utils/log')
 const { MinecraftEnvironment } = require('./environment')
+const { gorevGetir } = require('./gorevler')
 
 function kopruyuBaslat (ayarlar = {}) {
   const host = ayarlar.host || config.host
@@ -63,6 +64,15 @@ function kopruyuBaslat (ayarlar = {}) {
 
         try {
           if (istek.cmd === 'reset') {
+            // GÖREV DEĞİŞİMİ.
+            //
+            // Python tarafı hangi görevi oynadığını reset ile bildiriyor.
+            // Ayrı bir "görev seç" komutu yapmadık: görev bölüm başında
+            // belli olur, bölüm ortasında değişmesinin anlamı yok.
+            if (istek.gorev && istek.gorev !== env.gorev.ad) {
+              env.gorev = gorevGetir(istek.gorev)
+              log.bilgi(`Görev: ${env.gorev.ad}`)
+            }
             ws.send(JSON.stringify(await env.reset()))
           } else if (istek.cmd === 'step') {
             ws.send(JSON.stringify(await env.step(istek.action)))
