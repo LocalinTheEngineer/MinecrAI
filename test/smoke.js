@@ -328,6 +328,47 @@ async function main () {
     if (e9.gorev.ad !== 'maden') throw new Error('maden gorevi secilemedi')
   })
 
+  await dene('maden gorevi bolum basinda KAZMA veriyor', async () => {
+    // Yanlis kazmayla cevher kirmak onu YOK EDIYOR. Ajanin ogrenmesi
+    // gereken sey "cevheri bul ve kir"; alet tedariki ayri bir problem.
+    const b9 = sahteBot()
+    const komutlar = []
+    b9.chat = (m) => komutlar.push(m)
+    const e9 = new MinecraftEnvironment(b9, { zamanCarpani: 0, gorev: 'maden' })
+    await e9.reset()
+    if (!komutlar.some((m) => /give .*iron_pickaxe/.test(m))) {
+      throw new Error(`kazma verilmedi. komutlar: ${komutlar.join(' | ')}`)
+    }
+  })
+
+  await dene('odun gorevi kazma VERMIYOR (gorevler birbirine karismasin)', async () => {
+    const b9 = sahteBot()
+    const komutlar = []
+    b9.chat = (m) => komutlar.push(m)
+    const e9 = new MinecraftEnvironment(b9, { zamanCarpani: 0 })
+    await e9.reset()
+    if (komutlar.some((m) => /iron_pickaxe/.test(m))) {
+      throw new Error('odun gorevinde kazma verildi')
+    }
+    // Odun gorevi envanteri temizler, maden temizlemez
+    if (!komutlar.some((m) => /clear .*minecraft:logs/.test(m))) {
+      throw new Error('odun gorevi envanteri temizlemedi')
+    }
+  })
+
+  await dene('maden gorevi YUZEYE CIKMAYA calismiyor', async () => {
+    // Kurulumlar birbirinin tersi: odun yukari, maden asagi. Maden
+    // goreviyle yuzeye isinlanmak bolumu bozar.
+    const b9 = sahteBot()
+    const komutlar = []
+    b9.chat = (m) => komutlar.push(m)
+    const e9 = new MinecraftEnvironment(b9, { zamanCarpani: 0, gorev: 'maden' })
+    await e9.reset()
+    if (komutlar.some((m) => /spreadplayers/.test(m))) {
+      throw new Error('maden gorevinde yuzeye isinlandi')
+    }
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()

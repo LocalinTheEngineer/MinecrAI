@@ -536,57 +536,38 @@ class MinecraftEnvironment {
     // Rastgele baslangic yonu, demolarda donme ve yurume ornekleri olusturur.
     await this.bot.look(Math.random() * 2 * Math.PI - Math.PI, 0, true)
 
-    // Yer altina/magaraya dustuyse once yuzeye cik.
-    await this.sudanCik()
-    await this.yuzeyeCik()
-
-    // YERALTINDA KALMAYI SESSİZ GEÇME.
+    // BÖLÜM ORTAMINI GÖREVE GÖRE HAZIRLA.
     //
-    // Bot bir mağaraya düştü ve çıkamadı. `yuzeyeCik` yol bulamayınca
-    // bölüm yeraltında başlıyordu: ağaç yok, ödül yok, 60 adımda kesilen
-    // boş bölümler. Ajanın aksiyon uzayında "yüzeye tırman" diye bir şey
-    // yok; bu ORTAMIN sorumluluğu.
-    if (!this.acikHavadaMi()) {
-      log.uyari('Yeraltındayım — yüzeye ışınlanıyorum.')
-      await this.tazeAlanaIsinla()
-      if (!this.acikHavadaMi()) {
-        const p = this.bot.entity.position
-        log.hata(
-          'Yüzeye çıkamadım! Konum: ' +
-          `x=${p.x.toFixed(0)} y=${p.y.toFixed(0)} z=${p.z.toFixed(0)}. ` +
-          'Eğitimi durdurup botu elle ışınla — bu bölümler eğitime zarar veriyor.'
-        )
-      }
+    // Odun ve maden görevlerinin kurulumu birbirinin TERSİ: biri yüzeye
+    // çıkmak ister, diğeri yeraltına inmek. Ortak olan tek şey, bölüm
+    // başlamadan önce ortamda toplanacak bir şey OLDUĞUNDAN emin olmak.
+    if (this.gorev.yuzeyGorevi) {
+      await this.yuzeyKurulumu()
+    } else {
+      await this.yeraltiKurulumu()
     }
 
-    // Etrafta agac kalmadiysa taze bir bolgeye isinlan.
-    // Ajan ogrendigi ormani kesiyor; ortam sabit kalmazsa ogrenme egrisi
-    // olculemez hale geliyor.
-    if (!this.enYakinKutuk()) {
-      await this.tazeAlanaIsinla()
-    }
-
-    // AĞAÇSIZ BÖLÜMLERİ SESSİZ GEÇME.
+    // HEDEFSİZ BÖLÜMLERİ SESSİZ GEÇME.
     //
     // Bot boğulup öldükten sonra ağaçsız bir yere doğdu ve 50'den fazla
-    // bölüm üst üste "0 odun, 60 adım, -0.60 ödül" ile bitti. Rakamlar
+    // bölüm üst üste "0 kaynak, 60 adım, -0.60 ödül" ile bitti. Rakamlar
     // akıp gidiyordu ama hiçbir şey "burada öğrenilecek bir şey yok"
     // demiyordu. PPO o gürültüden öğrenmeye çalıştı.
     //
     // Ölçebildiğimiz bir arıza sessiz kalmamalı.
     if (!this.enYakinKutuk()) {
-      this.agacsizBolum = (this.agacsizBolum || 0) + 1
-      if (this.agacsizBolum >= 3) {
+      this.hedefsizBolum = (this.hedefsizBolum || 0) + 1
+      if (this.hedefsizBolum >= 3) {
         const p = this.bot.entity.position
         log.hata(
-          `${this.agacsizBolum} bölümdür ağaç bulamıyorum! ` +
+          `${this.hedefsizBolum} bölümdür ${this.gorev.ad} bulamıyorum! ` +
           `Konum: x=${p.x.toFixed(0)} y=${p.y.toFixed(0)} z=${p.z.toFixed(0)}. ` +
           'Bu bölümler eğitime ZARAR veriyor — eğitimi durdurup botu ' +
-          'ormanlık bir yere ışınla (/tp MinecrAI <x> <y> <z>).'
+          'uygun bir yere ışınla (/tp MinecrAI <x> <y> <z>).'
         )
       }
     } else {
-      this.agacsizBolum = 0
+      this.hedefsizBolum = 0
     }
 
     // Bolum baslangicini agaca makul bir mesafeye tasi.
@@ -781,6 +762,68 @@ class MinecraftEnvironment {
       return true
     }
     return true
+  }
+
+  /**
+   * Yüzey görevi kurulumu (odun): suya/mağaraya düştüyse çıkar,
+   * etrafta ağaç kalmadıysa taze bir bölgeye ışınla.
+   */
+  async yuzeyKurulumu () {
+    await this.sudanCik()
+    await this.yuzeyeCik()
+
+    // Ajanın aksiyon uzayında "yüzeye tırman" diye bir şey yok;
+    // mağarada kalmak ORTAMIN sorunu.
+    if (!this.acikHavadaMi()) {
+      log.uyari('Yeraltındayım — yüzeye ışınlanıyorum.')
+      await this.tazeAlanaIsinla()
+    }
+
+    // Ajan öğrendiği ormanı kesiyor; ortam sabit kalmazsa öğrenme eğrisi
+    // ölçülemez hale geliyor.
+    if (!this.enYakinKutuk()) await this.tazeAlanaIsinla()
+  }
+
+  /**
+   * Yeraltı görevi kurulumu (maden).
+   *
+   * İNİŞİ AJANA ÖĞRETMİYORUZ ve bu bilinçli bir karar: y=64'ten cevher
+   * seviyesine inmek binlerce adım, bir bölüm ise 500 adım. Ajan hiçbir
+   * zaman ödüle ulaşamaz, dolayısıyla hiçbir şey öğrenemez.
+   *
+   * Görev şu şekilde SINIRLANDIRILDI: "cevher seviyesindesin, kazman
+   * elinde — 500 adımda 5 cevher topla". Bu, ağaç göreviyle aynı
+   * büyüklükte ve aynı PPO koduyla eğitilebilir. İniş, tıpkı odun
+   * görevindeki `baslangicaTasi` gibi, bölüm KURULUMUNUN işi.
+   */
+  async yeraltiKurulumu () {
+    const bot = this.bot
+
+    // 1) Kazma olmadan cevher kırmak onu YOK EDER — önce aleti garantile
+    if (this.gorev.aletVer) {
+      const { uygunAlet } = require('../skills/alet')
+      if (!uygunAlet(bot, { name: 'iron_ore' })) {
+        bot.chat(`/give ${bot.username} ${this.gorev.aletVer} 1`)
+        await this.bekle(400)
+      }
+    }
+
+    // 2) Zaten cevher görüyorsak inmeye gerek yok
+    if (this.enYakinKutuk()) return
+
+    // 3) Hedef derinliğe in. `kaz.js`'in merdiven inişi lav taraması ve
+    //    can kontrolüyle birlikte geliyor — burada yeniden yazmıyoruz.
+    const hedefY = this.gorev.baslangicY ?? 15
+    if (Math.floor(bot.entity.position.y) > hedefY + 6) {
+      log.bilgi(`Maden görevi: y=${hedefY} seviyesine iniliyor...`)
+      const { seviyeyeIn } = require('../skills/kaz')
+      const sahteKontrol = { kontrolEt () {}, bekle: (ms) => this.bekle(ms) }
+      try {
+        await seviyeyeIn(bot, hedefY, sahteKontrol, { seviye: 'stone' })
+      } catch (err) {
+        log.uyari(`İniş yarıda kaldı: ${err.message}`)
+      }
+    }
   }
 
   /** Bölüm kurulumu: yakınlarda ağaç varsa makul bir mesafeye yürü */

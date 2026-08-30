@@ -60,6 +60,19 @@ const GOREVLER = {
     temizlemeEtiketi: null, // cevher etiketi yok, envanteri elle temizliyoruz
     yuzeyGorevi: false,
 
+    // Bölüm bu derinlikte başlar. Demir y=15 civarında yoğun; elmas
+    // (y=-58) daha zengin ama bedrock'a yakın ve lav çok — eğitim için
+    // gereksiz ölüm riski.
+    baslangicY: 15,
+
+    // Bölüm başında ajana verilen kazma.
+    //
+    // NEDEN VERİYORUZ: yanlış kazmayla cevher kırmak onu YOK EDİYOR.
+    // Ajanın öğrenmesi gereken şey "cevheri bul ve kır"; alet tedariki
+    // ayrı bir problem ve onu elle yazılmış `kaz.js` zaten çözüyor.
+    // Ağaç görevinde de baltayı ajan üretmiyor.
+    aletVer: 'iron_pickaxe',
+
     hedefMi: (blok) => !!blok && CEVHER.test(blok.name) && DEEPSLATE_HARIC.test(blok.name),
 
     // Cevherde "oyuncunun yapısı mı" sorusu yok — cevher inşa edilmiyor.
