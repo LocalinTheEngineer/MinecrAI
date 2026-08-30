@@ -12,6 +12,12 @@ standard Gymnasium environment, so any RL algorithm can train against real Minec
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-1.0-0081A5)](https://gymnasium.farama.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
+<img src="docs/images/demo_ppo.gif" width="620" alt="The trained PPO policy gathering wood">
+
+*The trained PPO policy playing live. No scripted navigation — every step is
+`forward` / `turn` / `break`, chosen by a network trained for 20k steps against
+a real Minecraft server.*
+
 </div>
 
 ---
@@ -197,6 +203,12 @@ iron pickaxe  ← 3 iron ingots + 2 sticks
   stick        ← planks ← logs
 ```
 
+<img src="docs/images/demo_uret.gif" width="560" alt="uret tas kazma resolving its own recipe tree">
+
+*One command in, a stone pickaxe out. The bot chops a tree, crafts planks and
+sticks, places a crafting table, mines stone, and assembles the pickaxe — the
+chain is derived at runtime, not written down.*
+
 Two design notes worth reading the code for:
 
 **Species-agnostic gathering.** Sticks have ~12 recipes, one per wood type. With
@@ -270,6 +282,11 @@ Then type in the in-game chat:
 | `koru` | Mark a no-dig zone around you — the bot never breaks blocks there |
 | `komut` | List every command |
 | `dur` | Abort the current task immediately |
+
+<img src="docs/images/demo_kes.gif" width="560" alt="the kes command felling trees">
+
+*`kes 3` — find the nearest natural tree, fell it trunk to canopy (pillaring up
+when the top is out of reach), collect the drops, repeat.*
 
 ### 3. The RL loop (Milestone 2)
 
