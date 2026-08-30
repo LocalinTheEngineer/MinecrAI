@@ -220,15 +220,44 @@ class MinecraftEnvironment {
    *
    * Zıplanabilir tek bloklu basamak engel sayılmaz, oradan geçebiliyoruz.
    */
+  /**
+   * Botun önündeki noktaları örnekler — SADECE ORTA ÇİZGİ DEĞİL.
+   *
+   * Hem engel sensörü hem "önümü kapatan blok" tek bir noktaya bakıyordu:
+   * tam ileri, tam ortadan. Ama oyuncu kutusu 0.6 blok geniş. Tam ortası
+   * boş olsa bile ÇAPRAZDAKİ bir blok yürümeyi engelliyor.
+   *
+   * Sonucu oyunda gördük: ajanın önünde sol ve sağ çaprazda yaprak var,
+   * ortası boş. Sensör "önüm açık" diyor, ajan ileri basıyor, oyun onu
+   * geçirmiyor. Zıplıyor, yine geçemiyor. Kırmayı da denemiyor çünkü
+   * "önümü kapatan blok" da aynı kör noktadan bakıyor.
+   *
+   * Üç nokta örnekliyoruz: sol kenar, orta, sağ kenar.
+   */
+  onumdekiNoktalar (menzil, yukseklikler) {
+    const yaw = this.bot.entity.yaw
+    const ileri = new Vec3(-Math.sin(yaw), 0, -Math.cos(yaw))
+    const yan = new Vec3(-Math.cos(yaw), 0, Math.sin(yaw)) // ileriye dik
+    const p = this.bot.entity.position
+
+    const noktalar = []
+    for (const yukseklik of yukseklikler) {
+      for (const kayma of [-0.35, 0, 0.35]) {
+        noktalar.push(p.offset(
+          ileri.x * menzil + yan.x * kayma,
+          yukseklik,
+          ileri.z * menzil + yan.z * kayma
+        ))
+      }
+    }
+    return noktalar
+  }
+
   onumdeEngelVar () {
     if (this.onumdeBasamakVar()) return false
 
-    const bot = this.bot
-    const bakis = new Vec3(-Math.sin(bot.entity.yaw), 0, -Math.cos(bot.entity.yaw))
-    const p = bot.entity.position
-
-    for (const yukseklik of [0.1, 1.2]) {
-      const blok = bot.blockAt(p.offset(bakis.x * 0.8, yukseklik, bakis.z * 0.8))
+    for (const nokta of this.onumdekiNoktalar(0.8, [0.1, 1.2])) {
+      const blok = this.bot.blockAt(nokta)
       if (blok && blok.boundingBox === 'block') return true
     }
     return false
@@ -306,20 +335,36 @@ class MinecraftEnvironment {
     // dakikalar surer ve gorevle hicbir ilgisi yok.
     // Sadece agacin etrafindaki yumusak bitki bloklarini engel sayiyoruz.
     const bot = this.bot
-    const bakis = new Vec3(-Math.sin(bot.entity.yaw), 0, -Math.cos(bot.entity.yaw))
-    const ayak = bot.entity.position
 
-    for (const yukseklik of [0, 1]) {
-      const nokta = ayak.offset(
-        bakis.x * menzil, yukseklik + 0.1, bakis.z * menzil
-      )
-      const blok = bot.blockAt(nokta)
-      if (!blok || blok.name === 'air') continue
-      if (blok.boundingBox !== 'block') continue // su, çimen vs. engel değil
-      if (!YUMUSAK.test(blok.name)) continue      // taş/toprak kazmıyoruz
-      if (!bot.canDigBlock(blok)) continue
-      return blok
+    const kirilabilir = (blok) => {
+      if (!blok || blok.name === 'air') return false
+      if (blok.boundingBox !== 'block') return false // su, çimen vs. engel değil
+      if (!YUMUSAK.test(blok.name)) return false // taş/toprak kazmıyoruz
+      return bot.canDigBlock(blok)
     }
+
+    // Önümüz: üç nokta genişliğinde, ayak ve baş hizası, İKİ MESAFEDE.
+    //
+    // Tek mesafeye bakmak yetmiyordu: varsayılan 1.6 blok, komşu bloğun
+    // ötesine düşüyor ve hemen önümüzdeki yaprağı ıskalıyordu. Engel
+    // sensörü 0.8'e bakıyor, kırma 1.6'ya — ikisi farklı yerlere bakınca
+    // ajan "önüm kapalı" görüp kırmaya çalışıyor ama kıracak bir şey
+    // bulamıyordu.
+    for (const uzaklik of [0.8, menzil]) {
+      for (const nokta of this.onumdekiNoktalar(uzaklik, [0.1, 1.1])) {
+        const blok = bot.blockAt(nokta)
+        if (kirilabilir(blok)) return blok
+      }
+    }
+
+    // BAŞIMIZIN ÜSTÜ.
+    //
+    // Ajanın tek çıkış yolu bazen zıplamak oluyor ama kafasının üstünde
+    // yaprak varsa zıplayamıyor. Oyunda tam olarak bu görüldü: bot
+    // zıplayıp zıplayıp yerinde sayıyordu. Yukarısı da engeldir.
+    const ustu = bot.blockAt(bot.entity.position.offset(0, 2.1, 0))
+    if (kirilabilir(ustu)) return ustu
+
     return null
   }
 
@@ -751,8 +796,29 @@ class MinecraftEnvironment {
     }
   }
 
+  /**
+   * Suda mıyız? Öyleyse yüzerek yüksel.
+   *
+   * Ajanın aksiyon uzayında yüzme yok. Suya girerse ne yaparsa yapsın
+   * dibe iner ve boğulur — bir kez gerçekten oldu, ardından 50 bölüm
+   * boyunca çöp veri üretildi. Bölüm BAŞINDA sudan çıkarıyorduk ama
+   * bölüm ORTASINDA suya girerse orada ölüyordu.
+   *
+   * Zıplama tuşu suda "yüzerek yüksel" demek. Ajan adına basmak aksiyon
+   * uzayını genişletmiyor; onun etkileyemediği bir ölümü engelliyor —
+   * tıpkı can barını da onun yönetmemesi gibi.
+   */
+  async suUstundeKal () {
+    if (!this.suyunIcindeMi()) return false
+    this.bot.setControlState('jump', true)
+    await this.bekle(150)
+    this.bot.setControlState('jump', false)
+    return true
+  }
+
   async step (action) {
     this.adim++
+    await this.suUstundeKal()
     const oncekiKonum = this.bot.entity.position.clone()
 
     const kirilanKutuk = await this.aksiyonUygula(action)

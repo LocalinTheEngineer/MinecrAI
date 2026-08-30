@@ -227,6 +227,74 @@ async function main () {
     if (!e5.acikHavadaMi()) throw new Error('acik havada tavan gordu')
   })
 
+  await dene('CAPRAZDAKI yapragi goruyor ve kirabiliyor', async () => {
+    // Oyunda gorulen: ajanin onunde sol ve sag caprazda yaprak var,
+    // tam ortasi bos. Sensor "onum acik" diyordu, ajan ileri basiyordu,
+    // oyun onu gecirmiyordu. Sebep: hem engel sensoru hem "onumu kapatan
+    // blok" TEK BIR NOKTAYA bakiyordu -- tam ileri, tam ortadan. Oysa
+    // oyuncu kutusu 0.6 blok genis.
+    const b6 = sahteBot()
+    const e6 = new MinecraftEnvironment(b6, { zamanCarpani: 0 })
+    // Bot blogun ORTASINDA DEGIL, kenarinda: x=0.9 => govde kutusu
+    // (0.6..1.2) iki blok sutununa birden yayiliyor. Minecraft'ta
+    // olagan durum bu; ajan nadiren tam ortada duruyor.
+    b6.entity.position = new Vec3(0.9, 64, 0.5)
+    b6.entity.yaw = 0 // ileri = -z
+    b6.canDigBlock = () => true
+
+    // Yaprak SADECE x=1 sutununda. Tam ileri isini (x=0) BOS goruyor,
+    // ama govde x=1 sutununa tastigi icin gecemiyoruz.
+    b6.blockAt = (p) => {
+      const x = Math.floor(p.x); const y = Math.floor(p.y); const z = Math.floor(p.z)
+      const yaprak = (y === 64 || y === 65) && z === -1 && x === 1
+      return {
+        name: yaprak ? 'oak_leaves' : 'air',
+        boundingBox: yaprak ? 'block' : 'empty',
+        position: new Vec3(x, y, z)
+      }
+    }
+
+    if (!e6.onumdeEngelVar()) throw new Error('caprazdaki engeli GORMEDI')
+    const hedef = e6.onumuKapatan()
+    if (!hedef) throw new Error('caprazdaki yapragi kirmayi denemedi')
+    if (hedef.name !== 'oak_leaves') throw new Error(`yanlis blok: ${hedef.name}`)
+  })
+
+  await dene('KAFASININ USTUNDEKI yapragi kirabiliyor', async () => {
+    // "Zipliyor zipliyor ama nafile": kafasinin ustunde yaprak varsa
+    // ziplayamiyor. Yukarisi da engeldir.
+    const b6 = sahteBot()
+    const e6 = new MinecraftEnvironment(b6, { zamanCarpani: 0 })
+    b6.entity.position = new Vec3(0.5, 64, 0.5)
+    b6.canDigBlock = () => true
+    b6.blockAt = (p) => {
+      const ustu = Math.floor(p.y) === 66
+      return {
+        name: ustu ? 'oak_leaves' : 'air',
+        boundingBox: ustu ? 'block' : 'empty',
+        position: p
+      }
+    }
+    const hedef = e6.onumuKapatan()
+    if (!hedef) throw new Error('kafasinin ustundeki yapragi gormedi')
+  })
+
+  await dene('step() suda ZIPLAYARAK yuzuyor (bogulmuyor)', async () => {
+    // Bolum BASINDA sudan cikariyorduk ama bolum ORTASINDA suya girerse
+    // orada oluyordu -- ve gercekten oldu, npm run bridge calisirken.
+    // Ajanin aksiyon uzayinda yuzme yok; onun etkileyemedigi bir olumu
+    // ortam engellemeli.
+    const b7 = sahteBot()
+    const e7 = new MinecraftEnvironment(b7, { zamanCarpani: 0 })
+    b7.blockAt = () => ({ name: 'water', boundingBox: 'empty', position: new Vec3(0, 0, 0) })
+
+    const basilan = []
+    b7.setControlState = (ad, deger) => { if (deger) basilan.push(ad) }
+
+    await e7.step(4) // "bekle" aksiyonu: ajan hicbir sey yapmiyor
+    if (!basilan.includes('jump')) throw new Error('suda yuzmeyi denemedi')
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()
