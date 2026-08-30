@@ -90,6 +90,16 @@ class MinecraftEnv(gym.Env):
 
         self.bridge = BridgeClient(url)
         self._son_info: Dict[str, Any] = {}
+
+        # HAM gozlem (Node'un gonderdigi 16 sayi), zenginlestirilmeden once.
+        #
+        # Demo kaydinda ham hali saklamak gerekiyor: `zenginlestir` ham
+        # gozlemin saf bir fonksiyonu, yani ilerde turetilmis alanlari
+        # degistirirsek eski demolardan yeniden hesaplayabiliyoruz.
+        # Zenginlestirilmis hali saklarsak o esneklik kayboluyor -- ve
+        # bir kez kaybolmakla kalmadi, egitim tarafi ikinci kez
+        # zenginlestirip 19+3=22 boyutlu bir girdi uretti ve ag coktu.
+        self.son_ham_gozlem: np.ndarray | None = None
         self.son_uzman_sebep = "?"
         self.son_uzman_tani: Dict[str, Any] = {}
 
@@ -108,6 +118,7 @@ class MinecraftEnv(gym.Env):
         # ek bir protokol gerektirmiyor.
         cevap = self.bridge.reset(self.gorev)
         self._son_info = cevap.get("info", {})
+        self.son_ham_gozlem = np.asarray(cevap["obs"], dtype=np.float32)
         return self._obs(cevap["obs"]), self._son_info
 
     def uzman_aksiyonu(self) -> int:

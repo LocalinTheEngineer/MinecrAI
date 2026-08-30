@@ -66,6 +66,35 @@ def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
     return torch.as_tensor(sayim.sum() / (len(AKSIYONLAR) * sayim), dtype=torch.float32)
 
 
+def gozlemleri_hazirla(ham, HAM_BOYUTU, GOZLEM_BOYUTU):
+    """Demo gozlemlerini aga verilecek hale getir.
+
+    NEDEN BU KONTROL VAR: `collect_demos` bir donem HAM yerine
+    ZENGINLESTIRILMIS gozlem kaydetti. Egitim tarafi ustune bir kez daha
+    zenginlestirince girdi 16 -> 19 -> 22 oldu ve ag "mat1 and mat2 shapes
+    cannot be multiplied (256x22 and 19x128)" diye coktu.
+
+    Hata mesaji anlasilir degildi ve veriyi yeniden toplamak yarim saat
+    aliyordu. Boyuta bakip karar vermek hem eski hem yeni dosyalari
+    calistiriyor.
+    """
+    import numpy as np
+    from minecrai import zenginlestir
+
+    ham = np.asarray(ham, dtype=np.float32)
+    genislik = ham.shape[1]
+
+    if genislik == HAM_BOYUTU:
+        return zenginlestir(ham)
+    if genislik == GOZLEM_BOYUTU:
+        print(f"  (veri zaten zenginlestirilmis: {genislik} boyut, tekrar edilmiyor)")
+        return ham
+    raise SystemExit(
+        f"Gozlem boyutu {genislik} taninmiyor. Beklenen {HAM_BOYUTU} (ham) "
+        f"veya {GOZLEM_BOYUTU} (zenginlestirilmis). Veri bozuk olabilir."
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
@@ -89,7 +118,11 @@ def main() -> None:
 
     d = np.load(args.veri)
     # Kayitli veri HAM gozlem iceriyor; agin gordugu bicime cevir
-    X = torch.as_tensor(zenginlestir(d["gozlemler"]), dtype=torch.float32)
+    from minecrai.env import HAM_BOYUTU, GOZLEM_BOYUTU
+    X = torch.as_tensor(
+        gozlemleri_hazirla(d["gozlemler"], HAM_BOYUTU, GOZLEM_BOYUTU),
+        dtype=torch.float32
+    )
     y = torch.as_tensor(d["aksiyonlar"], dtype=torch.long)
     print(f"{len(X)} ornek yuklendi")
 

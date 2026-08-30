@@ -74,7 +74,14 @@ def topla(
             aksiyon = env.uzman_aksiyonu()
 
             # ONEMLI: gozlem, aksiyonun UYGULANMASINDAN ONCEKI durum olmali.
-            gozlemler.append(obs.copy())
+            #
+            # Ve HAM gozlem kaydedilmeli, zenginlestirilmis olan degil:
+            # zenginlestirme egitim tarafinda yapiliyor, burada da
+            # yaparsak iki kez uygulanmis oluyor (16 -> 19 -> 22) ve ag
+            # coker. `zenginlestir` ham gozlemin saf bir fonksiyonu
+            # oldugu icin ham hali saklamak ayrica esneklik veriyor:
+            # turetilmis alanlari degistirirsek eski demolar hala gecerli.
+            gozlemler.append(env.son_ham_gozlem.copy())
             aksiyonlar.append(aksiyon)
 
             # Uygulanan aksiyon bazen rastgele — ama YUKARIDA kaydedilen
