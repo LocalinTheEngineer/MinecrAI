@@ -202,7 +202,12 @@ def main() -> None:
     args.cikti.parent.mkdir(parents=True, exist_ok=True)
     model.save(args.cikti)
     print(f"On-egitilmis PPO modeli kaydedildi -> {args.cikti}")
-    print("Simdi:  python train_ppo.py --baslangic models/ppo_pretrained.zip")
+    # Komutu GOREVE gore yaz. Sabit yazilmisti ve maden gorevinde yanlis
+    # dosyayi gosteriyordu -- kopyalayip yapistiran kisi ODUN modeliyle
+    # maden egitimi baslatirdi ve bunu fark etmek cok zor olurdu.
+    print("")
+    print("Simdi:  python train_ppo.py --gorev " + args.gorev +
+          " --baslangic ../models/" + args.cikti.name)
 
 
 if __name__ == "__main__":
