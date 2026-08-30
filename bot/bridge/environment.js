@@ -914,9 +914,39 @@ class MinecraftEnvironment {
     return true
   }
 
+  /**
+   * Kazma bölüm ORTASINDA kırılırsa.
+   *
+   * Demir kazma 250 vuruş; bir bölüm 500 adım ve tünel açmak çok vuruş
+   * yiyor. Yani kırılması istisna değil, beklenen durum.
+   *
+   * Kırıldıktan sonra ajan cevhere vurmaya devam eder ve her vuruş bir
+   * cevheri YOK EDER — daha önce tam olarak bunu ölçtük: "%63 önümde
+   * cevher var, 0 kaynak". Ajan bunu gözleminden anlayamaz; alet
+   * durumu gözlemde yok ve olması da gerekmiyor.
+   *
+   * Alet tedariki bu görevin konusu değil (elle yazılmış `kaz.js` onu
+   * zaten çözüyor). Ajanın öğrendiği şey "cevheri bul ve kır".
+   */
+  async aletiTazele () {
+    if (!this.gorev.aletVer) return
+    const { kazmaDurumu } = require('./gorevler')
+    if (kazmaDurumu(this.bot).kalan > 0) return
+
+    this.bot.chat(`/give ${this.bot.username} ${this.gorev.aletVer} 1`)
+    await this.bekle(300)
+    if (kazmaDurumu(this.bot).kalan <= 0) {
+      log.hata(
+        `Kazma kırıldı ve yenisini veremedim (bot op değil mi?). ` +
+        'Bu bölümde kırılan her cevher YOK OLUYOR.'
+      )
+    }
+  }
+
   async step (action) {
     this.adim++
     await this.suUstundeKal()
+    if (action === 3) await this.aletiTazele()
     const oncekiKonum = this.bot.entity.position.clone()
 
     const kirilanKutuk = await this.aksiyonUygula(action)

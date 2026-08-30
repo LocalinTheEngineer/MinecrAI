@@ -33,6 +33,47 @@ const CEVHER = /_ore$/
 // kazmaya çalışıyordu; elle taş kazmak dakikalar sürer ve görevle ilgisi yok.
 const YUMUSAK = /_leaves$|vine|_sapling$|bamboo|cobweb|azalea|moss_|snow|sugar_cane|cactus|_mushroom_block$|shroomlight|_wart_block$/
 
+// HANGİ CEVHER HANGİ KAZMA SEVİYESİNİ İSTER?
+//
+// `uygunAlet` "elinde kazma var mı" sorusuna cevap veriyor, "bu cevher
+// için YETER Mİ" sorusuna değil. Taş kazmayla elmasa vurmak elması YOK
+// EDİYOR — blok kırılıyor, yere hiçbir şey düşmüyor.
+//
+// Bu tabloyla ajan yetersiz kazmayla cevhere hiç yönlendirilmiyor.
+const KAZMA_SEVIYELERI = ['wooden', 'stone', 'iron', 'diamond', 'netherite']
+
+const CEVHER_GEREKSINIMI = [
+  { desen: /coal_ore$/, seviye: 'wooden' },
+  { desen: /(copper|iron|lapis)_ore$/, seviye: 'stone' },
+  { desen: /(gold|redstone|diamond|emerald)_ore$/, seviye: 'iron' }
+]
+
+/** Bu cevher için gereken kazma seviyesi (bilinmiyorsa en güvenlisi) */
+function gerekenSeviye (ad) {
+  for (const { desen, seviye } of CEVHER_GEREKSINIMI) {
+    if (desen.test(ad)) return seviye
+  }
+  return 'iron'
+}
+
+/** Envanterdeki en iyi kazmanın seviyesi ve kalan vuruşu */
+function kazmaDurumu (bot) {
+  let enIyi = -1
+  let kalan = 0
+  for (const esya of bot.inventory.items()) {
+    const m = /^(\w+)_pickaxe$/.exec(esya.name)
+    if (!m) continue
+    const tur = m[1] === 'golden' ? 'stone' : m[1]
+    const i = KAZMA_SEVIYELERI.indexOf(tur)
+    if (i < 0) continue
+    const vurus = esya.maxDurability
+      ? esya.maxDurability - (esya.durabilityUsed || 0)
+      : Infinity
+    if (i > enIyi) { enIyi = i; kalan = vurus } else if (i === enIyi) kalan += vurus
+  }
+  return { seviye: enIyi, kalan }
+}
+
 // Madende hiçbir koşulda kazılmayacak bloklar
 const MADEN_TEHLIKE = /lava|water|bedrock|_spawner$|chest|obsidian/
 const DEEPSLATE_HARIC = /^(coal|iron|copper|gold|redstone|emerald|lapis|diamond)_ore$|^deepslate_(coal|iron|copper|gold|redstone|emerald|lapis|diamond)_ore$/
@@ -91,8 +132,11 @@ const GOREVLER = {
     // "kırabilir miyim": elimdeki kazma yetiyor mu?
     dogalMi: (bot, blok) => {
       if (!blok) return false
-      const { uygunAlet } = require('../skills/alet')
-      return !!uygunAlet(bot, blok)
+      // Kazmam bu cevher için YETİYOR MU? "Kazmam var mı" yetmiyor:
+      // taş kazmayla elmasa vurmak elması yok ediyor.
+      const { seviye, kalan } = kazmaDurumu(bot)
+      if (kalan <= 0) return false
+      return seviye >= KAZMA_SEVIYELERI.indexOf(gerekenSeviye(blok.name))
     },
 
     say: (bot) => cevherSay(bot),
@@ -117,4 +161,6 @@ function gorevGetir (ad) {
   return GOREVLER[ad] || GOREVLER.odun
 }
 
-module.exports = { GOREVLER, gorevGetir, cevherSay }
+module.exports = {
+  GOREVLER, gorevGetir, cevherSay, kazmaDurumu, gerekenSeviye, KAZMA_SEVIYELERI
+}

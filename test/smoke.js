@@ -579,6 +579,45 @@ async function main () {
     if (esyaAdimi > 30) throw new Error(`${esyaAdimi} adim kovaladi — sabir sayaci calismiyor`)
   })
 
+  await dene('TAS kazmayla elmas hedef sayilmiyor (yok etmesin)', () => {
+    // uygunAlet "elinde kazma var mi" der, "bu cevher icin YETER MI"
+    // demez. Tas kazmayla elmasa vurmak elmasi YOK EDIYOR.
+    const g = require('../bot/bridge/gorevler')
+    const b16 = sahteBot()
+    b16.inventory = { items: () => [{ name: 'stone_pickaxe', maxDurability: 131, durabilityUsed: 0 }] }
+
+    if (g.GOREVLER.maden.dogalMi(b16, { name: 'diamond_ore' })) {
+      throw new Error('tas kazmayla elmasi hedef saydi')
+    }
+    if (!g.GOREVLER.maden.dogalMi(b16, { name: 'iron_ore' })) {
+      throw new Error('tas kazmayla demiri hedef saymadi (oysa yeterli)')
+    }
+  })
+
+  await dene('KIRILMIS kazma hedef birakmiyor', () => {
+    const g = require('../bot/bridge/gorevler')
+    const b16 = sahteBot()
+    // Dayanikligi bitmis kazma
+    b16.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 250 }] }
+    if (g.GOREVLER.maden.dogalMi(b16, { name: 'iron_ore' })) {
+      throw new Error('kirilmis kazmayla cevheri hedef saydi')
+    }
+  })
+
+  await dene('step() kazma kirilinca YENISINI istiyor', async () => {
+    // Demir kazma 250 vurus, bolum 500 adim: kirilmasi istisna degil,
+    // BEKLENEN durum. Kirildiktan sonra her vurus bir cevheri yok eder.
+    const b16 = sahteBot()
+    const komutlar = []
+    b16.chat = (m) => komutlar.push(m)
+    b16.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 250 }] }
+    const e16 = new MinecraftEnvironment(b16, { zamanCarpani: 0, gorev: 'maden' })
+    await e16.step(3) // kirma aksiyonu
+    if (!komutlar.some((m) => /give .*iron_pickaxe/.test(m))) {
+      throw new Error(`kirilmis kazma icin yenisi istenmedi: ${komutlar.join(' | ')}`)
+    }
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()
