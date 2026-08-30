@@ -796,6 +796,43 @@ class MinecraftEnvironment {
   }
 
   /**
+   * Taze bir maden bölgesine ışınlan.
+   *
+   * PROBLEM: 40 bölümlük demo toplamada ilk 18 bölüm iyi sonuç verdi
+   * (8, 6, 22, 12 cevher), sonra 19-35 arası neredeyse tamamen sıfır.
+   * Bot bulunduğu bölgenin cevherini bitirmişti. Odun görevinde bunu
+   * `/spreadplayers` ile çözmüştük ama o komut oyuncuyu YÜZEYE koyuyor —
+   * madende işe yaramaz, her seferinde baştan inmek gerekirdi.
+   *
+   * ÇÖZÜM: aynı derinlikte, uzak bir XZ noktasına ışınlan. Ama oraya
+   * körlemesine ışınlanmak botu taşın içinde bırakır ve boğulur; önce
+   * `/fill` ile 1x2'lik bir cep açıp altına zemin koyuyoruz. İkisi de
+   * op komutu — bot zaten op olmak zorunda (kazmayı da öyle veriyoruz).
+   */
+  async tazeMadeneIsinla () {
+    const bot = this.bot
+    const p = bot.entity.position
+    const y = Math.floor(p.y)
+
+    // 60-140 blok ötede rastgele bir yön
+    const aci = Math.random() * 2 * Math.PI
+    const uzaklik = 60 + Math.random() * 80
+    const x = Math.round(p.x + Math.cos(aci) * uzaklik)
+    const z = Math.round(p.z + Math.sin(aci) * uzaklik)
+
+    // Önce cebi aç, SONRA ışınlan — sırası önemli, tersi boğulma demek
+    bot.chat(`/fill ${x} ${y} ${z} ${x} ${y + 1} ${z} air`)
+    bot.chat(`/setblock ${x} ${y - 1} ${z} stone keep`)
+    await this.bekle(300)
+    bot.chat(`/tp ${bot.username} ${x + 0.5} ${y} ${z + 0.5}`)
+    await this.bekle(600)
+
+    this.hedefKonum = null
+    this.karaListe.clear()
+    log.bilgi(`Taze maden bölgesi: x=${x} y=${y} z=${z}`)
+  }
+
+  /**
    * Yeraltı görevi kurulumu (maden).
    *
    * İNİŞİ AJANA ÖĞRETMİYORUZ ve bu bilinçli bir karar: y=64'ten cevher
@@ -864,6 +901,15 @@ class MinecraftEnvironment {
       } catch (err) {
         log.uyari(`İniş yarıda kaldı: ${err.message}`)
       }
+      return
+    }
+
+    // 4) Derinlikteyiz ama cevher yok: bölge tükenmiş, taze alana geç.
+    //    Ajan öğrendiği madeni kazıp bitiriyor; ortam sabit kalmazsa
+    //    öğrenme eğrisi ölçülemez hale geliyor — odun görevinde de
+    //    aynı sebeple ışınlanma var.
+    if (!this.enYakinKutuk()) {
+      await this.tazeMadeneIsinla()
     }
   }
 

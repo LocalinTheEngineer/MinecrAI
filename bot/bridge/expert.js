@@ -113,6 +113,31 @@ function madenUzmani (bot, env) {
   // 3) Görünürde cevher var ama uzakta: ona dön/yürü
   const hedef = env.enYakinKutuk()
   if (hedef) {
+    // DİKEY HEDEFTE YAW ANLAMSIZDIR.
+    //
+    // `hedefYaw` sadece dx ve dz'ye bakıyor — yükseklik farkı hesaba
+    // girmiyor, çünkü ajanın yukarı-aşağı bakma aksiyonu yok. Cevher
+    // neredeyse tam tepemizdeyse dx ve dz sıfıra yakın: bir blokluk
+    // kıpırdanma açıyı 180 derece çeviriyor. Bot hedefe "dönmeye"
+    // çalışırken sonsuza kadar dönüyor.
+    //
+    // Ölçüm bunu söyledi: adımların %76'sı dönüş, %10'u yürüme, ve
+    // bölümlerin 13/15'i sıfır kaynakla bitti. Madende bu durum
+    // ormandan çok daha sık, çünkü cevher damarları her yönde —
+    // tavanda ve tabanda da.
+    //
+    // Dikey hedefte doğru davranış dönmek değil: menzildeyse kır
+    // (kırma zaten 3 boyutlu bakıyor), değilse ilerleyip açıyı aç.
+    const yatay = Math.hypot(
+      hedef.position.x + 0.5 - bot.entity.position.x,
+      hedef.position.z + 0.5 - bot.entity.position.z
+    )
+    if (yatay < 2) {
+      if (env.onumuKapatan()) {
+        return { action: 3, sebep: 'dikey_hedef_kiriyorum' }
+      }
+      return { action: 0, sebep: 'dikey_hedef_uzaklasiyorum' }
+    }
     return hedefeYonel(bot, env, hedef.position, 'cevhere')
   }
 

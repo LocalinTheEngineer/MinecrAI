@@ -618,6 +618,63 @@ async function main () {
     }
   })
 
+  await dene('maden tukenince TAZE BOLGEYE isinlaniyor', async () => {
+    // 40 bolumluk demo toplamada ilk 18 bolum iyiydi (8, 6, 22, 12
+    // cevher), sonra 19-35 arasi neredeyse tamamen SIFIR. Bot bolgenin
+    // cevherini bitirmisti. Odun gorevinde bunu spreadplayers ile
+    // cozmustuk ama o komut oyuncuyu YUZEYE koyuyor -- madende ise yaramaz.
+    const b17 = sahteBot()
+    b17.entity.position = new Vec3(0, 15, 0) // zaten derinlikte
+    b17.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 0, type: 1 }] }
+    const komutlar = []
+    b17.chat = (m) => komutlar.push(m)
+    b17.findBlocks = () => [] // HIC CEVHER YOK: bolge tukenmis
+
+    const e17 = new MinecraftEnvironment(b17, { zamanCarpani: 0, gorev: 'maden' })
+    await e17.yeraltiKurulumu()
+
+    if (!komutlar.some((m) => /^\/tp /.test(m))) {
+      throw new Error(`taze bolgeye isinlanmadi: ${komutlar.join(' | ')}`)
+    }
+    // Isinlanmadan ONCE cep acilmali, yoksa bot tasin icinde bogulur
+    const fillIndex = komutlar.findIndex((m) => /^\/fill /.test(m))
+    const tpIndex = komutlar.findIndex((m) => /^\/tp /.test(m))
+    if (fillIndex < 0) throw new Error('cep acilmadi — bot tasin icine isinlanir')
+    if (fillIndex > tpIndex) throw new Error('once isinlanip sonra cep acti — bogulma sirasi')
+  })
+
+  await dene('DIKEY hedefte donmuyor (yaw anlamsiz)', () => {
+    // Olcum: adimlarin %76'si donus, %10 yurume, 13/15 bolum SIFIR.
+    // Sebep: hedefYaw sadece dx,dz'ye bakiyor. Cevher neredeyse tam
+    // tepemizdeyse dx ve dz sifira yakin -- bir bloktan kucuk bir
+    // kipirdanma aciyi 180 derece ceviriyor ve bot sonsuza kadar donuyor.
+    const uzman = require('../bot/bridge/expert')
+    const b18 = sahteBot()
+    b18.entity.position = new Vec3(0.5, 15, 0.5)
+    b18.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 0, type: 1 }] }
+    b18.canDigBlock = () => true
+    b18.registry = { blocksByName: { iron_ore: { id: 1 } } }
+
+    // Cevher NEREDEYSE tepede: yatay uzaklik 1.4 blok, 4 blok yukarida.
+    // Tam tepede degil -- oyle olsaydi aci sifir cikar ve test hicbir sey
+    // kanitlamazdi. Asil tehlikeli durum bu: aci hesaplanabiliyor ama
+    // ANLAMSIZ, cunku bir blokluk kipirdanma onu 180 derece ceviriyor.
+    b18.findBlocks = () => [new Vec3(1, 19, 1)]
+    b18.blockAt = (p) => {
+      const x = Math.floor(p.x); const y = Math.floor(p.y); const z = Math.floor(p.z)
+      if (x === 1 && z === 1 && y === 19) {
+        return { name: 'iron_ore', boundingBox: 'block', position: new Vec3(x, y, z) }
+      }
+      return { name: 'stone', boundingBox: 'block', position: new Vec3(x, y, z) }
+    }
+
+    const e18 = new MinecraftEnvironment(b18, { zamanCarpani: 0, gorev: 'maden' })
+    const karar = uzman.uzmanAksiyonu(b18, e18)
+    if (karar.action === 1 || karar.action === 2) {
+      throw new Error(`dikey hedefte dondu (${karar.sebep}) — yaw anlamsiz`)
+    }
+  })
+
   console.log('\nSkill\'ler')
   const k = new GorevKontrol()
   k.baslat()
