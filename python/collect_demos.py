@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from minecrai import MinecraftEnv
+from minecrai.yollar import yollar
 from minecrai.env import AKSIYONLAR
 
 VARSAYILAN_CIKTI = Path(__file__).parent.parent / "data" / "demonstrations" / "demos.npz"
@@ -126,8 +127,8 @@ def main() -> None:
     # görevin (gözlem, aksiyon) çiftlerini tek bir ağa aynı etiketmiş gibi
     # göstermek olurdu — "önümde taş var" durumunda odun görevi dolaşmayı,
     # maden görevi kırmayı öğretiyor. Aynı girdi, zıt etiket.
-    if args.gorev != "odun" and args.cikti == VARSAYILAN_CIKTI:
-        args.cikti = args.cikti.with_name(f"demolar_{args.gorev}.npz")
+    if args.cikti == VARSAYILAN_CIKTI:
+        args.cikti = yollar(args.gorev)["veri"]
 
     env = MinecraftEnv(url=args.url, gorev=args.gorev)
     baslangic = time.time()

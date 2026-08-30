@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from minecrai.yollar import yollar
 from minecrai import MinecraftEnv
 
 KOK = Path(__file__).parent.parent
@@ -75,18 +76,27 @@ def donusumlu_degerlendir(env, politikalar, bolum, maks_adim):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
     ap.add_argument("--bolum", type=int, default=10)
     ap.add_argument("--maks-adim", type=int, default=300)
-    ap.add_argument("--model", type=Path, default=VARSAYILAN_MODEL)
+    ap.add_argument("--model", type=Path, default=None)
     ap.add_argument("--ppo", type=Path, default=VARSAYILAN_PPO,
                     help="egitilmis PPO modeli (train_ppo.py ciktisi)")
-    ap.add_argument("--grafik", type=Path, default=VARSAYILAN_GRAFIK)
+    ap.add_argument("--grafik", type=Path, default=None)
     ap.add_argument("--url", default="ws://localhost:8765")
     ap.add_argument("--argmax", action="store_true",
                     help="bc politikasini orneklemeden, en yuksek skorla calistir")
     args = ap.parse_args()
 
-    env = MinecraftEnv(url=args.url)
+    y = yollar(args.gorev)
+    if args.model is None:
+        args.model = y["bc_model"]
+    if args.grafik is None:
+        args.grafik = y["karsilastirma"]
+    if args.ppo == VARSAYILAN_PPO:
+        args.ppo = y["ppo_son"]
+
+    env = MinecraftEnv(url=args.url, gorev=args.gorev)
     rng = np.random.default_rng(0)
 
     politikalar = [

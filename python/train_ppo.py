@@ -25,6 +25,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import get_schedule_fn
 
+from minecrai.yollar import yollar
 from minecrai import MinecraftEnv
 
 KOK = Path(__file__).parent.parent
@@ -195,6 +196,7 @@ class BolumKaydedici(BaseCallback):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
     ap.add_argument("--adim", type=int, default=20000, help="toplam egitim adimi")
     ap.add_argument("--baslangic", type=Path, default=None,
                     help="on-egitilmis model (pretrain_ppo.py ciktisi)")
@@ -211,7 +213,16 @@ def main() -> None:
     ap.add_argument("--url", default="ws://localhost:8765")
     args = ap.parse_args()
 
-    env = MinecraftEnv(url=args.url)
+    # Yollar göreve göre — maden eğitimi odun modelini EZMESİN.
+    # Modül seviyesindeki sabitleri burada yeniden bağlıyoruz; scriptin
+    # geri kalanı onları kullanmaya devam ediyor.
+    global KAYIT, SON_MODEL, KONTROL_NOKTASI
+    _y = yollar(args.gorev)
+    KAYIT = _y["ppo_kayit"]
+    SON_MODEL = _y["ppo_son"]
+    KONTROL_NOKTASI = _y["ppo_kontrol"]
+
+    env = MinecraftEnv(url=args.url, gorev=args.gorev)
 
     if args.devam and KONTROL_NOKTASI.exists():
         print(f"Kontrol noktasindan devam: {KONTROL_NOKTASI}")

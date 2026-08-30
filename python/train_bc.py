@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from minecrai.yollar import yollar
 from minecrai.policy import PolitikaAgi, kaydet
 from minecrai.env import AKSIYONLAR
 from minecrai import zenginlestir
@@ -48,13 +49,24 @@ def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--veri", type=Path, default=VARSAYILAN_VERI)
-    ap.add_argument("--model", type=Path, default=VARSAYILAN_MODEL)
-    ap.add_argument("--grafik", type=Path, default=VARSAYILAN_GRAFIK)
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
+    ap.add_argument("--veri", type=Path, default=None)
+    ap.add_argument("--model", type=Path, default=None)
+    ap.add_argument("--grafik", type=Path, default=None)
     ap.add_argument("--epoch", type=int, default=60)
     ap.add_argument("--yigin", type=int, default=256)
     ap.add_argument("--ogrenme-orani", type=float, default=1e-3)
     args = ap.parse_args()
+
+    # Yollar göreve göre. Odun mevcut adları korur (geriye dönük uyum),
+    # maden '_maden' ekiyle ayrılır — biri diğerinin modelini ezmesin.
+    y = yollar(args.gorev)
+    if args.veri is None:
+        args.veri = y["veri"]
+    if args.model is None:
+        args.model = y["bc_model"]
+    if args.grafik is None:
+        args.grafik = y["bc_grafik"]
 
     if not args.veri.exists():
         raise SystemExit(

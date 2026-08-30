@@ -26,6 +26,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import PPO
 
+from minecrai.yollar import yollar
 from minecrai.env import GOZLEM_BOYUTU, AKSIYONLAR
 from minecrai import zenginlestir
 
@@ -67,12 +68,19 @@ def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--veri", type=Path, default=VARSAYILAN_VERI)
-    ap.add_argument("--cikti", type=Path, default=VARSAYILAN_CIKTI)
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
+    ap.add_argument("--veri", type=Path, default=None)
+    ap.add_argument("--cikti", type=Path, default=None)
     ap.add_argument("--epoch", type=int, default=80)
     ap.add_argument("--yigin", type=int, default=256)
     ap.add_argument("--ogrenme-orani", type=float, default=1e-3)
     args = ap.parse_args()
+
+    y = yollar(args.gorev)
+    if args.veri is None:
+        args.veri = y["veri"]
+    if args.cikti is None:
+        args.cikti = y["ppo_on"]
 
     if not args.veri.exists():
         raise SystemExit(
