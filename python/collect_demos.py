@@ -109,12 +109,49 @@ def topla(
             f"toplam ornek={len(gozlemler)}"
         )
 
+    X = np.asarray(gozlemler, dtype=np.float32)
+    veri_sagligi(X, np.asarray(aksiyonlar, dtype=np.int64))
+
     return (
-        np.asarray(gozlemler, dtype=np.float32),
+        X,
         np.asarray(aksiyonlar, dtype=np.int64),
         np.asarray(bolum_odulleri, dtype=np.float32),
         np.asarray(bolum_odunlari, dtype=np.int32),
     )
+
+
+def veri_sagligi(X: np.ndarray, y: np.ndarray) -> bool:
+    """Toplanan verinin OGRENILEBILIR olup olmadigini soyler.
+
+    NEDEN VAR: iki toplama turu (~45 dakika) cope gitti ve bunu ancak
+    taklit egitimi cokunce fark ettik -- hatta o zaman bile once yanlis
+    teshis koyduk. Sebep `MinecraftEnv.step()` icinde `son_ham_gozlem`in
+    guncellenmemesiydi: bir bolumun butun ornekleri AYNI gozleme, farkli
+    aksiyonlara sahipti. 4498 ornekte 30 benzersiz gozlem satiri.
+
+    Boyle bir veri sessizce kaydediliyor, dosya normal gorunuyor ve hata
+    ancak saatler sonra "ag ogrenemiyor" olarak ortaya cikiyor. Olcebildigimiz
+    bir ariza sessiz kalmamali -- burada, toplama biter bitmez soyluyoruz.
+    """
+    if len(X) < 2:
+        return True
+
+    benzersiz = len(np.unique(X, axis=0))
+    oran = benzersiz / len(X)
+    cogunluk = np.bincount(y).max() / len(y)
+
+    print(f"\nVeri sagligi: {benzersiz} benzersiz gozlem / {len(X)} ornek "
+          f"(%{100 * oran:.1f}), cogunluk sinifi %{100 * cogunluk:.1f}")
+
+    if oran < 0.5:
+        print(
+            "  !! UYARI: gozlemlerin cogu TEKRAR EDIYOR.\n"
+            "     Ayni gozleme farkli aksiyonlar dusuyorsa taklit egitimi\n"
+            "     cogunluk sinifindan iyisini yapamaz. Gozlem her adimda\n"
+            "     guncelleniyor mu? (bkz. MinecraftEnv.step, son_ham_gozlem)"
+        )
+        return False
+    return True
 
 
 def main() -> None:

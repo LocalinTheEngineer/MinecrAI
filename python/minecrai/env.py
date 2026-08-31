@@ -167,6 +167,28 @@ class MinecraftEnv(gym.Env):
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         cevap = self.bridge.step(int(action))
         self._son_info = cevap.get("info", {})
+
+        # HAM GOZLEMI BURADA DA GUNCELLE.
+        #
+        # Bu satir bir sure eksikti ve iki demo toplama turunu (toplam
+        # ~45 dakika) cope attirdi. `son_ham_gozlem` sadece `reset()`te
+        # yaziliyordu, yani BOLUM BOYUNCA reset anindaki degerde
+        # donuyordu. `collect_demos.py` her adimda onu kaydettigi icin
+        # bir bolumun butun ornekleri AYNI gozleme, farkli aksiyonlara
+        # sahip oluyordu.
+        #
+        # Olcum: 4498 ornekte sadece 30 benzersiz gozlem satiri vardi --
+        # tam olarak bolum sayisi kadar. Orneklerin %100'u celiskiliydi.
+        # Boyle bir veriyle ulasilabilecek en iyi dogruluk cogunluk
+        # sinifi (%33.2); taklit egitimi %30.7 aliyordu ve kayip tam
+        # ln(4)=1.386'da duruyordu -- yani ag dort aksiyona esit
+        # olasilik dagitmayi ogrenmisti, baska bir sey degil.
+        #
+        # Ders: "ag ogrenemiyor" dendiginde once VERIYE bakilir. Ozellik
+        # eklemek makul bir hipotezdi ama olculmemisti ve bir tur daha
+        # veri toplamaya mal oldu. Veriyi acmak iki dakika surdu.
+        self.son_ham_gozlem = np.asarray(cevap["obs"], dtype=np.float32)
+
         return (
             self._obs(cevap["obs"]),
             float(cevap["reward"]),
