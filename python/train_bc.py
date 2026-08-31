@@ -107,8 +107,9 @@ def main() -> None:
     # Kayitli veri HAM gozlem iceriyor; agin gordugu bicime cevir.
     # Turetilmis ozellikler ham veriden hesaplanabildigi icin eski kayitlar
     # yeniden toplanmadan kullanilabiliyor.
-    from minecrai.env import HAM_BOYUTU, GOZLEM_BOYUTU
-    X = gozlemleri_hazirla(d["gozlemler"], HAM_BOYUTU, GOZLEM_BOYUTU)
+    from minecrai.env import ham_boyutu, gozlem_boyutu
+    X = gozlemleri_hazirla(
+        d["gozlemler"], ham_boyutu(a.gorev), gozlem_boyutu(a.gorev))
     y = d["aksiyonlar"]
     print(f"{len(X)} ornek yuklendi, gozlem boyutu {X.shape[1]}")
 
@@ -116,7 +117,7 @@ def main() -> None:
     Xe_t = torch.as_tensor(Xe); ye_t = torch.as_tensor(ye)
     Xd_t = torch.as_tensor(Xd); yd_t = torch.as_tensor(yd)
 
-    model = PolitikaAgi()
+    model = PolitikaAgi(gozlem_boyutu=gozlem_boyutu(a.gorev))
     iyilestirici = torch.optim.Adam(model.parameters(), lr=args.ogrenme_orani)
     kayip_fn = nn.CrossEntropyLoss(weight=sinif_agirliklari(ye))
 

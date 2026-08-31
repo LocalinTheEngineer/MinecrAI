@@ -20,11 +20,40 @@ from gymnasium import spaces
 
 from .bridge import BridgeClient
 
-# Node tarafindan gelen HAM gozlem boyutu — environment.js ile AYNI olmali
-HAM_BOYUTU = 16
+# Node tarafindan gelen HAM gozlem boyutu — environment.js ile AYNI olmali.
+#
+# GOREVE GORE DEGISIYOR ve bu bilincli bir karar.
+#
+# Maden gorevi 4 sayi daha aliyor (dusmus esyanin egosentrik yonu/mesafesi
+# ve "onumu kapatan blogu kirabiliyor muyum"). Sebep olculdu: bu bilgiler
+# olmadan taklit dogrulugu %25.5 — dort aksiyonda kor tahmin %25, yani ag
+# hicbir sey ogrenemiyordu. Uzman adimlarinin %39'unu yere dusmus cevheri
+# toplamaya harciyor ve gozlemde esya hakkinda hicbir sey yoktu.
+# Ayrinti: bot/bridge/gorevler.js `ekGozlem`.
+#
+# Odun gorevi 16'da BIRAKILDI: Milestone 4'un egitilmis modelleri
+# (bc_policy.pt, ppo_son.zip) 19 boyutlu girdi bekliyor. Gozlemi orada da
+# buyutmek calisan, olculmus ve yayinlanmis modelleri yuklenemez hale
+# getirirdi — yeni bir gorevi duzeltmek icin odenecek bedel degil.
+HAM_BOYUTLARI = {"odun": 16, "maden": 20}
 
-# Aga verilen gozlem: ham + turetilmis ozellikler (asagiya bak)
-GOZLEM_BOYUTU = HAM_BOYUTU + 3
+# Aga verilen gozlem: ham + turetilmis ozellikler (`zenginlestir`, asagiya bak)
+TURETILEN = 3
+GOZLEM_BOYUTLARI = {ad: n + TURETILEN for ad, n in HAM_BOYUTLARI.items()}
+
+
+def ham_boyutu(gorev: str = "odun") -> int:
+    return HAM_BOYUTLARI[gorev]
+
+
+def gozlem_boyutu(gorev: str = "odun") -> int:
+    return GOZLEM_BOYUTLARI[gorev]
+
+
+# Geriye donuk isimler: odun gorevinin boyutlari. Eski kod bunlari
+# dogrudan iceri aliyor (policy.py, pretrain_ppo.py).
+HAM_BOYUTU = HAM_BOYUTLARI["odun"]
+GOZLEM_BOYUTU = GOZLEM_BOYUTLARI["odun"]
 
 
 def zenginlestir(ham: np.ndarray) -> np.ndarray:
@@ -83,9 +112,12 @@ class MinecraftEnv(gym.Env):
         self.gorev = gorev
         super().__init__()
 
+        self.ham_boyutu = ham_boyutu(gorev)
+        self.gozlem_boyutu = gozlem_boyutu(gorev)
+
         self.action_space = spaces.Discrete(len(AKSIYONLAR))
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(GOZLEM_BOYUTU,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(self.gozlem_boyutu,), dtype=np.float32
         )
 
         self.bridge = BridgeClient(url)
@@ -153,12 +185,12 @@ class MinecraftEnv(gym.Env):
 
     # ------------------------------------------------------------ yardimci
 
-    @staticmethod
-    def _obs(ham) -> np.ndarray:
+    def _obs(self, ham) -> np.ndarray:
         dizi = np.asarray(ham, dtype=np.float32)
-        if dizi.shape != (HAM_BOYUTU,):
+        if dizi.shape != (self.ham_boyutu,):
             raise ValueError(
-                f"Ham gozlem boyutu {dizi.shape}, beklenen ({HAM_BOYUTU},). "
-                "environment.js ile env.py uyusmuyor olabilir."
+                f"Ham gozlem boyutu {dizi.shape}, '{self.gorev}' gorevi icin "
+                f"beklenen ({self.ham_boyutu},). environment.js ile env.py "
+                "uyusmuyor olabilir."
             )
         return np.clip(zenginlestir(dizi), -1.0, 1.0)

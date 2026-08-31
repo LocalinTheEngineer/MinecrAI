@@ -47,17 +47,18 @@ class SahteEnv(gym.Env):
     Minecraft'a baglanmaya gerek kalmasin diye sahte bir env veriyoruz.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, boyut: int = GOZLEM_BOYUTU) -> None:
+        self.boyut = boyut
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(GOZLEM_BOYUTU,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(boyut,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(len(AKSIYONLAR))
 
     def reset(self, *, seed=None, options=None):
-        return np.zeros(GOZLEM_BOYUTU, dtype=np.float32), {}
+        return np.zeros(self.boyut, dtype=np.float32), {}
 
     def step(self, action):
-        return np.zeros(GOZLEM_BOYUTU, dtype=np.float32), 0.0, False, False, {}
+        return np.zeros(self.boyut, dtype=np.float32), 0.0, False, False, {}
 
 
 def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
@@ -118,9 +119,11 @@ def main() -> None:
 
     d = np.load(args.veri)
     # Kayitli veri HAM gozlem iceriyor; agin gordugu bicime cevir
-    from minecrai.env import HAM_BOYUTU, GOZLEM_BOYUTU
+    from minecrai.env import ham_boyutu, gozlem_boyutu
+    HAM = ham_boyutu(args.gorev)
+    GOZLEM = gozlem_boyutu(args.gorev)
     X = torch.as_tensor(
-        gozlemleri_hazirla(d["gozlemler"], HAM_BOYUTU, GOZLEM_BOYUTU),
+        gozlemleri_hazirla(d["gozlemler"], HAM, GOZLEM),
         dtype=torch.float32
     )
     y = torch.as_tensor(d["aksiyonlar"], dtype=torch.long)
@@ -128,7 +131,7 @@ def main() -> None:
 
     model = PPO(
         "MlpPolicy",
-        SahteEnv(),
+        SahteEnv(GOZLEM),
         policy_kwargs=dict(net_arch=AG_MIMARISI, activation_fn=nn.ReLU),
         verbose=0,
         device="cpu",

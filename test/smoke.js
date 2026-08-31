@@ -1950,6 +1950,74 @@ async function main () {
     }
   })
 
+  console.log('\nGozlem boyutu (Node <-> Python sozlesmesi)')
+
+  await dene('gozlem boyutlari env.py ile ayni (odun 16, maden 20)', () => {
+    // Node ile Python arasindaki tek sozlesme bu sayi. Uyusmazsa Python
+    // tarafi calisma aninda patliyor -- ama ancak Minecraft'a baglandiktan
+    // SONRA, yani kullanici oyunu ve sunucuyu actiktan sonra. Burada
+    // bir saniyede yakalaniyor.
+    //
+    // Maden 4 sayi fazla aliyor: dusmus esyanin egosentrik yonu ve
+    // mesafesi + "onumu kapatan blogu kirabiliyor muyum". Bunlar olmadan
+    // taklit dogrulugu %25.5 cikti (kor tahmin %25).
+    // Odun 16'da BIRAKILDI: Milestone 4'un kayitli modelleri 19 boyutlu
+    // girdi bekliyor.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const beklenen = { odun: 16, maden: 20 }
+
+    for (const [gorev, n] of Object.entries(beklenen)) {
+      const b = sahteBot()
+      b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+      const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev })
+      const gozlem = env.gozlem()
+      if (gozlem.length !== n) {
+        throw new Error(`${gorev}: gozlem ${gozlem.length} sayi, beklenen ${n}`)
+      }
+      if (gozlem.some((x) => typeof x !== 'number' || Number.isNaN(x))) {
+        throw new Error(`${gorev}: gozlemde sayi olmayan/NaN deger var`)
+      }
+    }
+
+    // env.py'deki tablo ile karsilastir -- iki dosya birlikte degismeli
+    const kaynak = fs.readFileSync(
+      path.join(__dirname, '..', 'python', 'minecrai', 'env.py'), 'utf8')
+    const m = /HAM_BOYUTLARI = \{"odun": (\d+), "maden": (\d+)\}/.exec(kaynak)
+    if (!m) throw new Error('env.py icinde HAM_BOYUTLARI tablosu bulunamadi')
+    if (Number(m[1]) !== beklenen.odun || Number(m[2]) !== beklenen.maden) {
+      throw new Error(
+        `env.py odun=${m[1]} maden=${m[2]} diyor, environment.js ` +
+        `odun=${beklenen.odun} maden=${beklenen.maden} uretiyor`)
+    }
+  })
+
+  await dene('maden gozlemi ESYA yonunu gercekten tasiyor', () => {
+    // Testin ayirt edici olmasi icin: esya varken ve yokken gozlemin
+    // FARKLI olmasi gerek. Sadece uzunluga bakmak sahte bir guvence olurdu
+    // -- dort sifir eklemek de uzunlugu tutturur.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b.entity.position = new Vec3(0, 15, 0)
+    b.entity.yaw = 0 // -z yonune bakiyor
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+
+    const esyasiz = env.gozlem()
+
+    // Esya SOLDA olsun (+x, bot -z'ye bakarken sol taraf)
+    b.entities = {
+      1: { name: 'item', position: new Vec3(3, 15, 0), objectType: 'Item' }
+    }
+    const solda = env.gozlem()
+
+    if (esyasiz[16] === solda[16] && esyasiz[17] === solda[17]) {
+      throw new Error('esya varken de yokken de gozlem ayni -- esya bilgisi tasinmiyor')
+    }
+    if (Math.abs(solda[16]) < 0.5) {
+      throw new Error(`esya tam yanda ama sin(aci)=${solda[16].toFixed(2)} (buyuk olmali)`)
+    }
+  })
+
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)
   process.exit(hata === 0 ? 0 : 1)
 }

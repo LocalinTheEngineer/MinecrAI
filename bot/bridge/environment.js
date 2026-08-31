@@ -481,7 +481,10 @@ class MinecraftEnvironment {
       this.onumdeEngelVar() ? 1 : 0, // önüm kapalı mı
       this.solumKapali() ? 1 : 0,    // solum kapalı mı
       this.sagimKapali() ? 1 : 0,    // sağım kapalı mı
-      this.onumdeBasamakVar() ? 1 : 0 // önümde zıplanabilir basamak var mı
+      this.onumdeBasamakVar() ? 1 : 0, // önümde zıplanabilir basamak var mı
+      // GÖREVE ÖZEL EK SAYILAR (bkz. gorevler.js `ekGozlem`).
+      // Odun görevinde boş — Milestone 4'ün modelleri 16 sayı bekliyor.
+      ...(this.gorev.ekGozlem ? this.gorev.ekGozlem(this) : [])
     ]
   }
 

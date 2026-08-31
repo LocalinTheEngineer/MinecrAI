@@ -257,7 +257,67 @@ const GOREVLER = {
      * etkileyemeyeceği bir ortam durumuna dayanamaz — dolayısıyla bu
      * karar ORTAMIN işi, uzmanın değil.
      */
-    dikeyBirakma: true
+    dikeyBirakma: true,
+
+    /**
+     * MADENE ÖZEL EK GÖZLEM — UZMANIN GÖRDÜĞÜNÜ AJAN DA GÖRSÜN.
+     *
+     * Ölçüm: taklit doğruluğu %25.5 çıktı. Dört aksiyon var, kör tahmin
+     * %25; "her zaman kır" desek %33 tutturur. Yani ağ hiçbir şey
+     * öğrenemedi. BC ve pretrain'in ikisi de aynı yeri gösterdi, yani
+     * veri bölme hatası değil — veri gerçekten öğrenilemezdi.
+     *
+     * Sebep: uzman adımlarının %39'unu YERE DÜŞMÜŞ CEVHERİ toplamaya
+     * harcıyor (`yakin_cevheri_aliyorum_*`), ama gözlemde düşmüş eşya
+     * hakkında hiçbir şey yoktu. Aynı gözlemde bazen "sağa dön" bazen
+     * "sola dön" yazıyordu; ayrımı yapan bilgi ajana hiç gösterilmiyordu.
+     *
+     * Bu, projede üçüncü kez karşımıza çıkan aynı kural:
+     * UZMAN, ÖĞRENCİNİN GÖREMEDİĞİ BİLGİYE DAYANAMAZ.
+     *
+     * Neden şimdi patladı: görüş hattı düzeltmesinden önce bot cevheri
+     * duvarın ardından kırıyordu, düşen eşya ulaşılamaz yerlere düşüyordu
+     * ve bu dal neredeyse hiç çalışmıyordu. Bot düzelince dal çalışmaya
+     * başladı ve gözlemdeki boşluk ortaya çıktı.
+     *
+     * Neden SADECE madende: odun görevi 16 sayıyla Milestone 4'te
+     * ölçüldü ve modelleri kayıtlı. Gözlemi orada da büyütmek o
+     * modelleri yüklenemez hale getirirdi.
+     *
+     * Dört sayı, hepsi EGOSENTRİK (ajanın kendi bakışına göre), yani
+     * Python tarafında ek bir dönüşüm gerekmiyor:
+     *   sin(açı) : eşya sağımda mı solumda mı
+     *   cos(açı) : 1 = tam önümde, -1 = tam arkamda
+     *   mesafe   : 0..1 (eşya yoksa 1)
+     *   kırılabilir engel: önümü kapatan bloğu KIRABİLİYOR muyum
+     *
+     * Son sayı ayrı bir boşluğu kapatıyor: uzman "kır" ile "dolaş"
+     * arasında `onumuKapatan()`e bakarak seçiyor, ama gözlemde sadece
+     * "önüm kapalı mı" vardı — "kırılabilir mi" yoktu.
+     *
+     * Eşya yoksa sin=0 VE cos=0 gönderiyoruz; gerçek bir açıda bu ikisi
+     * aynı anda sıfır olamaz, yani "eşya yok" ayırt edilebilir durumda.
+     */
+    ekGozlem: (env) => {
+      const bot = env.bot
+      const esya = env.yakinEsya()
+
+      let sin = 0
+      let cos = 0
+      let mesafe = 1
+      if (esya) {
+        const fark = esya.position.minus(bot.entity.position)
+        const uzaklik = Math.max(Math.hypot(fark.x, fark.z), 0.001)
+        const esyaYaw = Math.atan2(-fark.x, -fark.z)
+        let aci = esyaYaw - bot.entity.yaw
+        aci = ((aci + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
+        sin = Math.sin(aci)
+        cos = Math.cos(aci)
+        mesafe = Math.min(uzaklik / 8, 1)
+      }
+
+      return [sin, cos, mesafe, env.onumuKapatan() ? 1 : 0]
+    }
   }
 }
 
