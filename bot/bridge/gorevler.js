@@ -109,7 +109,11 @@ const GOREVLER = {
 
     // Bölüm başında ajanı hedefe yakın bir yere yürüt.
     // Ormanda meşru: açık arazide yürümek görevi çözmüyor.
-    baslangictaYurut: true
+    baslangictaYurut: true,
+
+    // Kaynak ararken kaç blok uzağa bakılsın. Ormanda 64 blok makul:
+    // arazi açık, ajan 64 bloğu bir bölümde yürüyebiliyor.
+    aramaYaricapi: 64
   },
 
   /** Milestone 5: yeraltında cevher topla. */
@@ -212,7 +216,43 @@ const GOREVLER = {
      * Bu, ajanın aksiyon uzayından "pathfinder ile ağaca git" aksiyonunu
      * kaldırmamızla aynı sebep — sadece bu sefer arka kapıdan giriyordu.
      */
-    baslangictaYurut: false
+    baslangictaYurut: false,
+
+    /**
+     * MADENDE ARAMA YARIÇAPI KÜÇÜK OLMAK ZORUNDA.
+     *
+     * Bu, PPO eğitiminin 2. bölümden sonra tamamen çökmesinin sebebiydi:
+     * 1. bölüm 5 cevher topladı, 2-18 arası HEPSİ sıfır aldı.
+     *
+     * `findBlocks` DUVARIN ARDINI DA görüyor. Yer altında, y=15'te, 64
+     * blok yarıçapında her zaman bir cevher vardır — taşın 40 blok
+     * gerisinde. Ajan yerel damarı bitirdikten sonra ortam hâlâ "hedef
+     * var" diyordu, bu yüzden `tazeMadeneIsinla()` hiç çalışmadı ve ajan
+     * her bölümü ulaşamayacağı bir cevhere doğru tünel kazarak geçirdi.
+     * Bölümler tam 60 adımda (yerinde sayma kesme eşiği) bitiyordu.
+     *
+     * Ormanda bu sorun yok: orada 64 blok AÇIK arazi, ajan yürüyerek
+     * gidebiliyor. Madende bir bloğu geçmek dönme + kırma + yürüme
+     * demek; bir bölümde gerçekçi menzil ~15 blok.
+     *
+     * 16'ya indirince ortamın değişmez kuralı geri geliyor:
+     * "bölüm başında ULAŞILABİLİR bir hedef vardır."
+     */
+    aramaYaricapi: 16,
+
+    /**
+     * DİKEY HEDEFİ HIZLI BIRAK.
+     *
+     * Ajanın aksiyon uzayında yukarı gitmek yok. Tam tepemizdeki bir
+     * cevher, menzilde değilse, bizim için ULAŞILAMAZ.
+     *
+     * Bu mantık önce sadece `expert.js`teydi. PPO direksiyona geçince
+     * kimse çağırmadı ve ajan bölümün tamamını ulaşılamaz bir hedefe
+     * kilitli geçirdi. Aynı dersin yeni bir hâli: uzman, öğrencinin
+     * etkileyemeyeceği bir ortam durumuna dayanamaz — dolayısıyla bu
+     * karar ORTAMIN işi, uzmanın değil.
+     */
+    dikeyBirakma: true
   }
 }
 

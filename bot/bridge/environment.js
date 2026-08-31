@@ -31,7 +31,9 @@ const OLUM_CEZASI = -5
 const TEMIZLIK_YARICAPI = 100
 
 // Ortak sabitler (expert.js de aynılarını kullanıyor)
-const { DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI, HEDEF_SABIR } = require('./sabitler')
+const {
+  DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI, HEDEF_SABIR, DIKEY_SABIR
+} = require('./sabitler')
 
 /**
  * Botu bir RL "environment"ına çeviren katman.
@@ -55,6 +57,12 @@ class MinecraftEnvironment {
     // mantığı) tek; göreve göre değişen dört soru `gorevler.js`te.
     // Varsayılan 'odun' — Milestone 1-4 hiç etkilenmiyor.
     this.gorev = gorevGetir(secenekler.gorev || 'odun')
+
+    // Arama yarıçapı GÖREVE bağlı (bkz. gorevler.js `aramaYaricapi`).
+    // Hem hedef seçiminde hem de gözlemin mesafe normalizasyonunda
+    // AYNI sayı kullanılmalı, yoksa gözlem ölçeği görevden göreve kayar
+    // ve önceden eğitilmiş ağ anlamsız girdi görür.
+    this.yaricap = this.gorev.aramaYaricapi ?? config.searchRadius
     this.adim = 0
     this.oncekiOdun = 0
     this.oncekiMesafe = null
@@ -73,6 +81,7 @@ class MinecraftEnvironment {
     this.yolZamani = 0
     this.yolHedefi = null
     this.hedefDenemesi = 0      // mevcut hedefte kaç adımdır ilerleme yok
+    this.dikeyDenemesi = 0      // dikey hedefte kaç adımdır kıramıyoruz
     this.oldu = false           // bu bölümde öldü mü
 
     // ÖLÜM TAKİBİ
@@ -112,7 +121,7 @@ class MinecraftEnvironment {
 
     const adaylar = this.bot.findBlocks({
       matching: (b) => this.gorev.hedefMi(b),
-      maxDistance: config.searchRadius,
+      maxDistance: this.yaricap,
       count: 128
     })
     if (adaylar.length === 0) return null
@@ -411,7 +420,7 @@ class MinecraftEnvironment {
       dx = fark.x / mesafe
       dy = fark.y / mesafe
       dz = fark.z / mesafe
-      mesafe = Math.min(mesafe / config.searchRadius, 1)
+      mesafe = Math.min(mesafe / this.yaricap, 1)
     }
 
     const baktigi = this.onundekiKutuk()
@@ -539,6 +548,7 @@ class MinecraftEnvironment {
     this.kacinmaAdimi = 0
     this.karaListe.clear()
     this.hedefDenemesi = 0
+    this.dikeyDenemesi = 0
     this.yol = []
     this.yolZamani = 0
     this.yolHedefi = null
@@ -840,27 +850,49 @@ class MinecraftEnvironment {
    * `/fill` ile 1x2'lik bir cep açıp altına zemin koyuyoruz. İkisi de
    * op komutu — bot zaten op olmak zorunda (kazmayı da öyle veriyoruz).
    */
-  async tazeMadeneIsinla () {
+  async tazeMadeneIsinla (deneme = 4) {
     const bot = this.bot
-    const p = bot.entity.position
-    const y = Math.floor(p.y)
 
-    // 60-140 blok ötede rastgele bir yön
-    const aci = Math.random() * 2 * Math.PI
-    const uzaklik = 60 + Math.random() * 80
-    const x = Math.round(p.x + Math.cos(aci) * uzaklik)
-    const z = Math.round(p.z + Math.sin(aci) * uzaklik)
+    // IŞINLANDIKTAN SONRA DOĞRULA.
+    //
+    // Arama yarıçapını 16'ya indirince (bkz. gorevler.js) rastgele bir
+    // noktanın yakınında hiç cevher OLMAMASI mümkün hale geldi. Odun
+    // görevindeki `tazeAlanaIsinla` bunu zaten deneme döngüsüyle
+    // çözüyor; maden tarafı tek atışlıktı ve hedefsiz bölüm üretiyordu.
+    // Hedefsiz bölüm PPO için saf gürültü.
+    for (let i = 0; i < deneme; i++) {
+      const p = bot.entity.position
+      const y = Math.floor(p.y)
 
-    // Önce cebi aç, SONRA ışınlan — sırası önemli, tersi boğulma demek
-    bot.chat(`/fill ${x} ${y} ${z} ${x} ${y + 1} ${z} air`)
-    bot.chat(`/setblock ${x} ${y - 1} ${z} stone keep`)
-    await this.bekle(300)
-    bot.chat(`/tp ${bot.username} ${x + 0.5} ${y} ${z + 0.5}`)
-    await this.bekle(600)
+      // 60-140 blok ötede rastgele bir yön
+      const aci = Math.random() * 2 * Math.PI
+      const uzaklik = 60 + Math.random() * 80
+      const x = Math.round(p.x + Math.cos(aci) * uzaklik)
+      const z = Math.round(p.z + Math.sin(aci) * uzaklik)
 
-    this.hedefKonum = null
-    this.karaListe.clear()
-    log.bilgi(`Taze maden bölgesi: x=${x} y=${y} z=${z}`)
+      // Önce cebi aç, SONRA ışınlan — sırası önemli, tersi boğulma demek
+      bot.chat(`/fill ${x} ${y} ${z} ${x} ${y + 1} ${z} air`)
+      bot.chat(`/setblock ${x} ${y - 1} ${z} stone keep`)
+      await this.bekle(300)
+      bot.chat(`/tp ${bot.username} ${x + 0.5} ${y} ${z + 0.5}`)
+      await this.bekle(600)
+
+      this.hedefKonum = null
+      this.karaListe.clear()
+
+      if (this.enYakinKutuk()) {
+        log.bilgi(`Taze maden bölgesi: x=${x} y=${y} z=${z}`)
+        return true
+      }
+      await this.bekle(900) // chunk geç geldiyse bir şans daha
+      this.hedefKonum = null
+      if (this.enYakinKutuk()) {
+        log.bilgi(`Taze maden bölgesi: x=${x} y=${y} z=${z}`)
+        return true
+      }
+    }
+    log.uyari(`${deneme} denemede ${this.yaricap} blok içinde cevher bulamadım.`)
+    return false
   }
 
   /**
@@ -1091,6 +1123,34 @@ class MinecraftEnvironment {
           `${this.hedefKonum.x},${this.hedefKonum.y},${this.hedefKonum.z}`)
         this.hedefKonum = null
         this.hedefDenemesi = 0
+      }
+    }
+
+    // DİKEY HEDEFTEN VAZGEÇME — UZMANIN DEĞİL ORTAMIN İŞİ.
+    //
+    // Hedefin tam altında/üstündeysek (yatay mesafe < 2) ve menzilde
+    // kırılacak bir şey yoksa o hedef bize göre değil: aksiyon uzayında
+    // yukarı gitmek yok. `HEDEF_SABIR` (20 adım) bunun için çok yavaş —
+    // yerinde sayma kesme eşiği 60 adım, yani üç kötü hedef bölümün
+    // tamamını yiyor.
+    //
+    // Bu mantık `expert.js`te vardı ve PPO direksiyona geçince kimse
+    // çağırmadı; eğitimde 2-18. bölümlerin hepsi sıfır kaynakla bitti.
+    // Ortam kuralı, uzman kuralı değil.
+    if (this.gorev.dikeyBirakma && this.hedefKonum) {
+      const p = this.bot.entity.position
+      const yatay = Math.hypot(
+        this.hedefKonum.x + 0.5 - p.x,
+        this.hedefKonum.z + 0.5 - p.z
+      )
+      if (yatay < 2 && !this.onumuKapatan() && kirilanKutuk === 0) {
+        this.dikeyDenemesi++
+      } else {
+        this.dikeyDenemesi = 0
+      }
+      if (this.dikeyDenemesi >= DIKEY_SABIR) {
+        this.hedefiBirak()
+        this.dikeyDenemesi = 0
       }
     }
 

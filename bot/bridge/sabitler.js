@@ -19,5 +19,10 @@ module.exports = {
 
   // Hedefin dibindeyiz ama bu kadar adımdır bir şey kıramıyorsak
   // o hedef ulaşılamıyordur; kara listeye alıp başkasına geç
-  HEDEF_SABIR: 20
+  HEDEF_SABIR: 20,
+
+  // Hedefin tam altında/üstündeyiz (yatay < 2) ama menzilde kıracak bir
+  // şey yok: ulaşılamaz. Aksiyon uzayında yukarı gitmek olmadığı için
+  // beklemenin anlamı yok — hızlıca bırak.
+  DIKEY_SABIR: 3
 }

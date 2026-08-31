@@ -1687,6 +1687,114 @@ async function main () {
     }
   })
 
+  console.log('\nUlasilabilirlik (PPO cokusunun sebebi)')
+
+  await dene('madende arama yaricapi ORMANDAN kucuk', () => {
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const eOdun = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0 })
+    const eMaden = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'maden' })
+
+    // Neden onemli: `findBlocks` DUVARIN ARDINI da goruyor. y=15'te 64 blok
+    // yaricapinda her zaman bir cevher vardir -- tasin 40 blok gerisinde.
+    // Ortam "hedef var" dedigi icin `tazeMadeneIsinla` hic calismiyor ve
+    // ajan her bolumu ulasamayacagi bir cevhere tunel kazarak geciriyordu.
+    // Egitimde 1. bolum 5 cevher aldi, 2-18 arasi HEPSI sifir.
+    if (!(eMaden.yaricap < eOdun.yaricap)) {
+      throw new Error(`maden yaricapi ${eMaden.yaricap}, odun ${eOdun.yaricap} -- kucuk degil`)
+    }
+    if (eMaden.yaricap > 24) {
+      throw new Error(`maden yaricapi ${eMaden.yaricap}: bir bolumde tunelle asilamaz`)
+    }
+  })
+
+  await dene('gozlem mesafesi AYNI yaricapla normalize ediliyor', () => {
+    // Hedef secimi bir yaricap, gozlem normalizasyonu baska bir yaricap
+    // kullanirsa gozlem olcegi gorevden goreve kayar ve onceden egitilmis
+    // ag anlamsiz girdi gorur. Bu sessizce olur -- kod calisir, ajan aptallasir.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b.entity.position = new Vec3(0, 15, 0)
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+
+    // Yaricapin TAM UCUNDA bir cevher: normalize mesafe 1.0 olmali
+    const uzak = new Vec3(env.yaricap, 15, 0)
+    b.findBlocks = () => [uzak]
+    b.blockAt = (pos) => {
+      if (Math.floor(pos.x) === env.yaricap && Math.floor(pos.y) === 15 && Math.floor(pos.z) === 0) {
+        return { name: 'iron_ore', boundingBox: 'block', position: uzak }
+      }
+      return { name: 'air', boundingBox: 'empty', position: new Vec3(0, 0, 0) }
+    }
+    const mesafe = env.gozlem()[3]
+    if (Math.abs(mesafe - 1) > 0.02) {
+      throw new Error(`yaricapin ucundaki hedef ${mesafe.toFixed(2)} olarak normalize edildi, 1.00 bekleniyordu`)
+    }
+  })
+
+  await dene('DIKEY ulasilamaz hedefi UZMAN OLMADAN da birakiyor', async () => {
+    // PPO cokusunun ikinci sebebi. "Ulasilamaz hedefi birak" mantigi
+    // sadece expert.js'teydi; PPO direksiyona gecince kimse cagirmadi ve
+    // ajan bolumun tamamini tam tepesindeki bir cevhere kilitli gecirdi.
+    // Ortamin kendi `HEDEF_SABIR`i (20 adim) cok yavas: yerinde sayma
+    // kesme esigi 60 adim, yani uc kotu hedef bolumun tamamini yiyor.
+    //
+    // Bu test UZMANI HIC CAGIRMIYOR -- sabit bir aksiyon dizisi suruyor.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    b.entity.position = new Vec3(0.5, 15, 0.5)
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b.canDigBlock = () => false // menzilde kiracak hicbir sey yok
+
+    // Cevher TAM TEPEMIZDE (yatay mesafe 0), aksiyon uzayinda yukari yok
+    const cevher = new Vec3(0, 21, 0)
+    b.findBlocks = () => [cevher]
+    b.blockAt = (pos) => {
+      const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
+      if (x === 0 && y === 21 && z === 0) {
+        return { name: 'iron_ore', boundingBox: 'block', position: cevher }
+      }
+      return { name: 'air', boundingBox: 'empty', position: new Vec3(x, y, z) }
+    }
+
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+    if (!env.enYakinKutuk()) throw new Error('test kurulumu bozuk: hedef secilmedi')
+
+    // "Sola don" -- ajanin yapabilecegi ama bu hedefte ise yaramayan sey
+    for (let i = 0; i < 8; i++) await env.step(1)
+
+    if (!env.karaListe.has('0,21,0')) {
+      throw new Error('8 adim sonra ulasilamaz dikey hedef hala kara listede degil')
+    }
+  })
+
+  await dene('tazeMadeneIsinla() cevher bulana kadar TEKRAR deniyor', async () => {
+    // Arama yaricapi 16'ya inince rastgele bir noktanin yakininda hic
+    // cevher OLMAMASI mumkun hale geldi. Tek atislik isinlanma hedefsiz
+    // bolum uretiyor; hedefsiz bolum PPO icin saf gurultu.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    b.entity.position = new Vec3(0, 15, 0)
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+
+    let isinlanma = 0
+    b.chat = (mesaj) => { if (/^\/tp /.test(mesaj)) isinlanma++ }
+    // Ilk iki isinlanmada cevher YOK, ucuncude var
+    b.findBlocks = () => (isinlanma >= 3 ? [new Vec3(3, 15, 0)] : [])
+    b.blockAt = (pos) => {
+      const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
+      if (isinlanma >= 3 && x === 3 && y === 15 && z === 0) {
+        return { name: 'iron_ore', boundingBox: 'block', position: new Vec3(3, 15, 0) }
+      }
+      return { name: 'stone', boundingBox: 'block', position: new Vec3(x, y, z) }
+    }
+
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+    const bulundu = await env.tazeMadeneIsinla()
+    if (!bulundu) throw new Error(`${isinlanma} isinlanmadan sonra pes etti`)
+    if (isinlanma < 3) throw new Error('tek atisllik: tekrar denemedi')
+  })
+
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)
   process.exit(hata === 0 ? 0 : 1)
 }
