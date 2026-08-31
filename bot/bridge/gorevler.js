@@ -177,7 +177,12 @@ const GOREVLER = {
       if (!blok || blok.boundingBox !== 'block') return false
       if (MADEN_TEHLIKE.test(blok.name)) return false
       const { uygunAlet } = require('../skills/alet')
-      return !!uygunAlet(bot, blok) || /dirt|gravel|sand/.test(blok.name)
+      if (uygunAlet(bot, blok)) return true
+      // Kürek işi bloklar (toprak, çakıl, kum, kil, çamur) ELLE de hızlı
+      // kırılır; kürek taşımıyoruz diye yolumuzu kapatmalarına gerek yok.
+      // Taş için bu geçerli değil: elle taş kazmak dakikalar sürer.
+      return /^mineable\/shovel$/.test(blok.material || '') ||
+        /dirt|gravel|sand/.test(blok.name)
     },
 
     /**

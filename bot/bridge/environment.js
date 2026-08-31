@@ -218,6 +218,22 @@ class MinecraftEnvironment {
       const aday = bot.blockAt(konum)
       if (!this.gorev.dogalMi(bot, aday)) continue // oyuncunun yapısını kırma
 
+      // GÖRÜŞ HATTI ŞART — DUVARIN ARDINI KIRMAK YASAK.
+      //
+      // Mineflayer'ın `canDigBlock`u SADECE mesafeye bakıyor
+      // (digging.js: `distanceTo(...) <= 5.1`), görüş hattına bakmıyor.
+      // Sunucu da bunu kabul ediyordu, yani bot 4 blok öteden, taşın
+      // ARDINDAN cevher kırıyordu.
+      //
+      // Sonucu oyunda gördük ve ölçümdeki sıfırı bu açıklıyor: kırılan
+      // cevher duvarın arkasına düşüyor, bot oraya ulaşamıyor. Yani
+      // "kırma" ödülü alınıyor ama envantere HİÇBİR ŞEY girmiyor.
+      //
+      // Öğrenme açısından daha da kötüsü: cevhere giden tüneli kazmayı
+      // öğrenmesi gereken ajan, tünel kazmadan ödül alıyordu. Görevin
+      // tamamı kısa devre oluyordu.
+      if (typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(aday)) continue
+
       // Alttan üste kesmek daha verimli: alçak olana öncelik ver
       const skor = -fark.norm() - Math.max(0, fark.y) * 0.3
       if (skor > enIyiSkor) { enIyiSkor = skor; enIyi = aday }
@@ -278,9 +294,18 @@ class MinecraftEnvironment {
     const yan = new Vec3(-Math.cos(yaw), 0, Math.sin(yaw)) // ileriye dik
     const p = this.bot.entity.position
 
+    // ÖNCE ORTA, SONRA ÇAPRAZLAR.
+    //
+    // Sıra önemliydi ve `[-0.35, 0, 0.35]` yazmıştım: `onumuKapatan()`
+    // bulduğu İLK bloğu döndürdüğü için bot hep SOL ÇAPRAZDAKİ bloğu
+    // kırıyordu. Ortadaki blok yerinde kalıyor, ajan ileri basıyor,
+    // oyun geçirmiyor. Oyunda tam olarak bu görüldü: "sadece çaprazını
+    // kırıyor ve ilerlemeye çalışıyor ama ilerleyemiyor".
+    //
+    // Yürümeyi engelleyen asıl blok ortadaki; onu önce ele al.
     const noktalar = []
     for (const yukseklik of yukseklikler) {
-      for (const kayma of [-0.35, 0, 0.35]) {
+      for (const kayma of [0, -0.35, 0.35]) {
         noktalar.push(p.offset(
           ileri.x * menzil + yan.x * kayma,
           yukseklik,
@@ -292,13 +317,30 @@ class MinecraftEnvironment {
   }
 
   onumdeEngelVar () {
-    if (this.onumdeBasamakVar()) return false
+    return !!this.onumdekiEngel()
+  }
+
+  /**
+   * Önümüzü kapatan bloğun KENDİSİ (yoksa null).
+   *
+   * `onumdeEngelVar()` sadece evet/hayır diyordu ve bir hata sınıfını
+   * görünmez kılıyordu: "önümde katı blok var ama `onumuKapatan()` onu
+   * kırılabilir saymıyor". Ölçümde bunu ancak dolaylı görebildik —
+   * uzman 4 bölümde hiç kırma yapmadı, sebebini bulmak iki tur sürdü.
+   * (Sebep: `aletTipi()` `tuff`, `calcite` gibi 439 bloğu tanımıyordu.)
+   *
+   * Artık engelin ADI uzmanın gerekçesine yazılıyor, yani doğrudan
+   * `gorev_kontrol.py` çıktısında görünüyor. Ölçebildiğimiz bir arıza
+   * sessiz kalmamalı.
+   */
+  onumdekiEngel () {
+    if (this.onumdeBasamakVar()) return null
 
     for (const nokta of this.onumdekiNoktalar(0.8, [0.1, 1.2])) {
       const blok = this.bot.blockAt(nokta)
-      if (blok && blok.boundingBox === 'block') return true
+      if (blok && blok.boundingBox === 'block') return blok
     }
-    return false
+    return null
   }
 
   /** Verilen kütükten aşağı inerek gövdenin en alt kütüğünü bulur */

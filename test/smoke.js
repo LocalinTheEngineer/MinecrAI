@@ -34,6 +34,8 @@ function sahteBot () {
     findBlock: () => null,
     blockAtCursor: () => null,
     canDigBlock: () => false,
+    // Varsayilan: gorus hatti acik. Duvar arkasi testi bunu override eder.
+    canSeeBlock: () => true,
     recipesFor: () => [],
     recipesAll: () => [],
     registry: { blocksByName: {} },
@@ -1793,6 +1795,159 @@ async function main () {
     const bulundu = await env.tazeMadeneIsinla()
     if (!bulundu) throw new Error(`${isinlanma} isinlanmadan sonra pes etti`)
     if (isinlanma < 3) throw new Error('tek atisllik: tekrar denemedi')
+  })
+
+  console.log('\nAlet secimi (madenin 4 bolumu bunun yuzunden bosa gitti)')
+
+  await dene('aletTipi() OYUNUN VERISIYLE uyusuyor (elle liste tutmuyoruz)', () => {
+    // Gercek hata: `aletTipi` elle yazilmis bir regex listesiydi ve
+    // 1.20.4'te 439 blogu kaciriyordu -- `tuff`, `calcite`,
+    // `smooth_basalt`, `amethyst_block`, `dripstone_block` dahil.
+    // Bunlar y=15 magaralarinda HER YERDE. Bot birine bakinca "kiracak
+    // aletim yok" deyip sonsuza kadar etrafindan dolasmaya calisti:
+    // uzman 4 bolumde HIC kirma yapmadi, 0 kaynak topladi.
+    //
+    // Bu test elle liste tutmayi imkansiz kiliyor: oyunun kendi
+    // `material` alaniyla karsilastiriyor.
+    const { aletTipi } = require('../bot/skills/alet')
+    const mcData = require('minecraft-data')('1.20.4')
+
+    const kacirilan = []
+    for (const b of Object.values(mcData.blocksByName)) {
+      if (!b.diggable || !b.material) continue
+      const m = /^mineable\/(pickaxe|axe|shovel)$/.exec(b.material)
+      if (!m) continue
+      if (aletTipi(b) !== '_' + m[1]) kacirilan.push(b.name)
+    }
+    if (kacirilan.length > 0) {
+      throw new Error(
+        `${kacirilan.length} blok icin yanlis alet: ${kacirilan.slice(0, 5).join(', ')}...`)
+    }
+  })
+
+  await dene('madende TUFF/CALCITE yolu kapatamiyor (kazma varken)', () => {
+    // Yukaridaki testin somut hali: kazmasi olan bot y=15'in en sik
+    // bloklarini kirabilmeli. Kirilamiyorsa bolum dolasmakla geciyor.
+    const g = require('../bot/bridge/gorevler')
+    const mcData = require('minecraft-data')('1.20.4')
+    const b = sahteBot()
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+
+    for (const ad of ['tuff', 'calcite', 'smooth_basalt', 'dripstone_block',
+      'amethyst_block', 'deepslate', 'stone', 'andesite']) {
+      const veri = mcData.blocksByName[ad]
+      const blok = { name: ad, material: veri.material, boundingBox: 'block' }
+      if (!g.GOREVLER.maden.engelKirilabilirMi(b, blok)) {
+        throw new Error(`kazma elindeyken ${ad} kirilamaz sayildi`)
+      }
+    }
+  })
+
+  await dene('uzman KIRAMADIGI blogun adini gerekcesine yaziyor', () => {
+    // Olculebilirlik testi. Bu dal bir kez maden gorevinin tamamini yedi
+    // ve gerekce sadece "engel_soldan_dolasiyorum" dedigi icin sebebi
+    // bulmak iki tur surdu. Artik gorev_kontrol dagiliminda blogun adi
+    // gorunuyor: "kiramadigim_tuff".
+    const uzman = require('../bot/bridge/expert')
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    const e = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+    // Kazma YOK -> tas kirilamaz -> dolasma dalina duser
+    b.inventory = { items: () => [] }
+    b.blockAt = () => ({ name: 'tuff', material: 'mineable/pickaxe', boundingBox: 'block', position: new Vec3(0, 0, 0) })
+
+    const karar = uzman.hedefeYonel(b, e, new Vec3(0, 64, -5), 'cevhere')
+    if (!/kiramadigim_tuff/.test(karar.sebep)) {
+      throw new Error(`engelin adi gerekcede yok: ${karar.sebep}`)
+    }
+  })
+
+  console.log('\nGorus hatti ve on nokta sirasi')
+
+  await dene('DUVARIN ARDINDAKI cevheri menzilde saymiyor', () => {
+    // Gercek olay (ekran goruntusu): bot tasin ARDINDAKI cevheri kirdi.
+    // Mineflayer'in `canDigBlock`u sadece mesafeye bakiyor, gorus hattina
+    // bakmiyor -- sunucu da kabul ediyor. Kirilan cevher duvarin arkasina
+    // dusuyor ve bot ona ulasamiyor: "kirma" odulu aliniyor ama envantere
+    // HICBIR SEY girmiyor. Olcumdeki 0 kaynagin sebebi bu.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    b.entity.position = new Vec3(0.5, 15, 0.5)
+    b.entity.yaw = 0 // -z yonune bakiyor
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+
+    const cevher = new Vec3(0, 15, -3) // tam onumuzde, 3 blok oteda
+    b.findBlocks = () => [cevher]
+    b.blockAt = (pos) => {
+      const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
+      if (x === 0 && y === 15 && z === -3) {
+        return { name: 'iron_ore', material: 'mineable/pickaxe', boundingBox: 'block', position: cevher }
+      }
+      return { name: 'stone', material: 'mineable/pickaxe', boundingBox: 'block', position: new Vec3(x, y, z) }
+    }
+
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+
+    // Gorus ACIK: menzilde sayilmali
+    b.canSeeBlock = () => true
+    if (!env.onundekiKutuk()) throw new Error('gorus acikken cevheri menzilde saymadi')
+
+    // Gorus KAPALI (arada duvar var): menzilde SAYILMAMALI
+    b.canSeeBlock = () => false
+    if (env.onundekiKutuk()) throw new Error('duvarin ardindaki cevheri menzilde saydi')
+  })
+
+  await dene('onumdeki noktalar ORTADAN basliyor (caprazdan degil)', () => {
+    // Gercek olay: bot hep SOL CAPRAZDAKI blogu kiriyor, ortadaki blok
+    // yerinde kaliyor, ileri basiyor ama gecemiyor. Sebep sadece sira:
+    // `onumuKapatan()` buldugu ILK blogu donduruyor ve ornekleme
+    // `[-0.35, 0, 0.35]` diye basliyordu.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    b.entity.position = new Vec3(0.5, 15, 0.5)
+    b.entity.yaw = 0
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+
+    const noktalar = env.onumdekiNoktalar(0.8, [0.1])
+    const yan = new Vec3(-Math.cos(0), 0, Math.sin(0))
+    // Ilk nokta yanal kaymasi SIFIR olmali
+    const kayma = (noktalar[0].x - b.entity.position.x) * yan.x +
+                  (noktalar[0].z - b.entity.position.z) * yan.z
+    if (Math.abs(kayma) > 0.01) {
+      throw new Error(`ilk ornek nokta ortada degil, yanal kayma ${kayma.toFixed(2)}`)
+    }
+  })
+
+  await dene('ONCE ortadaki blogu kiriyor, caprazdakini degil', () => {
+    // Yukaridaki testin davranissal hali: hem ortada hem sol caprazda
+    // kirilabilir blok varsa `onumuKapatan()` ORTADAKINI secmeli.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const b = sahteBot()
+    // BOT BLOGUN KENARINDA DURMALI.
+    //
+    // Ilk yazisimda botu blogun TAM ORTASINA (x=0.5) koymustum ve test
+    // ayirt etmiyordu: 0.35 yanal kayma orada hala AYNI bloga dusuyor,
+    // yani ucu de x=0. Ayni hatayi capraz-yaprak testinde de yapmistim.
+    // x=0.8'de ornekler [orta=0, sol=1, sag=0] bloklarina dagiliyor.
+    b.entity.position = new Vec3(0.8, 15, 0.5)
+    b.entity.yaw = 0 // -z
+    b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
+    b.canDigBlock = () => true
+    b.blockAt = (pos) => {
+      const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
+      // Orta: x=0, sol capraz: x=1 (ikisi de dolu)
+      if (z <= 0 && (x === 0 || x === 1)) {
+        return { name: 'stone', material: 'mineable/pickaxe', boundingBox: 'block', position: new Vec3(x, y, z) }
+      }
+      return { name: 'air', boundingBox: 'empty', position: new Vec3(x, y, z) }
+    }
+
+    const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
+    const kapatan = env.onumuKapatan()
+    if (!kapatan) throw new Error('onumu kapatan blogu hic bulamadi')
+    if (kapatan.position.x !== 0) {
+      throw new Error(`caprazdakini (x=${kapatan.position.x}) sectiledi, ortadakini (x=0) degil`)
+    }
   })
 
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)

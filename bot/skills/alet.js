@@ -27,6 +27,28 @@ function malzemePuani (isim) {
 /** Bu blok için hangi alet tipi uygun? */
 function aletTipi (blok) {
   if (!blok) return null
+
+  // BİRİNCİL KAYNAK: OYUNUN KENDİ VERİSİ.
+  //
+  // Burası önce elle yazılmış bir regex listesiydi ve 1.20.4'te 439 bloğu
+  // kaçırıyordu. Kaçırılanlar arasında `tuff`, `calcite`, `smooth_basalt`,
+  // `amethyst_block`, `dripstone_block` vardı — yani y=15 mağaralarında
+  // her yerde bulunan bloklar.
+  //
+  // Sonucu ölçümde gördük: maden görevinde uzman 4 bölümde HİÇ kırma
+  // yapmadı, adımların %56'sı "önümde katı blok var ama kıracak aletim
+  // yok" dalına düştü ve bot sonsuza kadar etrafından dolaşmaya çalıştı.
+  // 0 kaynak, 4/4 bölüm yerinde sayma kesmesiyle bitti.
+  //
+  // `minecraft-data` her blok için `material` veriyor: 'mineable/pickaxe',
+  // 'mineable/shovel', 'mineable/axe'. Elle liste tutmanın anlamı yok —
+  // sürüm değişince liste sessizce eskiyor, bu da tam olarak öyle bir hata.
+  const m = /^mineable\/(pickaxe|axe|shovel)$/.exec(blok.material || '')
+  if (m) return '_' + m[1]
+
+  // YEDEK: `material` alanı olmayan sahte blok nesneleri.
+  // Kod bazı yerlerde `{ name: 'iron_ore' }` gibi elle nesne kuruyor
+  // (ör. environment.js'te "kazmam var mı" kontrolü) ve testler de öyle.
   if (/_log$|_stem$|_wood$|planks$|_door$|crafting_table|chest/.test(blok.name)) return '_axe'
   if (/stone|ore$|deepslate|granite|diorite|andesite|cobble|obsidian/.test(blok.name)) return '_pickaxe'
   if (/dirt|grass_block|sand|gravel|clay|podzol|mycelium|soul_/.test(blok.name)) return '_shovel'

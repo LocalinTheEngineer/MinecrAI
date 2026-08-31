@@ -273,15 +273,25 @@ function hedefeYonel (bot, env, hedefPos, etiket) {
     // Kaçınma sayacını kur ki dönüp hemen geri dönmeyelim.
     env.kacinmaAdimi = 3
 
+    // ENGELİN ADINI GEREKÇEYE YAZ.
+    //
+    // Bu dal bir kez maden görevinin tamamını yedi: uzman 4 bölümde hiç
+    // kırma yapmadı çünkü `tuff` ve `calcite` "kırılamaz" sayılıyordu.
+    // Gerekçe sadece "engel_soldan_dolasiyorum" dediği için sebebi
+    // bulmak iki tur sürdü. Artık `gorev_kontrol.py` dağılımında
+    // "kiramadigim_tuff" diye görünüyor.
+    const engel = env.onumdekiEngel()
+    const ad = engel ? `_kiramadigim_${engel.name}` : ''
+
     const sol = env.solumKapali()
     const sag = env.sagimKapali()
-    if (sol && !sag) return { action: 1, sebep: etiket + '_engel_sagdan_dolasiyorum' }
-    if (sag && !sol) return { action: 2, sebep: etiket + '_engel_soldan_dolasiyorum' }
+    if (sol && !sag) return { action: 1, sebep: etiket + ad + '_sagdan_dolasiyorum' }
+    if (sag && !sol) return { action: 2, sebep: etiket + ad + '_soldan_dolasiyorum' }
 
     // İkisi de aynıysa hedefe daha yakın olan yöne dön (deterministik)
     return fark >= 0
-      ? { action: 2, sebep: etiket + '_engel_soldan_dolasiyorum' }
-      : { action: 1, sebep: etiket + '_engel_sagdan_dolasiyorum' }
+      ? { action: 2, sebep: etiket + ad + '_soldan_dolasiyorum' }
+      : { action: 1, sebep: etiket + ad + '_sagdan_dolasiyorum' }
   }
 
   // Hizalı değiliz: hedefe dön
