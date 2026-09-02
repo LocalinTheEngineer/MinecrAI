@@ -26,7 +26,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import get_schedule_fn
 
 from minecrai.yollar import yollar
-from minecrai import MinecraftEnv
+from minecrai import MinecraftEnv, ortam_kur
 
 KOK = Path(__file__).parent.parent
 # Ust uste kac bos bolumden sonra egitim kendini durdurur.
@@ -196,7 +196,7 @@ class BolumKaydedici(BaseCallback):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden", "hepsi"])
     ap.add_argument("--adim", type=int, default=20000, help="toplam egitim adimi")
     ap.add_argument("--baslangic", type=Path, default=None,
                     help="on-egitilmis model (pretrain_ppo.py ciktisi)")
@@ -222,7 +222,7 @@ def main() -> None:
     SON_MODEL = _y["ppo_son"]
     KONTROL_NOKTASI = _y["ppo_kontrol"]
 
-    env = MinecraftEnv(url=args.url, gorev=args.gorev)
+    env = ortam_kur(args.url, args.gorev)
 
     if args.devam and KONTROL_NOKTASI.exists():
         print(f"Kontrol noktasindan devam: {KONTROL_NOKTASI}")

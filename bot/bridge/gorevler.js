@@ -85,6 +85,58 @@ function cevherSay (bot) {
     .reduce((toplam, i) => toplam + i.count, 0)
 }
 
+/**
+ * GÖREVDEN BAĞIMSIZ EK GÖZLEM — 4 sayı.
+ *
+ * Önce sadece madende vardı. Ölçüm oradan geldi: bu bilgiler olmadan taklit
+ * doğruluğu %25.5 çıkıyordu (dört aksiyonda kör tahmin %25), çünkü uzman
+ * adımlarının %39'unu yere düşmüş cevheri toplamaya harcıyor ve gözlemde
+ * düşmüş eşya hakkında hiçbir şey yoktu. Aynı gözleme bazen "sağa dön"
+ * bazen "sola dön" düşüyordu: öğrenilemez veri.
+ *
+ * ODUN GÖREVİNDE DE AYNI DURUM VAR — orada da uzman düşen kütükleri
+ * kovalıyor. Milestone 6'da (çok görevli tek ajan) iki görev aynı ağı
+ * paylaşacağı için gözlemin de ortak olması gerekiyor; o yüzden burası
+ * artık paylaşılan bir fonksiyon.
+ *
+ * Hepsi EGOSENTRİK (ajanın kendi bakışına göre), yani Python tarafında ek
+ * bir dönüşüm gerekmiyor:
+ *   sin(açı) : eşya sağımda mı solumda mı
+ *   cos(açı) : 1 = tam önümde, -1 = tam arkamda
+ *   mesafe   : 0..1 (eşya yoksa 1)
+ *   kırılabilir engel: önümü kapatan bloğu KIRABİLİYOR muyum
+ *
+ * Son sayı ayrı bir boşluğu kapatıyor: uzman "kır" ile "dolaş" arasında
+ * `onumuKapatan()`e bakarak seçiyor, ama gözlemde sadece "önüm kapalı mı"
+ * vardı — "kırılabilir mi" yoktu.
+ *
+ * Eşya yoksa sin=0 VE cos=0 gönderiliyor; gerçek bir açıda ikisi aynı anda
+ * sıfır olamaz, yani "eşya yok" ayırt edilebilir durumda.
+ */
+const EK_GOZLEM = (env) => {
+  const bot = env.bot
+  const esya = env.yakinEsya()
+
+  let sin = 0
+  let cos = 0
+  let mesafe = 1
+  if (esya) {
+    const fark = esya.position.minus(bot.entity.position)
+    const uzaklik = Math.max(Math.hypot(fark.x, fark.z), 0.001)
+    const esyaYaw = Math.atan2(-fark.x, -fark.z)
+    let aci = esyaYaw - bot.entity.yaw
+    aci = ((aci + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
+    sin = Math.sin(aci)
+    cos = Math.cos(aci)
+    mesafe = Math.min(uzaklik / 8, 1)
+  }
+
+  return [sin, cos, mesafe, env.onumuKapatan() ? 1 : 0]
+}
+
+// Kaç sayı eklediğini tek yerden bildir — testler ve env.py bunu kullanıyor
+EK_GOZLEM.uzunluk = 4
+
 const GOREVLER = {
   /** Varsayılan görev: ormanda odun topla. Milestone 1-4 bunun üstüne kuruldu. */
   odun: {
@@ -113,7 +165,23 @@ const GOREVLER = {
 
     // Kaynak ararken kaç blok uzağa bakılsın. Ormanda 64 blok makul:
     // arazi açık, ajan 64 bloğu bir bölümde yürüyebiliyor.
-    aramaYaricapi: 64
+    aramaYaricapi: 64,
+
+    ekGozlem: EK_GOZLEM,
+
+    /**
+     * ODUN GÖREVİNİN VARSAYILAN GÖZLEMİ DAR (16 sayı).
+     *
+     * `ekGozlem` tanımlı ama varsayılan olarak KAPALI, çünkü Milestone 4'ün
+     * eğitilmiş modelleri (`bc_policy.pt`, `ppo_son.zip`) 19 boyutlu girdi
+     * bekliyor. Genişletmek onları yüklenemez hale getirirdi — ölçülmüş ve
+     * yayınlanmış sonuçları yeni bir görev uğruna bozmak doğru takas değil.
+     *
+     * Python tarafı `genisGozlem: true` isterse açılıyor. Çok görevli
+     * eğitim (Milestone 6) bunu istiyor, çünkü tek ağ iki görevi de
+     * görecekse gözlem genişliği ortak olmak zorunda.
+     */
+    gozlemProfili: 'dar'
   },
 
   /** Milestone 5: yeraltında cevher topla. */
@@ -298,26 +366,11 @@ const GOREVLER = {
      * Eşya yoksa sin=0 VE cos=0 gönderiyoruz; gerçek bir açıda bu ikisi
      * aynı anda sıfır olamaz, yani "eşya yok" ayırt edilebilir durumda.
      */
-    ekGozlem: (env) => {
-      const bot = env.bot
-      const esya = env.yakinEsya()
+    ekGozlem: EK_GOZLEM,
 
-      let sin = 0
-      let cos = 0
-      let mesafe = 1
-      if (esya) {
-        const fark = esya.position.minus(bot.entity.position)
-        const uzaklik = Math.max(Math.hypot(fark.x, fark.z), 0.001)
-        const esyaYaw = Math.atan2(-fark.x, -fark.z)
-        let aci = esyaYaw - bot.entity.yaw
-        aci = ((aci + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
-        sin = Math.sin(aci)
-        cos = Math.cos(aci)
-        mesafe = Math.min(uzaklik / 8, 1)
-      }
-
-      return [sin, cos, mesafe, env.onumuKapatan() ? 1 : 0]
-    }
+    // Madende ek gözlem VARSAYILAN OLARAK AÇIK: bu görevin ölçülmüş
+    // sonuçları (Milestone 5b) zaten 20 sayılık gözlemle alındı.
+    gozlemProfili: 'genis'
   }
 }
 
@@ -326,5 +379,6 @@ function gorevGetir (ad) {
 }
 
 module.exports = {
-  GOREVLER, gorevGetir, cevherSay, kazmaDurumu, gerekenSeviye, KAZMA_SEVIYELERI
+  GOREVLER, gorevGetir, cevherSay, kazmaDurumu, gerekenSeviye, KAZMA_SEVIYELERI,
+  EK_GOZLEM
 }

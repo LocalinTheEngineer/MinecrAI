@@ -174,7 +174,9 @@ The same effect appeared inside behaviour cloning: evaluating the cloned policy 
 | **2** | Node↔Python bridge + Gymnasium environment + random-agent baseline | ✅ Done |
 | **3** | Behaviour cloning from scripted demonstrations | ✅ Done |
 | **4** | PPO training warm-started from the cloned policy, learning curve | ✅ Done |
-| **5** | Extended task set: mining, smelting, recursive crafting | 🟡 Skills done; mining as an RL task in progress |
+| **5a** | Extended skill set: mining, smelting, recursive crafting | ✅ Done |
+| **5b** | Mining as a *second RL task* on the same environment | ✅ Done |
+| **6** | One agent, both tasks — multi-task RL | 🟡 Implemented, not yet trained |
 
 Each milestone stands on its own — the repo is presentable at any point.
 
@@ -354,6 +356,59 @@ distribution printed by `gorev_kontrol.py` and the data-health line printed by
    hypothesis.** Opening the file and counting unique rows took two minutes and
    was decisive. `collect_demos.py` now prints that count after every run, and
    `test/smoke.py` catches the underlying bug with a fake bridge in seconds.
+
+## Milestone 6 — one agent, both tasks *(implemented, not yet trained)*
+
+Milestone 5b showed the *environment* generalises to a second task. Milestone 6
+asks the harder question: can **one network** do both, told only which task it is
+in?
+
+The code is in place and covered by tests; the training runs are pending. Two
+design decisions carry the milestone.
+
+**A shared observation width.** Wood sends 16 numbers, mining sends 20 (mining
+needs the dropped-item direction and the "can I break what is in front of me"
+bit). One network needs one input size, so multi-task mode asks the bridge for the
+wide observation on *both* tasks — `reset` carries a `genisGozlem` flag. Wood keeps
+its narrow default outside multi-task mode, so Milestone 4's trained models still
+load.
+
+**The task must be visible to the network.** This is the part worth arguing for.
+Given the same observation — *there is stone in front of me* — the correct action
+is "go around it" in the wood task and "break it" in the mining task. Without a
+task signal those two labels land on identical inputs and the network learns their
+average, which is neither. Milestone 5b produced a different route to the same
+failure (a frozen observation made every sample in an episode contradictory, and
+the loss parked at exactly `ln 4`), so the shape of it is already familiar: **if
+the distinguishing information is not in the observation, there is nothing to
+learn.** The task index rides in the raw recording as a single column and is
+expanded to a one-hot at training time — 25 inputs in total.
+
+Tasks alternate strictly rather than being drawn at random: over a short run,
+random selection produces lopsided splits (19/11 in 30 episodes) that quietly bias
+any "which task is it better at" comparison.
+
+`CokluGorevEnv` is an ordinary `gym.Env` from the outside, so `collect_demos.py`,
+`train_ppo.py` and `eval_agent.py` accept `--gorev hepsi` with no special cases —
+the one branch lives in `ortam_kur()`, because a branch repeated in five scripts is
+a branch one of them will eventually be missing.
+
+Two bugs surfaced while writing this, both of the silent kind:
+
+- **The search radius did not follow the task.** `server.js` swapped `env.gorev` on
+  a task change, but the radius was a field computed once in the constructor. Under
+  multi-task training the task changes every episode, so a bot switching from wood
+  to mining would have kept the 64-block radius — reintroducing the Milestone 5b
+  failure (locking onto unreachable targets) with no visible symptom. It is a
+  derived property now, so forgetting to update it is not expressible.
+- **Task switching kept the locked target and the blacklist.** A target chosen in
+  the forest is meaningless underground. Both are cleared in `gorevDegistir()`,
+  which is now the single entry point for a task change.
+
+`gozlemleri_hazirla` also moved into `minecrai/veri.py`. It existed as two
+byte-identical copies in `train_bc.py` and `pretrain_ppo.py`, and the same fix had
+already had to be applied twice; a third divergence would have meant the two
+scripts silently interpreting the same data differently, with both still running.
 
 ## Quick start
 

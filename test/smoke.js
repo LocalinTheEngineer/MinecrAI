@@ -1952,43 +1952,89 @@ async function main () {
 
   console.log('\nGozlem boyutu (Node <-> Python sozlesmesi)')
 
-  await dene('gozlem boyutlari env.py ile ayni (odun 16, maden 20)', () => {
-    // Node ile Python arasindaki tek sozlesme bu sayi. Uyusmazsa Python
-    // tarafi calisma aninda patliyor -- ama ancak Minecraft'a baglandiktan
-    // SONRA, yani kullanici oyunu ve sunucuyu actiktan sonra. Burada
-    // bir saniyede yakalaniyor.
+  await dene('gozlem boyutlari env.py ile ayni (ORTAK 16 + EK 4)', () => {
+    // Node ile Python arasindaki tek sozlesme bu sayilar. Uyusmazsa Python
+    // tarafi ancak Minecraft'a baglandiktan SONRA patliyor -- yani kullanici
+    // sunucuyu ve oyunu actiktan sonra. Burada bir saniyede yakalaniyor.
     //
-    // Maden 4 sayi fazla aliyor: dusmus esyanin egosentrik yonu ve
-    // mesafesi + "onumu kapatan blogu kirabiliyor muyum". Bunlar olmadan
-    // taklit dogrulugu %25.5 cikti (kor tahmin %25).
-    // Odun 16'da BIRAKILDI: Milestone 4'un kayitli modelleri 19 boyutlu
-    // girdi bekliyor.
+    // Odun DAR (16) kaliyor: Milestone 4'un kayitli modelleri 19 boyutlu
+    // girdi bekliyor. Maden GENIS (20). Cok gorevli egitim (Milestone 6)
+    // odunu da genise cekiyor, cunku tek ag iki gorevi de gorecekse
+    // genislik ortak olmak zorunda.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
-    const beklenen = { odun: 16, maden: 20 }
 
-    for (const [gorev, n] of Object.entries(beklenen)) {
+    const olc = (gorev, genisGozlem) => {
       const b = sahteBot()
       b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
-      const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev })
-      const gozlem = env.gozlem()
-      if (gozlem.length !== n) {
-        throw new Error(`${gorev}: gozlem ${gozlem.length} sayi, beklenen ${n}`)
-      }
-      if (gozlem.some((x) => typeof x !== 'number' || Number.isNaN(x))) {
+      const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev, genisGozlem })
+      const g = env.gozlem()
+      if (g.some((x) => typeof x !== 'number' || Number.isNaN(x))) {
         throw new Error(`${gorev}: gozlemde sayi olmayan/NaN deger var`)
+      }
+      return g.length
+    }
+
+    const ORTAK = 16
+    const EK = 4
+    const beklenen = [
+      ['odun', undefined, ORTAK],        // varsayilan: dar
+      ['odun', true, ORTAK + EK],        // cok gorevli egitim boyle istiyor
+      ['maden', undefined, ORTAK + EK],  // varsayilan: genis
+      ['maden', false, ORTAK]            // acikca dar istenirse dar
+    ]
+    for (const [gorev, genis, n] of beklenen) {
+      const olculen = olc(gorev, genis)
+      if (olculen !== n) {
+        throw new Error(
+          `${gorev} (genisGozlem=${genis}): ${olculen} sayi, beklenen ${n}`)
       }
     }
 
-    // env.py'deki tablo ile karsilastir -- iki dosya birlikte degismeli
+    // env.py'deki tabloyla karsilastir -- iki dosya BIRLIKTE degismeli
     const kaynak = fs.readFileSync(
       path.join(__dirname, '..', 'python', 'minecrai', 'env.py'), 'utf8')
-    const m = /HAM_BOYUTLARI = \{"odun": (\d+), "maden": (\d+)\}/.exec(kaynak)
-    if (!m) throw new Error('env.py icinde HAM_BOYUTLARI tablosu bulunamadi')
-    if (Number(m[1]) !== beklenen.odun || Number(m[2]) !== beklenen.maden) {
+    const o = /^ORTAK = (\d+)/m.exec(kaynak)
+    const e = /^EK = (\d+)/m.exec(kaynak)
+    if (!o || !e) throw new Error('env.py icinde ORTAK/EK sabitleri bulunamadi')
+    if (Number(o[1]) !== ORTAK || Number(e[1]) !== EK) {
       throw new Error(
-        `env.py odun=${m[1]} maden=${m[2]} diyor, environment.js ` +
-        `odun=${beklenen.odun} maden=${beklenen.maden} uretiyor`)
+        `env.py ORTAK=${o[1]} EK=${e[1]} diyor, environment.js ` +
+        `ORTAK=${ORTAK} EK=${EK} uretiyor`)
     }
+  })
+
+  await dene('gorev degisince ARAMA YARICAPI da degisiyor', () => {
+    // Milestone 6 icin kritik ve sessiz bir tuzakti: `server.js` gorev
+    // degisiminde `env.gorev`i degistiriyordu ama yaricap yapicida bir kez
+    // hesaplanan bir ALAN'di. Cok gorevli egitimde gorev her bolumde
+    // degisiyor; odundan madene gecen bot 64 bloklu yaricapla kalirdi --
+    // yani "ulasilamaz hedefe kilitlenme" hatasi geri gelirdi, sessizce.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const env = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'odun' })
+    if (env.yaricap !== 64) throw new Error(`odun yaricapi ${env.yaricap}, 64 bekleniyordu`)
+
+    env.gorevDegistir('maden')
+    if (env.gorev.ad !== 'maden') throw new Error('gorev degismedi')
+    if (env.yaricap !== 16) {
+      throw new Error(`madene gecince yaricap ${env.yaricap} kaldi, 16 olmaliydi`)
+    }
+
+    env.gorevDegistir('odun')
+    if (env.yaricap !== 64) throw new Error('geri donunce yaricap guncellenmedi')
+  })
+
+  await dene('gorev degisimi KILITLI HEDEFI ve kara listeyi temizliyor', () => {
+    // Odunda secilmis bir hedef madende anlamsiz; kara liste de oyle.
+    // Temizlenmezse ajan yeni gorevin ilk adimlarinda eski goreve ait bir
+    // konuma dogru yuruyor ve bunu gozlemden anlamanin yolu yok.
+    const { MinecraftEnvironment } = require('../bot/bridge/environment')
+    const env = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'odun' })
+    env.hedefKonum = new Vec3(10, 64, 10)
+    env.karaListe.add('1,2,3')
+
+    env.gorevDegistir('maden')
+    if (env.hedefKonum !== null) throw new Error('kilitli hedef tasindi')
+    if (env.karaListe.size !== 0) throw new Error('kara liste tasindi')
   })
 
   await dene('maden gozlemi ESYA yonunu gercekten tasiyor', () => {

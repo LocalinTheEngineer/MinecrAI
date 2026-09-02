@@ -44,6 +44,8 @@ def sahte_veri(yol: Path, ham_boyut: int, n: int = 400) -> None:
     """Gercekci sekilli sentetik demo dosyasi."""
     rng = np.random.default_rng(0)
     gozlemler = rng.uniform(-1, 1, size=(n, ham_boyut)).astype(np.float32)
+    if ham_boyut == 21:  # cok gorevli: son sutun GOREV INDISI, rastgele ondalik degil
+        gozlemler[:, -1] = rng.integers(0, 2, n)
     # Her aksiyon en az bir kez gecsin: sinif agirliklari bos sinifta patlar
     aksiyonlar = np.concatenate([
         np.arange(5, dtype=np.int64),
@@ -72,18 +74,46 @@ def main() -> None:
 
     def boyutlar():
         from minecrai.env import HAM_BOYUTLARI, ham_boyutu, gozlem_boyutu
-        assert HAM_BOYUTLARI == {"odun": 16, "maden": 20}, HAM_BOYUTLARI
+        beklenen = {"odun": 16, "maden": 20, "hepsi": 21}
+        assert HAM_BOYUTLARI == beklenen, HAM_BOYUTLARI
         for gorev, ham in HAM_BOYUTLARI.items():
             assert ham_boyutu(gorev) == ham
-            assert gozlem_boyutu(gorev) == ham + 3
-    dene("odun 16->19, maden 20->23", boyutlar)
+        # odun/maden: ham + 3 turetilmis
+        assert gozlem_boyutu("odun") == 19
+        assert gozlem_boyutu("maden") == 23
+        # hepsi: gorev indisi (1 sayi) one-hot'a (2 sayi) aciliyor
+        assert gozlem_boyutu("hepsi") == 25, gozlem_boyutu("hepsi")
+    dene("odun 16->19, maden 20->23, hepsi 21->25", boyutlar)
 
     def zengin_sekli():
-        from minecrai.env import zenginlestir, ham_boyutu, gozlem_boyutu
-        for gorev in ("odun", "maden"):
+        from minecrai.env import ham_boyutu, gozlem_boyutu, zenginlestirici
+        for gorev in ("odun", "maden", "hepsi"):
             ham = np.zeros((7, ham_boyutu(gorev)), dtype=np.float32)
-            assert zenginlestir(ham).shape == (7, gozlem_boyutu(gorev))
-    dene("zenginlestir() her gorevde dogru sekli veriyor", zengin_sekli)
+            cikti = zenginlestirici(gorev)(ham)
+            assert cikti.shape == (7, gozlem_boyutu(gorev)), (gorev, cikti.shape)
+    dene("zenginlestirici() her gorevde dogru sekli veriyor", zengin_sekli)
+
+    def gorev_bayragi():
+        """Cok gorevli gozlem HANGI GOREVDE oldugunu tasimali.
+
+        Tasimazsa ayni girdiye celiskili etiket dusuyor: "onumde tas var"
+        durumunda odun gorevi "dolas", maden gorevi "kir" diyor. Ag ikisinin
+        ortalamasini ogrenir, yani hicbirini. Milestone 5b'de bunun baska bir
+        bicimini yasadik (donmus gozlem) ve kayip tam ln(4)'te takilmisti.
+        """
+        from minecrai.env import COKLU_GOREVLER, ham_boyutu, zenginlestir_coklu
+        n = ham_boyutu("hepsi")
+        cikti = []
+        for indis in range(len(COKLU_GOREVLER)):
+            ham = np.zeros(n, dtype=np.float32)
+            ham[-1] = indis
+            g = zenginlestir_coklu(ham)
+            cikti.append(g)
+            tek = g[-len(COKLU_GOREVLER):]
+            assert tek[indis] == 1 and tek.sum() == 1, (indis, tek)
+        # Iki gorevin gozlemi BIRBIRINDEN AYIRT EDILEBILIR olmali
+        assert not np.array_equal(cikti[0], cikti[1]), "gorevler ayirt edilemiyor"
+    dene("cok gorevli gozlem GOREV bilgisini tasiyor", gorev_bayragi)
 
     print("\nPolitika agi")
 
@@ -134,7 +164,7 @@ def main() -> None:
                 g[0] = self.sayac / 100.0  # her cagride FARKLI
                 return g.tolist()
 
-            def reset(self, gorev=None):
+            def reset(self, gorev=None, genis_gozlem=None):
                 return {"obs": self._gozlem(), "info": {}}
 
             def step(self, action):
@@ -180,6 +210,112 @@ def main() -> None:
             "tekrar eden gozlemleri fark etmedi"
     dene("veri_sagligi() celiskili veriyi yakaliyor", saglik_kontrolu_celiskiyi_yakaliyor)
 
+    print("\nCok gorevli ortam (Milestone 6)")
+
+    def coklu_ortam():
+        """Tek ajan, iki gorev. Sahte kopru: Minecraft da Node de gerekmiyor.
+
+        Uc sey ayni anda dogru olmali, yoksa cok gorevli egitimin anlami yok:
+          1) gozlem genisligi HER bolumde ayni (tek ag, tek girdi boyutu)
+          2) gorevler DONUSUMLU (rastgele secim kisa kosularda dengesiz
+             dagilim uretip "hangi gorevde daha iyi" karsilastirmasini bozar)
+          3) Node'dan GENIS gozlem isteniyor (odun varsayilani dar; istenmezse
+             genislik gorevden goreve degisir ve ag coker)
+        """
+        import minecrai.env as env_mod
+        from minecrai.coklu import CokluGorevEnv
+        from minecrai.env import ORTAK, EK, gozlem_boyutu
+
+        istekler = []
+
+        class SahteKopru:
+            def __init__(self):
+                self.sayac = 0
+
+            def _gozlem(self):
+                self.sayac += 1
+                g = np.zeros(ORTAK + EK, dtype=np.float32)
+                g[0] = self.sayac / 100.0
+                return g.tolist()
+
+            def reset(self, gorev=None, genis_gozlem=None):
+                istekler.append((gorev, genis_gozlem))
+                return {"obs": self._gozlem(), "info": {}}
+
+            def step(self, action):
+                return {"obs": self._gozlem(), "reward": 0.0,
+                        "terminated": False, "truncated": False, "info": {}}
+
+            def expert(self):
+                return {"action": 0}
+
+            def close(self):
+                pass
+
+        gercek = env_mod.BridgeClient
+        env_mod.BridgeClient = lambda *a, **k: SahteKopru()
+        try:
+            env = CokluGorevEnv()
+        finally:
+            env_mod.BridgeClient = gercek
+
+        boyutlar, gorevler, gozlemler = set(), [], []
+        for _ in range(4):
+            o, info = env.reset()
+            boyutlar.add(o.shape[0])
+            gorevler.append(info["gorev"])
+            gozlemler.append(o.copy())
+            for _ in range(2):
+                o, _, _, _, _ = env.step(0)
+                boyutlar.add(o.shape[0])
+                gozlemler.append(o.copy())
+
+        if boyutlar != {gozlem_boyutu("hepsi")}:
+            raise AssertionError(f"gozlem genisligi degisken: {boyutlar}")
+        if gorevler != ["odun", "maden", "odun", "maden"]:
+            raise AssertionError(f"gorevler donusumlu degil: {gorevler}")
+        if not all(g is True for _, g in istekler):
+            raise AssertionError(f"Node'dan genis gozlem istenmedi: {istekler}")
+
+        # Milestone 5b'nin en pahali hatasi burada da olmamali
+        benzersiz = len(np.unique(np.stack(gozlemler), axis=0))
+        if benzersiz != len(gozlemler):
+            raise AssertionError(
+                f"{len(gozlemler)} adimda {benzersiz} benzersiz gozlem")
+
+        # Demo kaydi icin ham hal: gorev indisi son sutunda
+        if env.son_ham_gozlem.shape != (ORTAK + EK + 1,):
+            raise AssertionError(f"ham gozlem sekli {env.son_ham_gozlem.shape}")
+    dene("CokluGorevEnv donusumlu, sabit genislikte, gorev bilgili", coklu_ortam)
+
+    def ortam_kur_secimi():
+        """'hepsi' cok gorevli ortam kurmali, digerleri tekil.
+
+        Bu secim tek yerde (`ortam_kur`) durmali: her scriptte ayri bir if
+        olsaydi biri unutulur ve o script sessizce yanlis ortami kurardi.
+        """
+        import minecrai.env as env_mod
+        from minecrai.coklu import CokluGorevEnv, ortam_kur
+        from minecrai.env import MinecraftEnv
+
+        class Bos:
+            def reset(self, gorev=None, genis_gozlem=None):
+                return {"obs": [], "info": {}}
+
+            def close(self):
+                pass
+
+        gercek = env_mod.BridgeClient
+        env_mod.BridgeClient = lambda *a, **k: Bos()
+        try:
+            assert isinstance(ortam_kur("ws://x", "hepsi"), CokluGorevEnv)
+            for g in ("odun", "maden"):
+                e = ortam_kur("ws://x", g)
+                assert isinstance(e, MinecraftEnv) and not isinstance(e, CokluGorevEnv)
+        finally:
+            env_mod.BridgeClient = gercek
+    dene("ortam_kur() 'hepsi' icin cok gorevli ortam veriyor", ortam_kur_secimi)
+
     print("\nEgitim scriptleri (sentetik veriyle, bastan sona)")
 
     def bc_kos(gorev, ham):
@@ -196,6 +332,7 @@ def main() -> None:
             assert (g / "m.pt").exists(), "model kaydedilmedi"
     dene("train_bc.py --gorev odun", lambda: bc_kos("odun", 16))
     dene("train_bc.py --gorev maden", lambda: bc_kos("maden", 20))
+    dene("train_bc.py --gorev hepsi", lambda: bc_kos("hepsi", 21))
 
     def on_egitim_kos(gorev, ham):
         with tempfile.TemporaryDirectory() as gecici:
@@ -208,16 +345,22 @@ def main() -> None:
             assert (g / "p.zip").exists(), "model kaydedilmedi"
     dene("pretrain_ppo.py --gorev odun", lambda: on_egitim_kos("odun", 16))
     dene("pretrain_ppo.py --gorev maden", lambda: on_egitim_kos("maden", 20))
+    dene("pretrain_ppo.py --gorev hepsi", lambda: on_egitim_kos("hepsi", 21))
 
     def yanlis_boyut_yakalaniyor():
         # Sessiz bozulma en pahali hata turu: 20 sayilik maden verisini
         # odun gorevi diye yuklersek net bir hata gormeliyiz.
-        from train_bc import gozlemleri_hazirla
+        from minecrai.veri import gozlemleri_hazirla
+        # 20 sayilik maden verisini odun gorevi diye yuklemek: net hata olmali
         try:
-            gozlemleri_hazirla(np.zeros((5, 20), np.float32), 16, 19)
+            gozlemleri_hazirla(np.zeros((5, 20), np.float32), "odun")
         except SystemExit:
-            return
-        raise AssertionError("yanlis boyut sessizce kabul edildi")
+            pass
+        else:
+            raise AssertionError("yanlis boyut sessizce kabul edildi")
+        # train_bc.py hala ayni ismi disa vermeli (eski ice aktarmalar)
+        from train_bc import gozlemleri_hazirla as ikinci
+        assert ikinci is gozlemleri_hazirla, "kopya fonksiyon geri gelmis"
     dene("yanlis gozlem boyutu SESSIZ gecmiyor", yanlis_boyut_yakalaniyor)
 
     print("\n=== HEPSI GECTI ===" if hata == 0 else f"\n=== {hata} HATA ===")

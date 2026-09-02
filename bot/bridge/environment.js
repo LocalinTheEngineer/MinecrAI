@@ -58,11 +58,13 @@ class MinecraftEnvironment {
     // Varsayılan 'odun' — Milestone 1-4 hiç etkilenmiyor.
     this.gorev = gorevGetir(secenekler.gorev || 'odun')
 
-    // Arama yarıçapı GÖREVE bağlı (bkz. gorevler.js `aramaYaricapi`).
-    // Hem hedef seçiminde hem de gözlemin mesafe normalizasyonunda
-    // AYNI sayı kullanılmalı, yoksa gözlem ölçeği görevden göreve kayar
-    // ve önceden eğitilmiş ağ anlamsız girdi görür.
-    this.yaricap = this.gorev.aramaYaricapi ?? config.searchRadius
+    // GENİŞ GÖZLEM İSTEĞİ.
+    //
+    // null = görevin kendi varsayılanı (`gozlemProfili`). Python tarafı
+    // çok görevli eğitimde bunu açıkça true yapıyor, çünkü tek ağ iki
+    // görevi de görecekse gözlem genişliği ortak olmak zorunda.
+    this.genisGozlem = secenekler.genisGozlem ?? null
+
     this.adim = 0
     this.oncekiOdun = 0
     this.oncekiMesafe = null
@@ -111,6 +113,46 @@ class MinecraftEnvironment {
    *     zıplayınca ne uzman ne de ajan tutarlı davranabiliyor. Artık hedef
    *     kilitleniyor: seçilen ağaç yok olana kadar aynı ağaç.
    */
+  /**
+   * Arama yarıçapı GÖREVE bağlı (bkz. gorevler.js `aramaYaricapi`).
+   *
+   * TÜRETİLMİŞ ALAN, kopyalanmış değil. Önce yapıcıda bir kez hesaplanan
+   * `this.yaricap` alanıydı ve bu Milestone 6 için sessiz bir tuzaktı:
+   * `server.js` görev değişiminde `env.gorev`i değiştiriyor ama alanı
+   * güncellemiyordu. Çok görevli eğitimde odundan madene geçince yarıçap
+   * 64'te kalırdı — yani dün düzelttiğimiz "ulaşılamaz hedefe kilitlenme"
+   * hatası geri gelirdi, üstelik sessizce.
+   *
+   * Türetilmiş tutunca güncellenmeyi unutmak mümkün değil.
+   */
+  get yaricap () {
+    return this.gorev.aramaYaricapi ?? config.searchRadius
+  }
+
+  /** Bu gözlemde ek 4 sayı var mı? (görev varsayılanı ya da açık istek) */
+  get genisMi () {
+    if (this.genisGozlem !== null) return this.genisGozlem
+    return this.gorev.gozlemProfili === 'genis'
+  }
+
+  /**
+   * Görevi bölüm başında değiştir.
+   *
+   * `server.js` bunu `env.gorev = ...` diye elle yapıyordu; türetilmiş
+   * durum eklendikçe o yol kırılganlaşıyor. Tek giriş noktası olsun.
+   */
+  gorevDegistir (ad) {
+    if (ad && ad !== this.gorev.ad) {
+      this.gorev = gorevGetir(ad)
+      this.hedefKonum = null
+      this.karaListe.clear()
+      this.hedefDenemesi = 0
+      this.dikeyDenemesi = 0
+      return true
+    }
+    return false
+  }
+
   enYakinKutuk () {
     // Kilitli hedef hâlâ duruyorsa onu kullan
     if (this.hedefKonum) {
@@ -482,9 +524,10 @@ class MinecraftEnvironment {
       this.solumKapali() ? 1 : 0,    // solum kapalı mı
       this.sagimKapali() ? 1 : 0,    // sağım kapalı mı
       this.onumdeBasamakVar() ? 1 : 0, // önümde zıplanabilir basamak var mı
-      // GÖREVE ÖZEL EK SAYILAR (bkz. gorevler.js `ekGozlem`).
-      // Odun görevinde boş — Milestone 4'ün modelleri 16 sayı bekliyor.
-      ...(this.gorev.ekGozlem ? this.gorev.ekGozlem(this) : [])
+      // EK SAYILAR (bkz. gorevler.js `EK_GOZLEM`).
+      // Odun görevinde varsayılan KAPALI — Milestone 4'ün modelleri 16 sayı
+      // bekliyor. Çok görevli eğitim `genisGozlem: true` ile açıyor.
+      ...(this.genisMi && this.gorev.ekGozlem ? this.gorev.ekGozlem(this) : [])
     ]
   }
 

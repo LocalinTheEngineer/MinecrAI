@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from minecrai import MinecraftEnv
+from minecrai import MinecraftEnv, ortam_kur
 from minecrai.yollar import yollar
 from minecrai.env import AKSIYONLAR
 
@@ -163,7 +163,7 @@ def main() -> None:
     ap.add_argument("--gurultu", type=float, default=0.25,
                     help="bu olasilikla rastgele aksiyon uygula (etiket yine uzmanin)")
     ap.add_argument("--tohum", type=int, default=0)
-    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"],
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden", "hepsi"],
                     help="hangi gorevin demolari toplanacak")
     args = ap.parse_args()
 
@@ -174,7 +174,7 @@ def main() -> None:
     if args.cikti == VARSAYILAN_CIKTI:
         args.cikti = yollar(args.gorev)["veri"]
 
-    env = MinecraftEnv(url=args.url, gorev=args.gorev)
+    env = ortam_kur(args.url, args.gorev)
     baslangic = time.time()
 
     try:

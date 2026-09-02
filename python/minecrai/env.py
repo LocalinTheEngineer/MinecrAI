@@ -35,11 +35,32 @@ from .bridge import BridgeClient
 # (bc_policy.pt, ppo_son.zip) 19 boyutlu girdi bekliyor. Gozlemi orada da
 # buyutmek calisan, olculmus ve yayinlanmis modelleri yuklenemez hale
 # getirirdi — yeni bir gorevi duzeltmek icin odenecek bedel degil.
-HAM_BOYUTLARI = {"odun": 16, "maden": 20}
+ORTAK = 16          # her gorevde gonderilen temel sayilar
+EK = 4              # gorevler.js EK_GOZLEM: dusmus esya + kirilabilir engel
+TURETILEN = 3       # `zenginlestir`: egosentrik hedef acisi
 
-# Aga verilen gozlem: ham + turetilmis ozellikler (`zenginlestir`, asagiya bak)
-TURETILEN = 3
+HAM_BOYUTLARI = {"odun": ORTAK, "maden": ORTAK + EK}
+
+# COK GOREVLI (Milestone 6): iki gorev TEK agi paylasiyor.
+#
+# Iki sart var:
+#   1) Gozlem genisligi ortak olmali -> odun da genis gozlem gonderiyor
+#      (`genisGozlem: true`), yani ikisi de ORTAK + EK.
+#   2) Ag hangi gorevde oldugunu BILMELI. Ayni gozlemde odun gorevi
+#      "tasi kirma" derken maden gorevi "kir" diyor; gorev bilgisi olmadan
+#      bu iki etiket celisir ve ag ikisinin ortalamasini ogrenir --
+#      Milestone 5b'de donmus gozlem yuzunden yasadigimiz seyin aynisi,
+#      sadece sebebi farkli.
+#
+# Ham kayitta gorev, SON SUTUNDA bir indis olarak duruyor (0=odun, 1=maden);
+# aga verilirken one-hot'a cevriliyor. Indis olarak saklamak demolari
+# okunur tutuyor ve gorev listesi buyurse eski kayitlar hala gecerli.
+COKLU_GOREVLER = ["odun", "maden"]
+HAM_BOYUTLARI["hepsi"] = ORTAK + EK + 1
+
 GOZLEM_BOYUTLARI = {ad: n + TURETILEN for ad, n in HAM_BOYUTLARI.items()}
+# one-hot, ham'daki tek indis sutununun yerini aliyor: +len-1
+GOZLEM_BOYUTLARI["hepsi"] = ORTAK + EK + TURETILEN + len(COKLU_GOREVLER)
 
 
 def ham_boyutu(gorev: str = "odun") -> int:
@@ -48,6 +69,34 @@ def ham_boyutu(gorev: str = "odun") -> int:
 
 def gozlem_boyutu(gorev: str = "odun") -> int:
     return GOZLEM_BOYUTLARI[gorev]
+
+
+def genis_gozlem_mi(gorev: str) -> bool:
+    """Node'dan EK sayilari da isteyecek miyiz?
+
+    Odun gorevi varsayilan olarak DAR (16): Milestone 4'un egitilmis
+    modelleri 19 boyutlu girdi bekliyor ve onlari bozmuyoruz. Cok gorevli
+    egitim ise genisligin ortak olmasini zorunlu kildigi icin aciyor.
+    """
+    return gorev != "odun"
+
+
+def zenginlestir_coklu(ham: np.ndarray) -> np.ndarray:
+    """Cok gorevli ham gozlemi aga verilecek bicime cevirir.
+
+    Girdi : [ORTAK+EK sayi] + [gorev indisi]      (= 21)
+    Cikti : [ORTAK+EK sayi] + [turetilmis 3] + [gorev one-hot 2]  (= 25)
+    """
+    ham = np.asarray(ham, dtype=np.float32)
+    gozlem = zenginlestir(ham[..., :-1])
+    indis = ham[..., -1].astype(np.int64)
+    tek = np.eye(len(COKLU_GOREVLER), dtype=np.float32)[indis]
+    return np.concatenate([gozlem, tek], axis=-1)
+
+
+def zenginlestirici(gorev: str):
+    """Goreve uygun zenginlestirme fonksiyonu."""
+    return zenginlestir_coklu if gorev == "hepsi" else zenginlestir
 
 
 # Geriye donuk isimler: odun gorevinin boyutlari. Eski kod bunlari
@@ -108,12 +157,23 @@ class MinecraftEnv(gym.Env):
 
     metadata = {"render_modes": ["human"], "render_fps": 2}
 
-    def __init__(self, url: str = "ws://localhost:8765", gorev: str = "odun") -> None:
+    def __init__(
+        self,
+        url: str = "ws://localhost:8765",
+        gorev: str = "odun",
+        genis_gozlem: bool | None = None,
+    ) -> None:
         self.gorev = gorev
         super().__init__()
 
-        self.ham_boyutu = ham_boyutu(gorev)
-        self.gozlem_boyutu = gozlem_boyutu(gorev)
+        # Node'dan EK sayilari da isteyecek miyiz? None = gorevin varsayilani.
+        # Cok gorevli sarmalayici (coklu.py) bunu acikca True yapiyor.
+        self.genis_gozlem = (
+            genis_gozlem_mi(gorev) if genis_gozlem is None else genis_gozlem
+        )
+
+        self.ham_boyutu = ORTAK + (EK if self.genis_gozlem else 0)
+        self.gozlem_boyutu = self.ham_boyutu + TURETILEN
 
         self.action_space = spaces.Discrete(len(AKSIYONLAR))
         self.observation_space = spaces.Box(
@@ -148,7 +208,7 @@ class MinecraftEnv(gym.Env):
         # hicbir sey yapmiyor; degistiyse gecis bolum basinda oluyor.
         # Cok gorevli egitimde bolumden bolume gorev degistirmek boylece
         # ek bir protokol gerektirmiyor.
-        cevap = self.bridge.reset(self.gorev)
+        cevap = self.bridge.reset(self.gorev, self.genis_gozlem)
         self._son_info = cevap.get("info", {})
         self.son_ham_gozlem = np.asarray(cevap["obs"], dtype=np.float32)
         return self._obs(cevap["obs"]), self._son_info

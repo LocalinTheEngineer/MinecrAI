@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from minecrai.yollar import yollar
-from minecrai import MinecraftEnv
+from minecrai import MinecraftEnv, ortam_kur
 
 KOK = Path(__file__).parent.parent
 VARSAYILAN_MODEL = KOK / "models" / "bc_policy.pt"
@@ -92,7 +92,7 @@ def donusumlu_degerlendir(env, politikalar, bolum, maks_adim):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden", "hepsi"])
     ap.add_argument("--bolum", type=int, default=10)
     ap.add_argument("--maks-adim", type=int, default=300)
     ap.add_argument("--model", type=Path, default=None)
@@ -116,7 +116,7 @@ def main() -> None:
     if args.ppo == VARSAYILAN_PPO:
         args.ppo = y["ppo_son"]
 
-    env = MinecraftEnv(url=args.url, gorev=args.gorev)
+    env = ortam_kur(args.url, args.gorev)
     rng = np.random.default_rng(0)
 
     politikalar = [

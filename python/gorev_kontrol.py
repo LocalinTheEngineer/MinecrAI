@@ -16,12 +16,12 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 
-from minecrai import MinecraftEnv
+from minecrai import MinecraftEnv, ortam_kur
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gorev", default="odun", choices=["odun", "maden"])
+    ap.add_argument("--gorev", default="odun", choices=["odun", "maden", "hepsi"])
     ap.add_argument("--bolum", type=int, default=3)
     ap.add_argument("--maks-adim", type=int, default=300)
     ap.add_argument("--url", default="ws://localhost:8765")
@@ -30,7 +30,7 @@ def main() -> None:
     print(f"\n{args.gorev.upper()} gorevi kontrol ediliyor ({args.bolum} bolum)...")
     print("Uzman politika oynuyor - ogrenme yok.\n")
 
-    env = MinecraftEnv(url=args.url, gorev=args.gorev)
+    env = ortam_kur(args.url, args.gorev)
     toplam_kaynak = 0
     toplam_adim = 0
     sebepler: Counter[str] = Counter()

@@ -61,10 +61,17 @@ class BridgeClient:
 
     # ------------------------------------------------------------------ API
 
-    def reset(self, gorev: str | None = None) -> Dict[str, Any]:
+    def reset(
+        self, gorev: str | None = None, genis_gozlem: bool | None = None
+    ) -> Dict[str, Any]:
         istek: Dict[str, Any] = {"cmd": "reset"}
         if gorev:
             istek["gorev"] = gorev
+        # Gozlem genisligini HER reset'te bildiriyoruz. Cok gorevli egitimde
+        # gorev bolumden bolume degisiyor ve genislik sabit kalmak zorunda;
+        # tek sefer soylemek, arada baglanti kopunca sessizce kayardi.
+        if genis_gozlem is not None:
+            istek["genisGozlem"] = bool(genis_gozlem)
         return self._cagir(istek)
 
     def step(self, action: int) -> Dict[str, Any]:
