@@ -14,6 +14,7 @@ Kullanim:
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -59,14 +60,29 @@ def donusumlu_degerlendir(env, politikalar, bolum, maks_adim):
     """
     sonuc = {ad: {"oduller": [], "odunlar": [], "adimlar": []} for ad, _ in politikalar}
 
-    for tur in range(bolum):
-        for ad, fn in politikalar:
-            o, w, a = bolum_calistir(env, fn, maks_adim)
-            sonuc[ad]["oduller"].append(o)
-            sonuc[ad]["odunlar"].append(w)
-            sonuc[ad]["adimlar"].append(a)
-            print(f"  tur {tur + 1}/{bolum}  {ad:<9} odul={o:+7.2f}  odun={w:2d}  adim={a}")
-        print()
+    # HER TUR SONUNDA HAM SONUCU DISKE YAZ.
+    #
+    # Bu yoktu ve degerlendirme 40+ dakika suruyor. Yarida kesilince
+    # (Ctrl+C, elektrik, soket kopmasi) hicbir sey kaydedilmiyordu --
+    # sadece ekrana basilanlar kaliyordu. Uzun suren hicbir is, yarida
+    # kesilince tamamen kaybolmamali; demo toplama zaten her bolumde
+    # kaydediyor, degerlendirme de artik oyle.
+    ham_yol = KOK / "models" / "eval_ham.csv"
+    ham_yol.parent.mkdir(parents=True, exist_ok=True)
+    with open(ham_yol, "w", encoding="utf-8", newline="") as f:
+        yazici = csv.writer(f)
+        yazici.writerow(["tur", "politika", "odul", "odun", "adim"])
+
+        for tur in range(bolum):
+            for ad, fn in politikalar:
+                o, w, a = bolum_calistir(env, fn, maks_adim)
+                sonuc[ad]["oduller"].append(o)
+                sonuc[ad]["odunlar"].append(w)
+                sonuc[ad]["adimlar"].append(a)
+                yazici.writerow([tur + 1, ad, f"{o:.4f}", w, a])
+                f.flush()  # kesilirse diskte olsun
+                print(f"  tur {tur + 1}/{bolum}  {ad:<9} odul={o:+7.2f}  odun={w:2d}  adim={a}")
+            print()
 
     return [
         {"ad": ad, **{k: np.array(v) for k, v in d.items()}}

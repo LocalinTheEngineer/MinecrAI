@@ -75,7 +75,7 @@ it performed the entire navigation in one step, so an agent that discovered it
 would never learn to navigate. Removing it is what makes the learning curve
 mean something.
 
-### Observation space — `Box(19,)`
+### Observation space — `Box(19,)` for wood, `Box(23,)` for mining
 
 Relative direction and distance to the target log, yaw/pitch, wood gathered this
 episode, health, hunger, whether a log is in front, ground contact, episode
@@ -227,6 +227,133 @@ Mining is safety-first: staircase descent (never straight down), lava scanning
 ahead of the tunnel, health monitoring with retreat, pickaxe-durability planning
 computed from the depth of the job, and a stuck-detector that frees the bot by
 digging its own way out rather than reporting failure.
+
+## Milestone 5b — the same environment, a second task
+
+The interesting claim here is not "the bot can mine". It is that **mining reuses
+the environment, the action space, the reward shape, the training scripts and
+the evaluation harness unchanged.** Only a handful of questions differ between
+the two tasks, and they live in one file (`bot/bridge/gorevler.js`):
+
+| question | wood | mining |
+|---|---|---|
+| `hedefMi(block)` | is it a log? | is it an ore? |
+| `dogalMi(bot, block)` | not a player's house | **is my pickaxe good enough for it?** |
+| `say(bot)` | logs in inventory | ores + ingots |
+| `engelKirilabilirMi` | leaves and plants | stone too (we carry a pickaxe) |
+| `hedefMaliyeti` | straight-line distance | vertical difference costs 3× |
+| `aramaYaricapi` | 64 blocks | **16 blocks** |
+| `baslangictaYurut` | yes | **no** — pathfinder would dig the tunnel *for* the agent |
+
+Everything the agent learns — walking, turning, breaking, when to give up on an
+unreachable target — is shared. `python/minecrai/yollar.py` keeps each task's
+data and models in separate files so neither can silently overwrite the other.
+
+The observation is task-dependent: wood stays at 16 raw values (Milestone 4's
+trained models expect that width and still load), mining takes 20. The four
+extra numbers are the **egocentric direction and distance of a dropped item**
+and **whether the block in front is one I can break** — both used by the
+scripted expert, neither previously visible to the learner. See below for why
+that mattered.
+
+### Results
+
+Behaviour cloning on 2,606 demonstration steps reached **75.1 %** action
+accuracy; a matching PPO-architecture run reached **74.9 %**, and the two
+agreeing is the sanity check. PPO then trained for **20,407 steps / 221
+episodes** (~120 min live).
+
+Five policies, **9 rounds**, round-robin ordering. `±` is the standard error.
+
+| policy | ore / episode | median |
+|---|---|---|
+| random | 2.44 ± 1.03 | 0 |
+| behaviour cloning | 4.89 ± 0.84 | 5 |
+| PPO — imitation only, no RL | 4.78 ± 1.12 | 5 |
+| **PPO — imitation + RL** | **6.00 ± 1.43** | 5 |
+| scripted expert | 9.11 ± 3.63 | 6 |
+
+**What can be claimed:** the trained agent beats the random baseline — paired
+per-round difference **+3.56, 95 % interval +0.22 … +6.89**, which excludes zero.
+
+**What cannot:** whether RL added anything on top of imitation. That is the
+`imitation only` vs `imitation + RL` pair, and it is deliberately the *same
+network, same architecture, same sampling* — the only difference is the RL
+training, so the comparison is well-posed. Paired differences were
+`0, +5, +4, 0, +2, −3, −5, +5, +3`: mean **+1.22**, 95 % interval
+**−1.49 … +3.94**. It contains zero.
+
+Rather than run more rounds until something looked significant, the observed
+spread says how many would actually be needed: **~98 rounds**, roughly five
+hours of live Minecraft, to resolve a one-ore difference. That was judged not
+worth it for this project, and the honest result is reported instead.
+
+The scripted expert's mean is inflated by a single episode that hit a lapis vein
+and returned 36 items — its median (6) is the more useful number, and its
+standard error (±3.63) is larger than the entire gap it is supposed to
+demonstrate. Lapis and redstone drop 4–9 items per block, so "collect 5
+resources" is sometimes settled by one lucky block. This is a known and accepted
+limitation: the task definition is applied identically to every policy, so it
+does not bias the comparison, but it does inflate the variance that made the
+comparison above inconclusive.
+
+Milestone 4 hit the same wall — `ppo > bc` was not separable — but could not say
+*why*, because `bc` and `ppo` are different networks trained by different
+procedures. The imitation-only/imitation+RL pairing was added here so the
+question at least has a well-posed answer, even when that answer is "not
+measurable at this budget".
+
+### Five bugs this milestone found, and how
+
+Every one was caught by measurement rather than by reading code. The reason
+distribution printed by `gorev_kontrol.py` and the data-health line printed by
+`collect_demos.py` exist because of them.
+
+1. **Tool lookup missed 439 blocks.** `aletTipi()` matched block names against a
+   hand-written regex that did not know `tuff`, `calcite`, `smooth_basalt`,
+   `amethyst_block` or `dripstone_block` — which is most of what fills a cave at
+   y=15. The bot stood in front of tuff holding an iron pickaxe, concluded it had
+   no suitable tool, and tried to walk around it forever: **4 episodes, zero
+   digs, zero ore.** Fixed by reading the game's own `block.material`. A test now
+   compares every block in `minecraft-data` against the lookup: 439 → 0.
+
+2. **Digging through walls.** Mineflayer's `canDigBlock()` checks distance only
+   (`digging.js`: `distanceTo(...) <= 5.1`), not line of sight, and the server
+   accepts the dig. The bot was mining ore four blocks away *through solid
+   stone*; the drop landed on the far side, unreachable. It collected the
+   "block broken" reward while nothing entered its inventory — and worse, was
+   rewarded for reaching ore **without digging the tunnel**, short-circuiting the
+   task it was supposed to learn. Fixed with `bot.canSeeBlock()`.
+
+3. **Always breaking the diagonal.** Forward sampling ran `[-0.35, 0, +0.35]` and
+   returned the *first* hit, so the bot cleared the left-diagonal block and left
+   the one actually in its way. Ordering the centre first fixed it. The first
+   version of that test placed the bot at the centre of a block, where a 0.35
+   lateral offset lands in the same block — it passed with the bug still present.
+
+4. **A 64-block search radius underground.** `findBlocks` sees through walls, and
+   at y=15 there is always an ore within 64 blocks — forty blocks behind stone.
+   The environment therefore never believed the area was exhausted, never
+   relocated, and the agent spent every episode tunnelling toward something it
+   could not reach: **episode 1 collected 5 ore, episodes 2–18 all zero.**
+   Mining now searches 16 blocks; the forest still searches 64, where 64 blocks
+   is open ground.
+
+5. **The most expensive one: frozen observations.** `MinecraftEnv.step()` did not
+   update the raw observation used for demo recording, so it stayed at its
+   `reset()` value for the whole episode. Every sample within an episode carried
+   the *same* observation and a *different* action. Measured: **4,498 samples,
+   30 unique observation rows** — exactly the episode count, 100 % contradictory.
+   The ceiling for such data is the majority class (33.2 %); cloning scored
+   30.7 % and the loss sat at exactly `ln(4) = 1.386`, meaning the network had
+   learned to emit a uniform distribution and nothing else.
+
+   Two demo-collection runs (~45 min of live Minecraft) were wasted before this
+   was found, and the first diagnosis was wrong. The lesson is recorded in the
+   code: **when a network will not learn, look at the data before forming a
+   hypothesis.** Opening the file and counting unique rows took two minutes and
+   was decisive. `collect_demos.py` now prints that count after every run, and
+   `test/smoke.py` catches the underlying bug with a fake bridge in seconds.
 
 ## Quick start
 
@@ -399,6 +526,21 @@ executing the code can.
 ```bash
 node test/smoke.js
 ```
+
+`test/smoke.py` is the same idea for the Python side (~20 s, no server): it runs
+`train_bc.py` and `pretrain_ppo.py` end to end on synthetic data for both tasks,
+and drives the Gym environment against a fake bridge. It exists because the same
+class of bug reached the user twice — most recently a `NameError` that surfaced
+immediately *after* a 40-minute demo-collection run. `python -m py_compile` does
+not catch these: the syntax is valid and the failure is at runtime. One of its
+checks reproduces the frozen-observation bug described above by asserting that
+the recorded observation actually changes from step to step.
+
+```bash
+python test/smoke.py
+```
+
+Run both after changing anything.
 
 ## License
 
