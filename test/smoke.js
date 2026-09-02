@@ -2071,8 +2071,14 @@ async function main () {
     // yapistiriyor, "unrecognized arguments" aliyor ve nedenini bilmiyor.
     // Bu projede kullanicinin ilk basvurdugu yer BASLAT.md -- oradaki
     // bir yazim hatasi kod hatasindan daha pahali.
+    // BASLAT.md `.gitignore`da (kisisel not). Temiz bir klonda YOK, o yuzden
+    // varsa okunuyor yoksa atlaniyor -- yoksa repoyu klonlayan biri
+    // `node test/smoke.js` calistirinca test coker. Bunu yazarken tam da
+    // o hatayi yaptim.
     const metin = ['BASLAT.md', 'README.md']
-      .map((d) => fs.readFileSync(path.join(__dirname, '..', d), 'utf8'))
+      .map((d) => path.join(__dirname, '..', d))
+      .filter((y) => fs.existsSync(y))
+      .map((y) => fs.readFileSync(y, 'utf8'))
       .join('\n')
 
     const sorunlar = []
@@ -2117,7 +2123,10 @@ async function main () {
       throw new Error(`sadece ${gorevler.length} gorev okundu: ${gorevler}`)
     }
 
-    const metin = fs.readFileSync(path.join(__dirname, '..', 'BASLAT.md'), 'utf8')
+    // BASLAT.md `.gitignore`da; temiz klonda yoksa bu kontrolun konusu yok.
+    const yol = path.join(__dirname, '..', 'BASLAT.md')
+    if (!fs.existsSync(yol)) return
+    const metin = fs.readFileSync(yol, 'utf8')
     const eksik = gorevler.filter(
       (ad) => !new RegExp(`--gorev ${ad}\\b`).test(metin))
     if (eksik.length > 0) {

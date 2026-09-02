@@ -6,11 +6,32 @@ Python tarafı ona **istemci** olarak bağlanır. Mesajlar JSON.
 ## Python -> Node
 
 ```json
-{ "cmd": "reset" }
+{ "cmd": "reset", "gorev": "maden", "genisGozlem": true }
 { "cmd": "step", "action": 3 }
 { "cmd": "expert" }        // uzman bu durumda ne yapardi? (Milestone 3)
 { "cmd": "close" }
 ```
+
+### `reset` alanları
+
+| alan | zorunlu | anlamı |
+|---|---|---|
+| `gorev` | hayır | `"odun"` \| `"maden"`. Yazılmazsa mevcut görev sürer. |
+| `genisGozlem` | hayır | `true` ise gözleme 4 sayı daha eklenir. Yazılmazsa görevin kendi varsayılanı. |
+
+**Görev neden `reset` ile bildiriliyor, ayrı bir komutla değil:** görev bölüm
+başında belli olur, bölüm ortasında değişmesinin anlamı yok. Ayrı bir "görev
+seç" komutu, iki tarafın senkron kalmasını gerektiren fazladan bir durum
+yaratırdı.
+
+**Görev HER reset'te gönderiliyor**, sadece değişince değil. Çok görevli
+eğitimde (Milestone 6) görev bölümden bölüme değişiyor; "bir kez söyle"
+yaklaşımı arada bağlantı koparsa sessizce yanlış göreve kayardı.
+
+Node tarafı görev değişimini `env.gorevDegistir()` ile ele alıyor: arama
+yarıçapı, kilitli hedef ve kara liste birlikte güncelleniyor. Bu tek giriş
+noktası, çünkü elle atama yapılırken türetilmiş durumun güncellenmesi bir kez
+unutuldu ve hata hiçbir belirti vermedi.
 
 ## Node -> Python
 
@@ -23,6 +44,25 @@ Python tarafı ona **istemci** olarak bağlanır. Mesajlar JSON.
   "info":       { "odun": 0, "adim": 12 }
 }
 ```
+
+### `obs` kaç sayı?
+
+| görev | `genisGozlem` | uzunluk |
+|---|---|---|
+| odun | yok / `false` | **16** |
+| odun | `true` | **20** |
+| maden | yok / `true` | **20** |
+
+Ek 4 sayı: düşmüş eşyanın egosentrik yönü (sin, cos), mesafesi, ve "önümü
+kapatan bloğu kırabiliyor muyum". Bkz. `bot/bridge/gorevler.js` → `EK_GOZLEM`.
+
+Python tarafı bunların üstüne 3 türetilmiş sayı ekliyor (hedefin egosentrik
+açısı), çok görevli modda ayrıca 2 sayılık görev one-hot'ı. Ağın gördüğü
+boyutlar: odun 19, maden 23, çok görevli 25.
+
+**Bu sayılar `python/minecrai/env.py` içindeki `ORTAK` ve `EK` sabitleriyle
+birebir uyuşmak zorunda.** `test/smoke.js` iki dosyayı karşılaştırıyor:
+uyuşmazsa Minecraft açmadan, bir saniyede yakalanıyor.
 
 ## Aksiyon uzayı (Discrete(5))
 
