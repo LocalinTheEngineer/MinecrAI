@@ -2064,6 +2064,67 @@ async function main () {
     }
   })
 
+  console.log('\nDokumanlar')
+
+  await dene('BASLAT.md ve README\'deki komutlar GERCEKTEN var', () => {
+    // Dokuman cururken sessizce curuyor: kullanici yazdigim komutu
+    // yapistiriyor, "unrecognized arguments" aliyor ve nedenini bilmiyor.
+    // Bu projede kullanicinin ilk basvurdugu yer BASLAT.md -- oradaki
+    // bir yazim hatasi kod hatasindan daha pahali.
+    const metin = ['BASLAT.md', 'README.md']
+      .map((d) => fs.readFileSync(path.join(__dirname, '..', d), 'utf8'))
+      .join('\n')
+
+    const sorunlar = []
+    const desen = /^[ \t]*python (\w+\.py)([^\n]*)$/gm
+    let e
+    while ((e = desen.exec(metin)) !== null) {
+      const [, script, argstr] = e
+      const yol = path.join(__dirname, '..', 'python', script)
+      if (!fs.existsSync(yol)) { sorunlar.push(`${script} yok`); continue }
+
+      const kaynak = fs.readFileSync(yol, 'utf8')
+      const tanimli = new Set(
+        [...kaynak.matchAll(/add_argument\("(--[a-z-]+)"/g)].map((m) => m[1])
+      )
+      for (const bayrak of argstr.match(/--[a-z-]+/g) || []) {
+        if (!tanimli.has(bayrak)) sorunlar.push(`${script} ${bayrak}`)
+      }
+    }
+    if (sorunlar.length > 0) {
+      throw new Error(`dokumanda olmayan komut/bayrak: ${sorunlar.join(', ')}`)
+    }
+  })
+
+  await dene('BASLAT.md butun gorevleri anlatiyor', () => {
+    // Yeni bir gorev eklenip BASLAT.md'ye yazilmazsa kullanici onu hic
+    // ogrenemiyor -- kod calisir, ozellik gorunmez kalir.
+    //
+    // GOREV LISTESINI CLI'DAN OKU, gorevler.js'ten DEGIL.
+    //
+    // Ilk yazisimda `GOREVLER` anahtarlarina bakiyordum ve test sahte
+    // guvence veriyordu: 'hepsi' (cok gorevli mod) Node tarafinda bir
+    // gorev degil, Python tarafinda bir kavram. Yani BASLAT.md'den
+    // tamamen silsem test yine gecerdi.
+    //
+    // Kullaniciyi ilgilendiren liste `--gorev` secenekleri; dogru kaynak o.
+    const cli = fs.readFileSync(
+      path.join(__dirname, '..', 'python', 'collect_demos.py'), 'utf8')
+    const m = /choices=\[([^\]]+)\]/.exec(cli)
+    if (!m) throw new Error('collect_demos.py icinde --gorev secenekleri bulunamadi')
+    const gorevler = m[1].match(/"(\w+)"/g).map((x) => x.replace(/"/g, ''))
+    if (gorevler.length < 3) {
+      throw new Error(`sadece ${gorevler.length} gorev okundu: ${gorevler}`)
+    }
+
+    const metin = fs.readFileSync(path.join(__dirname, '..', 'BASLAT.md'), 'utf8')
+    const eksik = gorevler.filter(
+      (ad) => !new RegExp(`--gorev ${ad}\\b`).test(metin))
+    if (eksik.length > 0) {
+      throw new Error(`BASLAT.md'de anlatilmayan gorev: ${eksik.join(', ')}`)
+    }
+  })
+
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)
   process.exit(hata === 0 ? 0 : 1)
 }

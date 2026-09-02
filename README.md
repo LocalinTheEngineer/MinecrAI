@@ -75,7 +75,7 @@ it performed the entire navigation in one step, so an agent that discovered it
 would never learn to navigate. Removing it is what makes the learning curve
 mean something.
 
-### Observation space — `Box(19,)` for wood, `Box(23,)` for mining
+### Observation space — `Box(19,)` wood, `Box(23,)` mining, `Box(25,)` multi-task
 
 Relative direction and distance to the target log, yaw/pitch, wood gathered this
 episode, health, hunger, whether a log is in front, ground contact, episode
@@ -90,9 +90,17 @@ Handing it over directly makes the turn decision readable from one number's sign
 Nothing new is measured; it is a change of frame, which is why it applies
 retroactively to already-recorded demonstrations.
 
-The obstacle sensors and this reframing both exist so the expert's decisions are
-**realizable from the observation**. See `docs/architecture.md` — measured, not
-assumed.
+The mining task adds four more raw numbers (20 in total): the **egocentric
+bearing and distance of a dropped item**, and whether the block in front is one
+the bot **can break**. Both were added after measurement, not by design intuition
+— see Milestone 5b below. Multi-task mode uses that same wide vector for both
+tasks and appends a one-hot task flag, reaching 25.
+
+Every one of these additions exists for the same reason: the expert's decisions
+must be **realizable from the observation**. Three times in this project the
+expert has quietly depended on something the learner could not see, and each time
+the symptom was the same — imitation accuracy collapsing toward chance. See
+`docs/architecture.md` — measured, not assumed.
 
 ### Reward
 
@@ -537,26 +545,34 @@ bot/                  Node.js — everything that touches Minecraft
   bridge/
     server.js           WebSocket server exposing reset/step to Python
     environment.js      observation, reward and episode logic
+    gorevler.js         what differs between tasks — the whole task abstraction
     expert.js           scripted expert expressed in the agent's action space
+    sabitler.js         thresholds shared by environment and expert
     protocol.md         the Node↔Python contract
 python/
   minecrai/
     bridge.py           WebSocket client
-    env.py              gymnasium.Env implementation
+    env.py              gymnasium.Env implementation + observation sizes
+    coklu.py            Milestone 6: multi-task env, alternates the two tasks
+    veri.py             demo → network input (one copy, shared by both trainers)
+    policy.py           the imitation network (PyTorch MLP)
+    yollar.py           per-task file paths, so tasks cannot overwrite each other
   random_agent.py       baseline: random actions, proves the loop works
-  collect_demos.py      Milestone 3: record the scripted expert
+  collect_demos.py      Milestone 3: record the scripted expert + data-health check
   train_bc.py           Milestone 3: behaviour cloning + training plots
   eval_agent.py         Milestone 3: random vs learned vs expert comparison
-  minecrai/policy.py    the imitation network (PyTorch MLP)
+  gorev_kontrol.py      is the task even solvable? verdict + reason distribution
   pretrain_ppo.py       Milestone 4: warm-start SB3's policy from demonstrations
   train_ppo.py          Milestone 4: PPO with checkpointing and CSV logging
+  demo_ppo.py           run the trained policy alone, for recording
   plot_ogrenme.py       Milestone 4: the learning curve
   requirements.txt
 docs/
   architecture.md       design rationale — read this first
   mimari.md             same notes in Turkish
 test/
-  smoke.js              fast runtime test with a fake bot — no Minecraft needed
+  smoke.js              109 runtime checks against a fake bot — no Minecraft
+  smoke.py              21 checks: trainers run end-to-end on synthetic data
   e2e.js                automated test against a local flying-squid server
 ```
 
