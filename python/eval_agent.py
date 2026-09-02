@@ -80,6 +80,10 @@ def main() -> None:
     ap.add_argument("--bolum", type=int, default=10)
     ap.add_argument("--maks-adim", type=int, default=300)
     ap.add_argument("--model", type=Path, default=None)
+    ap.add_argument("--ppo-on", type=Path, default=None,
+                    help="taklitle on-egitilmis PPO (RL egitimi GORMEMIS). "
+                         "Bunu 'ppo' ile karsilastirmak, RL'in taklidin "
+                         "USTUNE ne kattigini dogrudan olcer.")
     ap.add_argument("--ppo", type=Path, default=VARSAYILAN_PPO,
                     help="egitilmis PPO modeli (train_ppo.py ciktisi)")
     ap.add_argument("--grafik", type=Path, default=None)
@@ -119,22 +123,40 @@ def main() -> None:
     else:
         print(f"UYARI: {args.model} yok — bc atlaniyor. Once train_bc.py calistir.")
 
-    # PPO — Milestone 4'un urunu. README'deki "before/after" tablosunun
-    # "after" sutunu bu.
-    if args.ppo.exists():
+    def ppo_ekle(ad: str, yol: Path) -> None:
+        """PPO tabanli bir politikayi karsilastirmaya ekler."""
+        if not yol.exists():
+            print(f"UYARI: {yol} yok — {ad} atlaniyor.")
+            return
         from stable_baselines3 import PPO
-        ppo_model = PPO.load(args.ppo, device="cpu")
+        m = PPO.load(yol, device="cpu")
 
-        def ppo_politika(obs, e):
+        def politika(obs, e, _m=m):
             # deterministic=False: PPO da egitim sirasinda ornekleyerek
             # davraniyor; argmax ile calistirmak ajani kilitleyebiliyor
             # (bc politikasinda tam olarak bu oldu)
-            aksiyon, _ = ppo_model.predict(obs, deterministic=False)
+            aksiyon, _ = _m.predict(obs, deterministic=False)
             return int(aksiyon)
 
-        politikalar.append(("ppo", ppo_politika))
-    else:
-        print(f"UYARI: {args.ppo} yok — ppo atlaniyor.")
+        politikalar.append((ad, politika))
+
+    # RL'IN KATKISINI DOGRUDAN OLC.
+    #
+    # Onceden karsilastirma "ppo vs bc" idi ve bu YANLIS SORU: ikisi farkli
+    # ag mimarileri, farkli egitim yordamlari, farkli ornekleme davranislari.
+    # Aralarindaki farkin ne kadari RL'den geliyor bilinemiyor. Milestone
+    # 4'te tam olarak buna takildik -- fark anlamli cikmadi ve sebebini
+    # soyleyemedik.
+    #
+    # 'ppo_on' ile 'ppo' AYNI ag, AYNI mimari; aralarindaki TEK fark RL
+    # egitimi. Ikisini ayni turlarda, donusumlu sirayla kosturunca
+    # "pekistirmeli ogrenme taklidin ustune ne katti" sorusunun cevabi
+    # dogrudan okunuyor. Eslestirilmis karsilastirma oldugu icin bolumler
+    # arasi degiskenlik de (cevher damarlarinin seyrekligi) buyuk olcude
+    # sadelesiyor.
+    if args.ppo_on is not None:
+        ppo_ekle("ppo_on", args.ppo_on)
+    ppo_ekle("ppo", args.ppo)
 
     politikalar.append(("uzman", lambda obs, e: e.uzman_aksiyonu()))
 
