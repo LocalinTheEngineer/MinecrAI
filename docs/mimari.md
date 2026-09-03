@@ -68,7 +68,7 @@ Milestone 3'te algoritmayı değiştirdiğinde bot koduna hiç dokunmayacaksın.
 
 ---
 
-## 4. Gözlem tasarımı (neden 12 sayı?)
+## 4. Gözlem tasarımı (neden birkaç sayı?)
 
 Ham piksel veya bütün dünya haritası yerine **elle seçilmiş 12 sayı** kullanıyoruz.
 
@@ -133,9 +133,9 @@ Gymnasium bu ikisini ayırmayı ister, çünkü "başardı" ile "vakit doldu" fa
 
 ---
 
-## 7. Buradan sonrası
+## 7. Taklitle öğrenme ve öğrettikleri
 
-**Milestone 3 — Imitation Learning (taklitle öğrenme): TAMAMLANDI**
+**Milestone 3 — Imitation Learning: TAMAMLANDI**
 
 `chopTree` görevi doğru yapıyor ama pathfinder çağırdığı için ajanın aksiyon
 uzayında ifade edilemiyordu — yani demo olarak kullanılamazdı.
@@ -165,10 +165,103 @@ değil, düz sınıflandırma.
 Bunların hiçbiri egzotik değil — bir oyunu RL ortamına çevirirken karşılaşılan
 sıradan hatalar. İşin büyük kısmı da zaten bunları bulmak.
 
-**Milestone 4 — PPO:**
-Taklitle öğrenmiş ağı başlangıç noktası alıp Stable-Baselines3 ile PPO
-eğitiriz. Öğrenme eğrisini (x: adım, y: bölüm ödülü) çizip README'ye koyarız —
-"before/after" grafiği projenin vitrini olacak.
+---
+
+## 8. Tek ortam, birden çok görev
+
+Madencilik, ortama dokunmadan **ikinci bir RL görevi** olarak eklendi. Zaten
+sınamak istediğimiz şey buydu: ikinci görev ikinci bir ortam gerektiriyorsa,
+birincisi kendi görevine fazla uydurulmuş demektir.
+
+Sabit kalanlar öğrenme algoritmasının gördüğü şeyler: beş aksiyon, ödül şekli,
+bölüm mantığı, eğitim scriptleri, değerlendirme. Görevden göreve değişen şey
+küçük bir **soru kümesi** ve hepsi tek dosyada (`bot/bridge/gorevler.js`):
+
+| soru | odun | maden |
+|---|---|---|
+| hedef nedir? | kütük | cevher |
+| bu hedef meşru mu? | oyuncunun evi değil | **kazmam buna yetiyor mu?** |
+| ilerlemeyi nasıl sayarım? | envanterdeki odun | cevher + külçe |
+| yolu açmak için ne kırabilirim? | yaprak, bitki | taş da — kazmamız var |
+| hedefleri nasıl sıralarım? | kuş uçuşu mesafe | dikey fark 3 kat pahalı |
+| ne kadar uzağa bakarım? | 64 blok | **16 blok** |
+| bölüm başında hedefe yürüteyim mi? | evet | **hayır** |
+
+Son iki satır ayrı paragrafı hak ediyor, çünkü ikisi de önce hata olarak çıktı.
+
+**Arama yarıçapı.** `findBlocks` duvarın ardını görüyor. y=15'te 64 blok içinde
+her zaman bir cevher vardır — genelde taşın kırk blok gerisinde. Ortam bölgeyi
+hiç "tükendi" saymadı, botu hiç ışınlamadı, ve her bölüm ulaşılamayan bir şeye
+tünel kazmakla geçti: 1. bölüm 5 cevher topladı, 2-18 arası hiç. 16 blok, bir
+ajanın bir bölümde kazabileceği mesafe — ve onunla birlikte ortamın değişmez
+kuralı geri geliyor: *bölüm başında ulaşılabilir bir hedef vardır.*
+
+**Bölüm başında hedefe yürütme.** Ormanda zararsız bir kurulum adımı: açık
+arazide yürümek görevin kendisi değil. Yer altında ise **tam da görevin
+kendisi**, üstelik pathfinder kazarak gidiyor. Ortam, ajan adına tüneli kazıp
+sonra ona ödülü verecekti. Aksiyon uzayında "pathfinder ile ağaca git"
+aksiyonunun olmamasıyla aynı sebep — aynı kestirme, bu sefer kurulum kodundan
+sızıyordu.
+
+Görev başına dosya yolları (`python/minecrai/yollar.py`) her görevin verisini ve
+modelini ayrı tutuyor. Olmasaydı bir gün biri diğerinin modelini ezerdi ve
+belirtisi — sessizce yanlış model yüklenmesi — saatler alırdı.
+
+---
+
+## 9. Tek ajan, birden çok görev
+
+Doğal sonraki soru: **tek bir ağ**, sadece hangi görevde olduğu söylenerek ikisini
+birden yapabilir mi? Yukarıdaki her şey paylaşıldığı için eklenenler küçük.
+
+**Ortak gözlem genişliği.** Odun 16 sayı gönderiyor, maden 20. Tek ağın tek girdi
+boyutu olur, o yüzden çok görevli mod ikisi için de geniş gözlem istiyor. Odun,
+çok görevli mod dışında dar varsayılanını koruyor — böylece daha önce eğitilmiş
+modeller hâlâ yükleniyor. Yayınlanmış sonuçları yeni bir görevi kolaylaştırmak
+için bozmak kötü bir takas.
+
+**Görev kimliği gözlemde olmalı.** Aynı gözlemde — *önümde taş var* — odun
+görevinin doğru cevabı "dolaş", maden görevininki "kır". Gerçek demolarda
+ölçtük: odun uzmanı adımların %19'unda kırıyor, maden uzmanı %32'sinde. Görev
+sinyali olmazsa bu iki etiket aynı girdiye düşer ve ağ ikisinin ortalamasını
+öğrenir — yani hiçbirini.
+
+Bu, projede **üçüncü kez** karşımıza çıkan aynı kural: *uzman, öğrencinin
+göremediği bilgiye dayanamaz.* Önce A* planı olarak geldi, sonra yere düşmüş
+eşya olarak, şimdi görev kimliği olarak. Bir kez sağlayıp geçilecek bir madde
+değil.
+
+**Dönüşümlü sıra, rastgele değil.** Kısa koşularda rastgele seçim dengesiz
+dağılım üretiyor — 30 bölümde 19/11 sıradan bir sonuç — ve görev başına yapılan
+her karşılaştırmayı sessizce bozar.
+
+Ölçümün gösterdiği, tasarımın öngörmediği bir şey: **iki görev botu fiziksel
+olarak farklı yerlerde istiyor.** Odun yüzeyde, maden y=15'te geçiyor ve ortam
+her reset'te en fazla on iki basamak iniyor. Görevler dönüşümlü olunca her maden
+bölümü yeniden aşağı inmekle başlıyor. Ölçtük: çok görevli toplamada maden
+bölümleri ortalama 131 adım sürdü, tek başına ~87'ye karşı, ve 20 bölümün 8'i
+boş bitti. Bu, bedenlenmiş bir ortamda çok görevli öğrenmenin gerçek bir maliyeti
+ve algoritma tarafından hiç görünmüyor.
+
+---
+
+## 10. Buradan sonrası
+
+Hiçbiri karara bağlanmadı. Mevcut işin üstüne inşa edecek yönler:
+
+- **Speedrun çerçevesi.** Ödül şu an bölüm beş kaynakta bittiği için tavanlı;
+  iyileşme ancak *hız* olarak görünebiliyor — Milestone 4'te ölçtüğümüz tam da
+  buydu (ödül düz, bölüm uzunluğu %19 kısaldı). Zamanı yan etki değil hedefin
+  kendisi yapmak, hâlihazırda çarptığımız bir ölçüm sorununu çözer. Üstelik
+  büyük kısmı hazır: `uret <esya>` tarif ağacını zaten çalışma anında çözüyor;
+  kronometre ve sabit seed eklemek tekrarlanabilir bir ölçüt veriyor.
+- **Hiyerarşik kontrol.** Ajan şu an yürümeyi ve dönmeyi öğreniyor. Aksiyonları
+  mevcut *beceriler* olan bir ajan bunun yerine sıralamayı öğrenir — "şimdi daha
+  çok odun mu, yoksa madene mi?" — ve mevcut sistemin her parçasını kullanır.
+- **Ölçüm varyansını düşürmek.** Lapis ve redstone blok başına 4-9 parça
+  düşürüyor, yani tek şanslı bir blok bölümü bitirebiliyor. Bütün politikalara
+  aynı uygulandığı için karşılaştırmayı taraflı yapmıyor, ama varyansı şişiriyor
+  — ve iki politikayı ayırmamızı defalarca engelleyen şey varyanstı.
 
 **Neden bu sıra?** Her aşama tek başına sunulabilir bir sonuç üretir.
 Proje yarım kalsa bile elinde gösterilecek bir şey olur.

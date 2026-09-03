@@ -79,10 +79,11 @@ Milestone 4 without touching a single line of bot code.
 
 ---
 
-## 4. Observation design — why only 12 numbers?
+## 4. Observation design — why a handful of numbers?
 
-Rather than raw pixels or a full world map, the observation is **12 hand-picked
-scalars**.
+Rather than raw pixels or a full world map, the observation is a short vector of
+**hand-picked scalars** — 16 for the wood task, 20 for mining, 21 in multi-task
+mode.
 
 This is a deliberate trade-off, not a shortcut. Pixel-based RL in Minecraft needs
 days of GPU time; a compact, well-chosen feature vector lets the same algorithm
@@ -102,9 +103,23 @@ Contents (see `gozlem()` in `bot/bridge/environment.js`):
 | 9 | Is the targeted block a log? | "Is mining here useful?" |
 | 10 | On ground? | "Am I falling?" |
 | 11 | Episode progress | Time pressure |
+| 12-15 | Blocked ahead / left / right, jumpable step ahead | "Which way can I move?" |
 
 All values are squeezed into `[-1, 1]`. Neural networks train poorly on inputs
 with wildly different scales, so normalization is not optional.
+
+**Four more for mining (16-19).** The egocentric bearing (sin, cos) and distance
+of the nearest dropped item, and whether the block in front is one this bot can
+*break*. Every one of these was added after a measurement, never from intuition —
+see §9. Multi-task mode sends the same twenty for both tasks plus a task index.
+
+**Three derived on the Python side.** The raw vector gives the target's direction
+in world coordinates and the bot's yaw as separate numbers, so "is the target on
+my left?" requires an `atan2` the network would have to learn. `zenginlestir()`
+hands over the bearing in the bot's own frame (angle, sin, cos) instead. Nothing
+new is measured — it is a change of frame, which is why it applies retroactively
+to already-recorded demonstrations. Multi-task mode also expands the task index
+into a one-hot. Totals the network sees: 19 wood, 23 mining, 25 multi-task.
 
 ---
 
@@ -236,6 +251,28 @@ information from the expert, or add the missing perception to the observation.
 We did both — the expert is reactive again, and the agent gained local obstacle
 sensors.
 
+**The dropped-item mistake (Milestone 5b).** The rule came back a third time, in
+a shape we did not recognise until we measured it. After line-of-sight was
+enforced on digging (§10), ore stopped being broken through walls, so drops began
+landing at the bot's feet — and the expert started spending **39% of its steps**
+walking to them. The observation said nothing about dropped items. Cloning
+accuracy collapsed to 25.5%, where blind guessing among four actions is 25%.
+Adding the item's egocentric bearing and distance was the fix.
+
+Note what happened here: nobody changed the expert. Fixing an unrelated bug
+shifted the *distribution of situations* the expert encountered, and a latent
+observability gap became the dominant one. The rule is not a checklist item you
+satisfy once.
+
+**The task-identity requirement (Milestone 6).** In multi-task training the same
+observation — *there is stone in front of me* — has one correct answer in the
+wood task ("go around") and the opposite one in mining ("break it"). Measured on
+real demonstrations: the wood expert breaks on 19% of steps, the mining expert on
+32%. Without a task signal in the observation those labels land on identical
+inputs and the network learns their average, which is neither. This is the same
+rule again, with the hidden variable being *which task am I in* rather than
+anything about the world.
+
 ## 10. Benchmarking inside a world that changes
 
 Two measurement bugs cost more time than any code bug, and both produced
@@ -264,12 +301,122 @@ state, it repeated that action until the episode timed out — three of five
 episodes ended at exactly the stagnation cutoff. Sampling from the policy's
 distribution breaks the loop, and is what PPO does during training anyway.
 
-## 11. What comes next
+**A fourth, and the most expensive: contradictory training data.** The raw
+observation kept for demo recording was written on `reset()` but not on `step()`,
+so it stayed frozen at its episode-start value. Every sample within an episode
+carried the *same* observation and a *different* action. The file looked normal;
+the failure surfaced hours later as "the network will not learn". Opening it and
+counting rows was decisive: **4,498 samples, 30 unique observations** — exactly
+the episode count. The ceiling for such data is the majority class (33.2%);
+cloning scored 30.7% and the loss sat at precisely `ln 4 = 1.386`, i.e. the
+network had learned to emit a uniform distribution over the four used actions and
+nothing else.
 
-**Milestone 4 — PPO.**
-Use the imitation-trained network as the initial policy and continue with PPO via
-Stable-Baselines3. The learning curve (x: environment steps, y: episode return)
-and a before/after comparison become the headline result in the README.
+Two collection runs were wasted before this was found, and the first diagnosis
+was wrong — a plausible but unverified hypothesis about missing features. The
+lesson is worth stating plainly because it is cheap and was skipped anyway:
+**when a network will not learn, look at the data before forming a hypothesis.**
+`collect_demos.py` now prints the unique-observation ratio after every run.
 
-**Why this order?** Each stage produces something presentable on its own. If the
-project stalls at any point, there is still a finished, demonstrable artifact.
+**A fifth, caught before it cost anything.** Evaluation runs policies round-robin
+while the multi-task environment advances its task on every reset. With five
+policies — an odd number — each policy alternates tasks across rounds and the
+split comes out even. That is luck, not design: with an even number of policies
+(one missing model file away) every policy would have been locked to a single
+task, random always chopping wood while PPO always mined, with no visible
+symptom. The round now names its task and every policy in it plays that task.
+
+The pattern across all five: the measurement apparatus quietly encoding something
+that has nothing to do with what you meant to measure. Code bugs announce
+themselves. Measurement bugs return confident numbers.
+
+## 11. One environment, several tasks
+
+Mining was added as a second RL task without touching the environment. That was
+the point of the exercise: if a second task needs a second environment, the first
+one was overfitted to its task.
+
+The parts that stay fixed are the ones a learning algorithm sees — the five
+actions, the reward shape, the episode logic, the training scripts, the
+evaluation harness. What differs between tasks is a small set of *questions*,
+answered in one file (`bot/bridge/gorevler.js`):
+
+| question | wood | mining |
+|---|---|---|
+| what is a target? | a log | an ore |
+| is this target legitimate? | not part of a player's build | **is my pickaxe good enough for it?** |
+| how do I count progress? | logs held | ores and ingots held |
+| what may I break to clear a path? | leaves and plants | stone too — we carry a pickaxe |
+| how do I rank candidate targets? | straight-line distance | vertical difference costs 3× |
+| how far do I look? | 64 blocks | **16 blocks** |
+| walk me near a target at episode start? | yes | **no** |
+
+Two of these rows are worth their own paragraph, because both were mistakes
+first.
+
+**Search radius.** `findBlocks` sees through walls. At y=15 there is always an ore
+within 64 blocks — typically forty blocks behind solid stone. The environment
+therefore never believed the area was exhausted, never relocated the bot, and
+every episode was spent tunnelling toward something unreachable: episode 1
+collected 5 ore, episodes 2-18 collected none. Sixteen blocks is roughly what an
+agent can tunnel through in one episode, and with it the environment's invariant
+comes back — *at episode start there is a reachable target*.
+
+**Walk me near a target.** In the forest this is harmless setup: walking across
+open ground is not the task. Underground it *is* the task, and the pathfinder
+digs. The environment would have tunnelled to the ore on the agent's behalf and
+then handed it the reward. Same reason the action space has no "pathfind to the
+tree" action — this was the same shortcut sneaking in through the setup code.
+
+Per-task file paths (`python/minecrai/yollar.py`) keep each task's data and models
+apart. Without that, one task would eventually overwrite the other's model and the
+symptom — a silently wrong model loading — would take hours to trace.
+
+## 12. One agent, several tasks
+
+The natural next question: can a single network do both, told only which task it
+is in? Everything above is shared, so the additions are small.
+
+**A shared observation width.** Wood sends 16 numbers, mining 20. One network
+needs one input size, so multi-task mode requests the wide observation for both.
+Wood keeps its narrow default outside multi-task mode, so the earlier trained
+models still load — a change that breaks published results to make a new task
+convenient is a bad trade.
+
+**Task identity in the observation.** Covered in §9: without it, contradictory
+labels land on identical inputs.
+
+**Strict alternation, not random sampling.** Over a short run, random task
+selection produces lopsided splits — 19/11 in thirty episodes is unremarkable —
+which quietly biases any per-task comparison.
+
+One thing measurement revealed that design did not anticipate: **the two tasks
+want the bot in physically different places.** Wood happens on the surface, mining
+at y=15, and the environment descends at most twelve steps per reset. Alternating
+tasks means every mining episode begins by climbing back down. Measured: mining
+episodes averaged 131 steps in multi-task collection against roughly 87 standalone,
+and 8 of 20 finished empty. That is a real cost of multi-task learning in an
+embodied setting, and it is not visible from the algorithm side at all.
+
+## 13. What comes next
+
+Nothing is committed. Directions that would build on what exists rather than
+restart:
+
+- **Speedrun framing.** The reward currently caps out when the episode terminates
+  at five resources, so improvement can only show up as *speed* — which is exactly
+  what Milestone 4 measured (reward flat, episode length −19%). Making time the
+  objective rather than a side effect would fix a measurement problem we already
+  hit. It also mostly exists: `uret <item>` already resolves a recipe tree at
+  runtime; adding a clock and a fixed seed gives a reproducible benchmark.
+- **Hierarchical control.** The agent currently learns walking and turning. An
+  agent whose actions are the existing *skills* would learn ordering instead —
+  "more wood now, or go mine?" — reusing every part of the current system.
+- **Lower measurement variance.** Lapis and redstone drop 4-9 items per block, so
+  a single lucky block can end an episode. It applies to every policy equally and
+  so does not bias comparisons, but it inflates variance — and variance is what
+  has repeatedly prevented us from separating two policies.
+
+**Why this order, throughout?** Each stage produces something presentable on its
+own. If the project stalls at any point, there is still a finished, demonstrable
+artifact.
