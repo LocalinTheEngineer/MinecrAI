@@ -22,15 +22,44 @@ a real Minecraft server.*
 
 ---
 
+## At a glance
+
+Two tasks — chopping wood on the surface, mining ore at y=15 — trained against a
+live Minecraft server, first separately and then as **one network doing both**.
+
+| | claim | evidence |
+|---|---|---|
+| ✅ | PPO beats a random baseline | wood: +2.93 reward; multi-task: **+2.75 ore, 95% CI [+0.53, +4.97]** (paired) |
+| ✅ | The environment generalises to a second task | mining reuses actions, reward, training and evaluation unchanged; only 7 task-specific questions differ |
+| ✅ | One network handles both tasks | 78.0% imitation accuracy, above the 75.1% single-task run |
+| ❓ | RL adds measurably on top of imitation | **not shown.** +0.70 ore, CI [−1.26, +2.66]. ~98 rounds would be needed; the cost was judged and declined |
+| ❓ | Multi-task transfer is real | direction is right, but the datasets differ in size — not a controlled comparison |
+
+The last two rows are the point of the table. Every number here comes with the
+comparison that produced it, and the ones that did not reach significance say so
+rather than being quietly dropped.
+
 ## Why this project
 
 Most "Minecraft bot" projects are long chains of `if/else`. This one is not.
 The goal is a real learning loop: an explicit environment definition, a shaped
 reward function, a training loop, and a learning curve you can point at.
 
-The hard part is not the bot — it is turning a live, asynchronous game into
-something an RL algorithm can actually step through. That bridge is the core
-contribution here.
+The hard part turned out not to be the bot, or even the bridge. It was **learning
+to trust a number.** Roughly half the work in this repo is measurement
+infrastructure that exists because a confident, wrong number cost hours:
+
+- a task-verifier that returns a verdict and a reason distribution, not a score
+- a data-health check that reports how many observations are actually distinct
+- 133 tests, each one written against a bug that really happened, each verified to
+  fail when its fix is reverted
+- a documented case where a promising training-curve result **did not survive**
+  independent checking, kept in the README rather than removed
+
+Individual findings are recorded next to the code that caused them — see
+[Milestone 5b](#milestone-5b--the-same-environment-a-second-task) and
+[Milestone 6](#milestone-6--one-agent-both-tasks) for the five and three bugs
+those stages produced, and how each was caught.
 
 ## Architecture
 
