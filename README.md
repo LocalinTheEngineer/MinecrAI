@@ -184,7 +184,7 @@ The same effect appeared inside behaviour cloning: evaluating the cloned policy 
 | **4** | PPO training warm-started from the cloned policy, learning curve | ✅ Done |
 | **5a** | Extended skill set: mining, smelting, recursive crafting | ✅ Done |
 | **5b** | Mining as a *second RL task* on the same environment | ✅ Done |
-| **6** | One agent, both tasks — multi-task RL | 🟡 Implemented, not yet trained |
+| **6** | One agent, both tasks — multi-task RL | ✅ Done |
 
 Each milestone stands on its own — the repo is presentable at any point.
 
@@ -365,14 +365,13 @@ distribution printed by `gorev_kontrol.py` and the data-health line printed by
    was decisive. `collect_demos.py` now prints that count after every run, and
    `test/smoke.py` catches the underlying bug with a fake bridge in seconds.
 
-## Milestone 6 — one agent, both tasks *(implemented, not yet trained)*
+## Milestone 6 — one agent, both tasks
 
 Milestone 5b showed the *environment* generalises to a second task. Milestone 6
 asks the harder question: can **one network** do both, told only which task it is
 in?
 
-The code is in place and covered by tests; the training runs are pending. Two
-design decisions carry the milestone.
+Two design decisions carry the milestone.
 
 **A shared observation width.** Wood sends 16 numbers, mining sends 20 (mining
 needs the dropped-item direction and the "can I break what is in front of me"
@@ -417,6 +416,84 @@ Two bugs surfaced while writing this, both of the silent kind:
 byte-identical copies in `train_bc.py` and `pretrain_ppo.py`, and the same fix had
 already had to be applied twice; a third divergence would have meant the two
 scripts silently interpreting the same data differently, with both still running.
+
+### Results
+
+Behaviour cloning on 4,174 demonstration steps (20 wood + 20 mining episodes,
+strictly alternating) reached **78.0%** action accuracy; the matching
+PPO-architecture run reached **78.9%**. Both are *above* the single-task mining
+figure of 75.1% — suggestive of positive transfer between tasks, though the
+datasets differ in size (4,174 vs 2,606) so this is not a controlled comparison.
+
+PPO then trained for **20,440 steps / 260 episodes** (~261 min live).
+
+Five policies, **20 rounds**, round-robin, with the task fixed per round so every
+policy in a round faces the same one. Ten rounds wood, ten mining.
+
+| policy | reward | ore | steps |
+|---|---|---|---|
+| behaviour cloning | +4.99 ± 0.70 | 5.0 | 78 |
+| **PPO — imitation + RL** | **+4.52 ± 1.20** | 4.8 | 111 |
+| PPO — imitation only | +3.96 ± 0.72 | 4.1 | 95 |
+| scripted expert | +3.53 ± 1.23 | 4.2 | 92 |
+| random | −0.29 ± 0.87 | 2.0 | 178 |
+
+Paired per-round differences (same round, same task, same conditions):
+
+- **PPO > random: +2.75 ore, 95% CI [+0.53, +4.97].** Excludes zero. This is the
+  claim the milestone supports.
+- **PPO vs imitation-only: +0.70, CI [−1.26, +2.66].** Does not exclude zero.
+
+### A prediction that did not survive checking
+
+The training log looked better than the mining-only run: over the first sixty
+episodes against the last sixty, mean resources rose 4.27 → 5.12 (t = 1.79, short
+of significance) while the fraction of empty episodes fell **22% → 8%**, a
+two-proportion z of 2.05. The single-task mining run had gone the other way over
+the same span (18% → 25%).
+
+That empty-episode rate was **not the primary metric — it was chosen after seeing
+that the mean fell short**, which inflates the false-positive rate however
+reasonable the metric looks. It was recorded as a hypothesis to test rather than a
+result, and the held-out evaluation above is the test. It did not confirm it:
+PPO against imitation-only is noise on unseen episodes.
+
+The general point is worth more than the specific number. A training curve cannot
+validate a pattern found in that same training curve, and post-hoc metric choice
+is easy to do without noticing.
+
+### Where the RL training did and did not land
+
+| | random | BC | imitation-only | **imitation + RL** | expert |
+|---|---|---|---|---|---|
+| wood | 2.30 | 3.90 | 3.10 | **2.70** | 1.80 |
+| mining | 1.80 | 6.00 | 5.10 | **6.90** | 6.50 |
+
+RL training is worth **+1.80 ore on mining and −0.40 on wood**. Neither is
+individually significant at n = 10 per task, but the direction is consistent and
+there is a measured explanation: **63% of the training samples were mining.**
+Episodes alternated strictly, but mining episodes ran longer (131 steps against 78
+for wood), so the network saw 1.7× more mining data — and improved the task it saw
+more of. Task imbalance in multi-task learning is a known failure mode; here it
+arrived through episode *length* rather than episode count, which is the part that
+was not anticipated.
+
+Also visible: the scripted expert scores 1.80 on wood, *below* random. See
+[Why the scripted expert scores last](#why-the-scripted-expert-scores-last) — the
+expert is written to be reproducible in the agent's five actions, not to be good.
+
+### One more silent measurement bug, caught before it cost anything
+
+Evaluation runs policies round-robin while the multi-task environment advanced its
+task on every reset. With five policies — an odd number — each policy alternates
+tasks across rounds and the split comes out even. That is luck, not design: with an
+even number of policies (one missing model file away) every policy would have been
+locked to a single task, random always chopping wood while PPO always mined, with
+no visible symptom at all. Even in the working case the "paired" comparison was not
+paired on task: policy A ran wood while policy B ran mining in the same round.
+
+The round now names its task and every policy in it plays that task. The 10/10
+split above is that fix working.
 
 ## Quick start
 
