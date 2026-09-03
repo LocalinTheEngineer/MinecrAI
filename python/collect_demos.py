@@ -66,7 +66,7 @@ def topla(
     bolum_odunlari: list[int] = []
 
     for bolum in range(bolum_sayisi):
-        obs, _ = env.reset()
+        obs, bolum_bilgisi = env.reset()
         toplam_odul = 0.0
         adim = 0
 
@@ -103,8 +103,17 @@ def topla(
         # (Ctrl+C, zaman asimi, sunucu kopmasi) o ana kadarki veri durur.
         _kaydet(cikti, gozlemler, aksiyonlar, bolum_odulleri, bolum_odunlari)
 
+        # HANGI GOREV OLDUGUNU YAZ.
+        #
+        # Cok gorevli toplamada (Milestone 6) bu satir olmadan kullanici
+        # gorevlerin gercekten donusumlu geldigini goremiyor -- ilk denemede
+        # bunu ancak kaydedilen dosyayi acip gorev sutununu sayarak
+        # dogrulayabildim. Ekranda gorunmeyen bir sey ariza cikardiginda
+        # fark edilmiyor.
+        etiket = bolum_bilgisi.get("gorev", "")
+        etiket = f"  [{etiket}]" if etiket else ""
         print(
-            f"bolum {bolum + 1:3d}/{bolum_sayisi}  "
+            f"bolum {bolum + 1:3d}/{bolum_sayisi}{etiket}  "
             f"adim={adim:4d}  odun={odun:2d}  odul={toplam_odul:+7.2f}  "
             f"toplam ornek={len(gozlemler)}"
         )
