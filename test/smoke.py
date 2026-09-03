@@ -288,6 +288,73 @@ def main() -> None:
             raise AssertionError(f"ham gozlem sekli {env.son_ham_gozlem.shape}")
     dene("CokluGorevEnv donusumlu, sabit genislikte, gorev bilgili", coklu_ortam)
 
+    def gorev_dayatilabiliyor():
+        """Degerlendirmenin dogru olcmesi icin sart olan davranis.
+
+        SESSIZ OLCUM HATASI: `eval_agent` politikalari sirayla kosturuyor
+        ve her bolum gorevi bir ilerletiyor. Politika sayisi TEK ise (su an
+        5) her politika turdan tura gorev degistiriyor ve dengeli cikiyor --
+        ama bu KAZARA. Cift olsaydi (bc modeli bulunamayip 4'e duserse) her
+        politika HEP AYNI gorevi alirdi: rastgele ajan hep odun, PPO hep
+        maden. Karsilastirma anlamsiz olur ve hicbir belirti vermez.
+
+        Cozum: degerlendirme turun gorevini acikca soyluyor.
+        """
+        import minecrai.env as env_mod
+        from minecrai.coklu import CokluGorevEnv
+        from minecrai.env import ORTAK, EK
+
+        class SahteKopru:
+            def __init__(self):
+                self.sayac = 0
+
+            def _gozlem(self):
+                self.sayac += 1
+                g = np.zeros(ORTAK + EK, dtype=np.float32)
+                g[0] = self.sayac / 100.0
+                return g.tolist()
+
+            def reset(self, gorev=None, genis_gozlem=None):
+                return {"obs": self._gozlem(), "info": {}}
+
+            def step(self, action):
+                return {"obs": self._gozlem(), "reward": 0.0,
+                        "terminated": False, "truncated": False, "info": {}}
+
+            def expert(self):
+                return {"action": 0}
+
+            def close(self):
+                pass
+
+        gercek = env_mod.BridgeClient
+        env_mod.BridgeClient = lambda *a, **k: SahteKopru()
+        try:
+            env = CokluGorevEnv()
+        finally:
+            env_mod.BridgeClient = gercek
+
+        # Ayni gorev ust uste dayatilabilmeli (donusumlu sira EZILMELI)
+        for _ in range(3):
+            _, info = env.reset(options={"gorev": "maden"})
+            if info["gorev"] != "maden":
+                raise AssertionError(f"gorev dayatilamadi: {info['gorev']}")
+
+        # Dayatma olmayinca donusumlu sira surmeli
+        ilk = env.reset()[1]["gorev"]
+        ikinci = env.reset()[1]["gorev"]
+        if ilk == ikinci:
+            raise AssertionError("dayatma yokken donusumlu sira calismiyor")
+
+        # Bilinmeyen gorev SESSIZCE kabul edilmemeli
+        try:
+            env.reset(options={"gorev": "yok_boyle"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("bilinmeyen gorev sessizce kabul edildi")
+    dene("cok gorevli ortamda GOREV dayatilabiliyor", gorev_dayatilabiliyor)
+
     def ortam_kur_secimi():
         """'hepsi' cok gorevli ortam kurmali, digerleri tekil.
 

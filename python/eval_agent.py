@@ -31,8 +31,8 @@ VARSAYILAN_GRAFIK = KOK / "models" / "karsilastirma.png"
 sebepler: dict[str, int] = {}
 
 
-def bolum_calistir(env: MinecraftEnv, politika, maks_adim: int):
-    obs, _ = env.reset()
+def bolum_calistir(env: MinecraftEnv, politika, maks_adim: int, gorev=None):
+    obs, _ = env.reset(options={"gorev": gorev} if gorev else None)
     toplam = 0.0
     info = {}
     for adim in range(1, maks_adim + 1):
@@ -71,15 +71,27 @@ def donusumlu_degerlendir(env, politikalar, bolum, maks_adim):
     ham_yol.parent.mkdir(parents=True, exist_ok=True)
     with open(ham_yol, "w", encoding="utf-8", newline="") as f:
         yazici = csv.writer(f)
-        yazici.writerow(["tur", "politika", "odul", "odun", "adim"])
+        yazici.writerow(["tur", "gorev", "politika", "odul", "odun", "adim"])
+
+        # TURUN GOREVINI ACIKCA SEC (cok gorevli ortamda).
+        #
+        # Bir turdaki BUTUN politikalar ayni gorevi oynasin. Bkz.
+        # minecrai/coklu.py -- bunu ortama birakmak politika sayisinin
+        # tek olmasina bagli, sessiz bir olcum hatasiydi.
+        tur_gorevleri = getattr(env, "gorevler", None)
 
         for tur in range(bolum):
+            tur_gorevi = (
+                tur_gorevleri[tur % len(tur_gorevleri)] if tur_gorevleri else None
+            )
+            if tur_gorevi:
+                print(f"  --- tur {tur + 1}: {tur_gorevi} ---")
             for ad, fn in politikalar:
-                o, w, a = bolum_calistir(env, fn, maks_adim)
+                o, w, a = bolum_calistir(env, fn, maks_adim, tur_gorevi)
                 sonuc[ad]["oduller"].append(o)
                 sonuc[ad]["odunlar"].append(w)
                 sonuc[ad]["adimlar"].append(a)
-                yazici.writerow([tur + 1, ad, f"{o:.4f}", w, a])
+                yazici.writerow([tur + 1, tur_gorevi or "", ad, f"{o:.4f}", w, a])
                 f.flush()  # kesilirse diskte olsun
                 print(f"  tur {tur + 1}/{bolum}  {ad:<9} odul={o:+7.2f}  odun={w:2d}  adim={a}")
             print()

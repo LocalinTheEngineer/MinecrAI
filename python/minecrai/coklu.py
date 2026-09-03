@@ -86,7 +86,33 @@ class CokluGorevEnv(gym.Env):
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed)
 
-        self._sira = (self._sira + 1) % len(self.gorevler)
+        # GOREVI DISARIDAN DAYATABILME.
+        #
+        # Varsayilan donusumlu sira egitim icin dogru. Ama DEGERLENDIRME
+        # icin yetmiyor ve bu sessiz bir olcum hatasiydi:
+        #
+        # `eval_agent` politikalari sirayla kosturuyor ve her bolum gorevi
+        # bir ilerletiyor. Politika sayisi TEK ise (su an 5) her politika
+        # turdan tura gorev degistiriyor ve dengeli cikiyor -- ama bu
+        # KAZARA. Politika sayisi CIFT olsaydi (ornegin bc modeli
+        # bulunamayip 4'e duserse) her politika HEP AYNI gorevi alirdi:
+        # rastgele ajan hep odun, PPO hep maden. Karsilastirma tamamen
+        # anlamsiz olur ve hicbir belirti vermez.
+        #
+        # Ustelik calisan halde bile tam eslesme yok: ayni turda politika A
+        # odun, politika B maden oynuyor. "Eslestirilmis karsilastirma"
+        # dedigimiz sey gorev bakimindan eslesmiyordu.
+        #
+        # Artik degerlendirme turun gorevini acikca soyluyor ve o turdaki
+        # butun politikalar AYNI gorevi ayni sirada oynuyor.
+        istenen = (options or {}).get("gorev")
+        if istenen is not None:
+            if istenen not in self.gorevler:
+                raise ValueError(
+                    f"bilinmeyen gorev {istenen!r}; secenekler: {self.gorevler}")
+            self._sira = self.gorevler.index(istenen)
+        else:
+            self._sira = (self._sira + 1) % len(self.gorevler)
         self.alt.gorev = self.gorevler[self._sira]
 
         gozlem, info = self.alt.reset()
