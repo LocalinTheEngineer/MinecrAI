@@ -37,10 +37,14 @@ const GECMIS_SINIRI = 6      // 3 tur (soru + cevap)
 // Oyuncu başına son çağrı zamanı — chat'i spam'leyen biri fatura üretmesin
 const sonCagri = new Map()
 
-// PER-ATTEMPT timeout. Measured in game: at 12s two dead combinations ate
-// the whole budget and the walk never reached the one that works. A busy
-// model fails fast or not at all — waiting longer does not help it.
-const ZAMAN_ASIMI_MS = 6000
+// PER-ATTEMPT timeout.
+//
+// Went 12s -> 6s to fit more attempts in the budget, and that was the wrong
+// correction: the successful reply had spent 400 tokens *thinking*, so 6s
+// cut off the combination that worked. Thinking is now capped (see
+// gemini.js `thinking_level`), which is the real fix; the timeout goes back
+// up because a slow answer still beats no answer.
+const ZAMAN_ASIMI_MS = 15000
 // Budget for the whole walk. A chat reply that takes a minute is not a reply.
 const TOPLAM_SURE_MS = 30000
 

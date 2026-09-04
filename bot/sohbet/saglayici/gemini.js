@@ -40,6 +40,13 @@ const interactions = {
     model: istek.model,
     system_instruction: istek.sistem,
     store: false,
+    // DUSUNMEYI KIS.
+    //
+    // A successful reply came back with `total_thought_tokens: 400` — four
+    // hundred tokens of reasoning to map one sentence onto a 13-item enum.
+    // That is most of the latency, and it is what made a 6s timeout cut off
+    // the combination that actually worked.
+    generation_config: { thinking_level: 'minimal' },
     input: istek.mesajlar.map((m) => (
       m.rol === 'bot'
         ? { type: 'model_response', content: [{ type: 'text', text: m.metin }] }
@@ -70,7 +77,10 @@ const generateContent = {
         parameters: istek.arac.sema
       }]
     }],
-    generationConfig: { maxOutputTokens: istek.maksToken }
+    generationConfig: {
+      maxOutputTokens: istek.maksToken,
+      thinking_level: 'minimal'
+    }
   })
 }
 
