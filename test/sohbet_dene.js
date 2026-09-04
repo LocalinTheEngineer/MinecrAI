@@ -84,7 +84,7 @@ async function main () {
 
   // --- 3a. Once BAGLANTI, sonra anahtar, sonra istek. Sirayla daralt.
   console.log('\n=== 3. BAGLANTI ===')
-  const hedef = new URL(s.url(istek)).origin
+  const hedef = new URL(denemeler[0].tasiyici.url({ ...istek, model })).origin
   try {
     await zamanliFetch(hedef, { method: 'HEAD' }, 8000)
     console.log(`  ${hedef} erisilebilir.`)

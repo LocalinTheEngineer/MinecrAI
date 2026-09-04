@@ -2325,6 +2325,44 @@ async function main () {
     }
   })
 
+  await dene('teshis araci saglayici arayuzuyle uyumlu', () => {
+    // `test/sohbet_dene.js` saglayici arayuzunu YENIDEN kullaniyor ama
+    // ayri bir dosya oldugu icin arayuz degisince sessizce geride kaliyor.
+    // Tam da bu oldu: saglayicilardan `url` kaldirilip tasiyicilara
+    // tasindi, teshis araci `s.url(...)` cagirmaya devam etti ve
+    // kullanicinin makinesinde TypeError ile coktu.
+    //
+    // Testler teshis aracini calistiramiyor (gercek ag istegi atiyor),
+    // ama hangi metotlari cagirdigini okuyabilir.
+    const kaynak = fs.readFileSync(
+      path.join(__dirname, 'sohbet_dene.js'), 'utf8')
+
+    const cagirilan = new Set(
+      [...kaynak.matchAll(/\bs\.(\w+)\s*\(/g)].map((m) => m[1])
+    )
+    if (cagirilan.size === 0) throw new Error('teshis araci saglayiciyi hic kullanmiyor?')
+
+    for (const saglayici of ['gemini', 'anthropic']) {
+      const mod = require(`../bot/sohbet/saglayici/${saglayici}`)
+      for (const metot of cagirilan) {
+        if (typeof mod[metot] !== 'function') {
+          throw new Error(
+            `sohbet_dene.js s.${metot}() cagiriyor ama ${saglayici} saglayicisinda yok`)
+        }
+      }
+    }
+
+    // Tasiyici arayuzu de eksiksiz olmali
+    const gemini = require('../bot/sohbet/saglayici/gemini')
+    for (const d of gemini.denemeler()) {
+      for (const metot of ['url', 'govde']) {
+        if (typeof d.tasiyici[metot] !== 'function') {
+          throw new Error(`${d.tasiyici.ad} tasiyicisinda ${metot}() yok`)
+        }
+      }
+    }
+  })
+
   await dene('anahtar yoksa sohbet katmani KAPALI', async () => {
     // Projeyi klonlayan birinin API anahtari olmadan da her seyi
     // calistirabilmesi gerekiyor. Sohbet bir ek, bagimlilik degil.
