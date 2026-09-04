@@ -30,6 +30,7 @@ const log = require('./utils/log')
 const skills = require('./skills')
 const koruma = require('./utils/koruma')
 const { renkliListe } = require('./utils/chat')
+const sohbet = require('./sohbet/beyin')
 const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
 
 /**
@@ -164,9 +165,30 @@ function botOlustur () {
   }
 
   // --- Chat komutları ----------------------------------------------------
-  bot.on('chat', async (username, mesaj) => {
-    if (username === bot.username) return
+  // BİLİNEN KOMUT KELİMELERİ.
+  //
+  // Sohbet katmanının devreye girip girmeyeceğini bu belirliyor: ilk
+  // kelime buradaysa mesaj tam komuttur ve doğrudan çalışır (LLM
+  // çağrısı yok, gecikme yok, maliyet yok). Değilse doğal dil kabul
+  // edilip sohbet katmanına gider.
+  //
+  // Liste elle tutuluyor ama `test/smoke.js` bunu yönlendiricideki
+  // gerçek dallarla karşılaştırıyor — eksik kalırsa test söylüyor.
+  const BILINEN = new Set([
+    'dur', 'komut', 'komutlar', 'yardim', 'yardım', 'help', '?',
+    'nerede', 'envanter', 'takip', 'takibi', 'takipbirak', 'ver',
+    'koru', 'korumalar', 'korumasil', 'balta', 'cik', 'çık',
+    'kaz', 'uret', 'üret', 'yap', 'gel', 'kes'
+  ])
 
+  /**
+   * Bir chat mesajını işler.
+   *
+   * `mesaj` doğrudan oyuncudan gelebilir ya da sohbet katmanının
+   * ürettiği bir komut satırı olabilir — ikisi de AYNI yoldan geçiyor.
+   * Böylece LLM'in çalıştırabildiği her şey zaten test edilmiş kod.
+   */
+  async function mesajiIsle (username, mesaj) {
     const parcalar = mesaj.trim().toLowerCase().split(/\s+/)
     const komut = parcalar[0]
     const arguman = parcalar[1]
@@ -342,6 +364,32 @@ function botOlustur () {
           ? 'Yakında ağaç bulamadım.'
           : `${sonuc.agac} ağaç, ${sonuc.kesilen} kütük kestim. +${sonuc.kazanilanOdun} odun.`)
       })
+    }
+  }
+
+  bot.on('chat', async (username, mesaj) => {
+    if (username === bot.username) return
+
+    const ilkKelime = mesaj.trim().toLowerCase().split(/\s+/)[0]
+
+    // Tam komutsa doğrudan çalıştır — LLM çağrısı yok.
+    if (BILINEN.has(ilkKelime)) {
+      await mesajiIsle(username, mesaj)
+      return
+    }
+
+    // Değilse doğal dil olarak yorumlamayı dene.
+    if (!sohbet.acik()) return   // anahtar yok: eskisi gibi sessiz kal
+
+    const yorum = await sohbet.yorumla(bot, username, mesaj, {
+      mesgul: kontrol.calisiyor
+    })
+    if (!yorum) return
+
+    if (yorum.cevap) bot.chat(yorum.cevap)
+    if (yorum.komut) {
+      log.bilgi(`Sohbet: "${mesaj}" -> ${yorum.komut}`)
+      await mesajiIsle(username, yorum.komut)
     }
   })
 

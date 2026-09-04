@@ -32,6 +32,7 @@ live Minecraft server, first separately and then as **one network doing both**.
 | ✅ | PPO beats a random baseline | wood: +2.93 reward; multi-task: **+2.75 ore, 95% CI [+0.53, +4.97]** (paired) |
 | ✅ | The environment generalises to a second task | mining reuses actions, reward, training and evaluation unchanged; only 7 task-specific questions differ |
 | ✅ | One network handles both tasks | 78.0% imitation accuracy, above the 75.1% single-task run |
+| ✅ | The same body takes commands, learned control, or plain language | three decision layers, all bounded by the same tested skill set |
 | ❓ | RL adds measurably on top of imitation | **not shown.** +0.70 ore, CI [−1.26, +2.66]. ~98 rounds would be needed; the cost was judged and declined |
 | ❓ | Multi-task transfer is real | direction is right, but the datasets differ in size — not a controlled comparison |
 
@@ -214,6 +215,7 @@ The same effect appeared inside behaviour cloning: evaluating the cloned policy 
 | **5a** | Extended skill set: mining, smelting, recursive crafting | ✅ Done |
 | **5b** | Mining as a *second RL task* on the same environment | ✅ Done |
 | **6** | One agent, both tasks — multi-task RL | ✅ Done |
+| **7** | Natural-language control: an LLM layer over the existing skills | ✅ Done |
 
 Each milestone stands on its own — the repo is presentable at any point.
 
@@ -524,6 +526,57 @@ paired on task: policy A ran wood while policy B ran mining in the same round.
 The round now names its task and every policy in it plays that task. The 10/10
 split above is that fix working.
 
+## Milestone 7 — talking to the bot
+
+The bot has always taken exact commands (`kes 3`, `uret tas kazma`). It now also
+takes plain language:
+
+```
+"bana bir taş kazma yapar mısın"   →  uret tas kazma
+"3 tane daha kes"                  →  kes 3
+"ne var envanterinde"              →  answered from state, no command run
+```
+
+**The design constraint is the interesting part: the LLM cannot do anything the
+command router could not already do.** It does not generate code or free-form
+actions — it picks from a fixed enum, and the string it produces is executed by
+the same router that handles typed commands. So everything the language layer can
+reach is code that already existed and is already tested.
+
+That matters because **in-game chat is untrusted input.** On a local single-player
+server the threat is small, but the principle holds: whatever another player types,
+the worst outcome is a legitimate command running. The model cannot express
+anything else. Arguments are stripped to letters, digits and spaces before
+execution, so `"3; /kill @a"` reaches the router as `kes 3`.
+
+Some commands are deliberately **not** exposed: `koru` / `korumalar` / `korumasil`
+manage no-dig protection zones. Those should be the player's explicit decision, and
+`korumasil` is irreversible — one misreading would erase every protected area.
+
+Three practical properties:
+
+- **Exact commands never call the model.** If the first word is a known command the
+  message routes directly: no latency, no cost. The language layer is the fallback,
+  not the path.
+- **No API key means the feature is simply off.** Anyone cloning the repo can run
+  everything without one; chat is an addition, not a dependency. A test asserts the
+  API is never called when the key is absent — the first version of that test passed
+  for the wrong reason (the call failed with a 401 and was caught), which is why it
+  now checks that no call was attempted at all.
+- **A failed API call is not a failed bot.** Network error, timeout, rate limit: the
+  bot logs it and stays usable through typed commands.
+
+This also completes a shape the project had been building toward without naming it —
+three layers of decision-making over the same body:
+
+| layer | how it decides | where |
+|---|---|---|
+| skills | hand-written, deterministic | `bot/skills/` |
+| RL agent | learned low-level control | `bot/bridge/` |
+| chat | language → intent | `bot/sohbet/` |
+
+Costs roughly $0.001 per message on the default model.
+
 ## Quick start
 
 **Requirements:** Node.js 18+, Python 3.10+, Java 21 (for the Minecraft server).
@@ -648,6 +701,9 @@ bot/                  Node.js — everything that touches Minecraft
   utils/kurtar.js       frees the bot when it wedges itself
   utils/yerlestir.js    block placement — clears a spot if none is free
   utils/koruma.js       player-marked no-dig zones
+  sohbet/
+    beyin.js            LLM layer: plain language -> an existing command
+    araclar.js          the fixed command enum the model may choose from
   bridge/
     server.js           WebSocket server exposing reset/step to Python
     environment.js      observation, reward and episode logic

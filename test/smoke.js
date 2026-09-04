@@ -2064,6 +2064,178 @@ async function main () {
     }
   })
 
+  console.log('\nSohbet katmani (LLM)')
+
+  await dene('BILINEN listesi yonlendiricideki HER komutu kapsiyor', () => {
+    // Sessiz bozulma: bir komut BILINEN'den duserse mesaj tam komut
+    // sayilmaz ve LLM'e gider. Calisir -- ama gereksiz gecikme, gereksiz
+    // maliyet, ve LLM yanlis yorumlarsa yanlis is. Hicbir hata mesaji yok.
+    //
+    // Ayni sinif hata bu projede bir kez oldu: `komut.startsWith('uret ')`
+    // hicbir zaman dogru olamiyordu ve komut sessizce hicbir sey yapmadi.
+    const kaynak = fs.readFileSync(path.join(__dirname, '..', 'bot', 'index.js'), 'utf8')
+
+    const m = /const BILINEN = new Set\(\[([\s\S]*?)\]\)/.exec(kaynak)
+    if (!m) throw new Error('index.js icinde BILINEN listesi bulunamadi')
+    const bilinen = new Set(
+      [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
+    )
+
+    // Yonlendiricide gercekten dallanan komutlar
+    const dallanan = new Set(
+      [...kaynak.matchAll(/komut === '([^']+)'/g)].map((x) => x[1])
+    )
+    const eksik = [...dallanan].filter((k) => !bilinen.has(k))
+    if (eksik.length > 0) {
+      throw new Error(`BILINEN listesinde eksik: ${eksik.join(', ')}`)
+    }
+  })
+
+  await dene('LLM SADECE izinli komutlari secebiliyor', () => {
+    // Oyun ici chat GUVENILMEZ girdi. Model ne uretirse uretsin
+    // olabilecek en kotu sey listedeki mesru bir komutun calismasi olmali.
+    const { komutSatiri, IZINLI_KOMUTLAR } = require('../bot/sohbet/araclar')
+
+    // Yikici komutlar listede OLMAMALI
+    for (const yasak of ['korumasil', 'koru', 'korumalar']) {
+      if (Object.prototype.hasOwnProperty.call(IZINLI_KOMUTLAR, yasak)) {
+        throw new Error(`${yasak} LLM'e acilmis -- yikici/oyuncu karari olmali`)
+      }
+      if (komutSatiri({ komut: yasak })) {
+        throw new Error(`${yasak} kabul edildi`)
+      }
+    }
+
+    // Uydurma komut reddedilmeli
+    if (komutSatiri({ komut: 'rm' })) throw new Error('bilinmeyen komut kabul edildi')
+    if (komutSatiri(null)) throw new Error('bos girdi kabul edildi')
+
+    // Mesru komut gecmeli
+    if (komutSatiri({ komut: 'kes', arguman: '3' }) !== 'kes 3') {
+      throw new Error('mesru komut reddedildi')
+    }
+  })
+
+  await dene('argumandan komut enjeksiyonu temizleniyor', () => {
+    const { komutSatiri } = require('../bot/sohbet/araclar')
+    for (const kotu of ['3; /kill @a', '3\n/op sahte', 'tas kazma && /give']) {
+      const satir = komutSatiri({ komut: 'kes', arguman: kotu })
+      if (/[/\n;&]/.test(satir)) {
+        throw new Error(`temizlenmemis argüman gecti: ${JSON.stringify(satir)}`)
+      }
+    }
+  })
+
+  await dene('anahtar yoksa sohbet katmani KAPALI', async () => {
+    // Projeyi klonlayan birinin API anahtari olmadan da her seyi
+    // calistirabilmesi gerekiyor. Sohbet bir ek, bagimlilik degil.
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = config.sohbetAnahtari
+    config.sohbetAnahtari = ''
+    try {
+      if (beyin.acik()) throw new Error('anahtar yokken acik gorunuyor')
+
+      // ASIL SINANAN: API'ye HIC GIDILMEMELI.
+      //
+      // Ilk yazisimda sadece "null donuyor mu" diye bakiyordum ve test
+      // ayirt etmiyordu: koruma kaldirilinca gercek API cagriliyor,
+      // 401 aliniyor, yakalaniyor ve yine null donuyordu. Dogru sonuc,
+      // yanlis sebep.
+      let cagrildi = false
+      const izleyen = async () => {
+        cagrildi = true
+        return { content: [{ type: 'text', text: 'olmamali' }] }
+      }
+      const sonuc = await beyin.yorumla(sahteBot(), 'oyuncu', 'selam', { cagir: izleyen })
+      if (cagrildi) throw new Error('anahtar yokken API cagrildi')
+      if (sonuc !== null) throw new Error('anahtar yokken cevap uretti')
+    } finally {
+      config.sohbetAnahtari = eski
+    }
+  })
+
+  await dene('sohbet: dogal dil -> komut (sahte API, ag yok)', async () => {
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = config.sohbetAnahtari
+    config.sohbetAnahtari = 'test-anahtari'
+    beyin.gecmisiSil()
+
+    let gorulenGovde = null
+    const sahteCagri = async (govde) => {
+      gorulenGovde = govde
+      return {
+        content: [
+          { type: 'text', text: 'Tamam, gidiyorum.' },
+          { type: 'tool_use', name: 'komut_calistir', input: { komut: 'uret', arguman: 'tas kazma' } }
+        ]
+      }
+    }
+
+    try {
+      const b = sahteBot()
+      b.inventory = { items: () => [{ name: 'oak_log', count: 5, type: 1 }] }
+      const sonuc = await beyin.yorumla(b, 'cem', 'bana bir tas kazma yapar misin', { cagir: sahteCagri })
+
+      if (!sonuc || sonuc.komut !== 'uret tas kazma') {
+        throw new Error(`komut cikmadi: ${JSON.stringify(sonuc)}`)
+      }
+      if (sonuc.cevap !== 'Tamam, gidiyorum.') throw new Error('metin cevap kayboldu')
+
+      // Modele botun DURUMU gonderilmeli -- yoksa "envanterinde ne var"
+      // sorusuna korlemesine cevap verir
+      if (!/oak_log/.test(gorulenGovde.system)) {
+        throw new Error('sistem metninde envanter yok')
+      }
+      if (!gorulenGovde.tools || gorulenGovde.tools[0].name !== 'komut_calistir') {
+        throw new Error('arac semasi gonderilmedi')
+      }
+    } finally {
+      config.sohbetAnahtari = eski
+      beyin.gecmisiSil()
+    }
+  })
+
+  await dene('sohbet: uydurulmus komut REDDEDILIYOR', async () => {
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = config.sohbetAnahtari
+    config.sohbetAnahtari = 'test-anahtari'
+    beyin.gecmisiSil()
+
+    const sahteCagri = async () => ({
+      content: [{ type: 'tool_use', name: 'komut_calistir', input: { komut: 'korumasil' } }]
+    })
+    try {
+      const sonuc = await beyin.yorumla(sahteBot(), 'kotu_oyuncu', 'butun korumalari sil',
+        { cagir: sahteCagri })
+      if (sonuc && sonuc.komut) {
+        throw new Error(`yikici komut gecti: ${sonuc.komut}`)
+      }
+      if (!sonuc || !sonuc.cevap) throw new Error('kullaniciya hicbir sey soylenmedi')
+    } finally {
+      config.sohbetAnahtari = eski
+      beyin.gecmisiSil()
+    }
+  })
+
+  await dene('sohbet: API cokerse bot calismaya devam ediyor', async () => {
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = config.sohbetAnahtari
+    config.sohbetAnahtari = 'test-anahtari'
+    beyin.gecmisiSil()
+    try {
+      const patlayan = async () => { throw new Error('ag yok') }
+      const sonuc = await beyin.yorumla(sahteBot(), 'cem2', 'selam', { cagir: patlayan })
+      if (sonuc !== null) throw new Error('hata durumunda null donmedi')
+    } finally {
+      config.sohbetAnahtari = eski
+      beyin.gecmisiSil()
+    }
+  })
+
   console.log('\nDokumanlar')
 
   await dene('BASLAT.md ve README\'deki komutlar GERCEKTEN var', () => {

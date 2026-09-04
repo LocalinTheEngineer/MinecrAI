@@ -13,6 +13,12 @@ const config = {
   auth: process.env.MC_AUTH || 'offline',
   bridgePort: parseInt(process.env.BRIDGE_PORT || '8765', 10),
 
+  // SOHBET KATMANI (bot/sohbet/). Anahtar yoksa sessizce kapalı:
+  // bot tam komutlarla çalışmaya devam eder. Projeyi klonlayan birinin
+  // API anahtarı olmadan da her şeyi çalıştırabilmesi gerekiyor.
+  sohbetAnahtari: process.env.ANTHROPIC_API_KEY || '',
+  sohbetModeli: process.env.SOHBET_MODELI || 'claude-haiku-4-5-20251001',
+
   // Botun davranış ayarları
   searchRadius: 64, // kaynak ararken kaç blok uzağa bakılsın
   // (32'ydi: temizlenmiş bir alanda "ağaç bulamadım" deyip pes ediyordu.
