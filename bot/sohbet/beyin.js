@@ -109,7 +109,6 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   // kendi API'sinin şekline çeviriyor (bkz. saglayici/). Böylece
   // sistem metni, araç tanımı ve geçmiş mantığı tek yerde kalıyor.
   const istek = {
-    model: config.sohbetModeli || s.varsayilanModel,
     maksToken: 300,
     sistem: sistemMetni(bot, secenekler.mesgul),
     arac: aracTanimi(),
@@ -151,16 +150,17 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
 }
 
 /**
- * One HTTP call. No retry logic here — see `apiCagir`.
+ * One HTTP call for one (model, transport) pair.
  */
-async function tekCagri (s, istek) {
+async function tekCagri (s, istek, deneme) {
   const kontrolcu = new AbortController()
   const saat = setTimeout(() => kontrolcu.abort(), ZAMAN_ASIMI_MS)
+  const tam = { ...istek, model: deneme.model }
   try {
-    const cevap = await fetch(s.url(istek), {
+    const cevap = await fetch(deneme.tasiyici.url(tam), {
       method: 'POST',
       headers: s.baslik(config),
-      body: JSON.stringify(s.govde(istek)),
+      body: JSON.stringify(deneme.tasiyici.govde(tam)),
       signal: kontrolcu.signal
     })
     if (!cevap.ok) {
@@ -175,26 +175,29 @@ async function tekCagri (s, istek) {
 }
 
 /**
- * Calls the API, falling back to another model on 5xx.
+ * Walks the provider's (model, transport) list until one answers.
  *
- * Measured: a pinned lite model returned HTTP 500 "currently experiencing
- * high demand" while the account, key and request were all fine. That is
- * the provider being busy, not a bug to surface to the player — so try the
- * next model instead of going quiet.
+ * Both failure modes seen in practice are transient or per-model, not
+ * per-request: 503 "high demand" on a busy model, and 404 "no longer
+ * available to new users" on a retired one. Neither is worth surfacing to
+ * the player as long as some combination works.
+ *
+ * 4xx other than 404/429 stops the walk — that is our request being wrong,
+ * and another model will fail the same way.
  */
 async function apiCagir (s, istek) {
-  const modeller = [istek.model, ...(s.yedekModeller || [])]
+  const liste = s.denemeler(config.sohbetModeli)
   let sonHata
-  for (const model of modeller) {
+  for (const deneme of liste) {
     try {
-      return await tekCagri(s, { ...istek, model })
+      return await tekCagri(s, istek, deneme)
     } catch (err) {
       sonHata = err
-      // 5xx / 429 = busy on their side, try the next model.
-      // Other 4xx = our request is wrong; another model will not help.
-      if (!(err.durum >= 500 || err.durum === 429)) throw err
-      if (model !== modeller[modeller.length - 1]) {
-        log.uyari(`${model} mesgul (${err.durum}), yedek modele geciliyor`)
+      const gecici = err.durum >= 500 || err.durum === 429 || err.durum === 404 ||
+                     err.durum === undefined // timeout / network
+      if (!gecici) throw err
+      if (deneme !== liste[liste.length - 1]) {
+        log.uyari(`${deneme.model}/${deneme.tasiyici.ad} olmadi (${err.durum || 'zaman asimi'}), siradakine geciliyor`)
       }
     }
   }

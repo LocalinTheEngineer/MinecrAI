@@ -51,4 +51,21 @@ function baslik (config) {
   }
 }
 
-module.exports = { ad: 'anthropic', url, hazir, govde, coz, baslik, varsayilanModel: 'claude-haiku-4-5-20251001' }
+const VARSAYILAN = 'claude-haiku-4-5-20251001'
+
+// One endpoint, one model shape — but the same `denemeler` interface as the
+// Gemini provider so `beyin.js` does not need to know which one it holds.
+const tasiyici = { ad: 'messages', url, govde }
+
+function denemeler (istenenModel) {
+  return [{ model: istenenModel || VARSAYILAN, tasiyici }]
+}
+
+module.exports = {
+  ad: 'anthropic',
+  hazir,
+  coz,
+  baslik,
+  denemeler,
+  varsayilanModel: VARSAYILAN
+}

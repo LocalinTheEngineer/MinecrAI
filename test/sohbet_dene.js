@@ -67,8 +67,11 @@ async function main () {
     process.exit(1)
   }
 
-  const model = config.sohbetModeli || s.varsayilanModel
-  console.log(`\n=== 2. SAGLAYICI: ${s.ad}, model: ${model} ===`)
+  const denemeler = s.denemeler(config.sohbetModeli)
+  const model = denemeler[0].model
+  console.log(`\n=== 2. SAGLAYICI: ${s.ad} ===`)
+  console.log(`  ${denemeler.length} kombinasyon denenecek:`)
+  for (const d of denemeler) console.log(`    ${d.model} / ${d.tasiyici.ad}`)
 
   const istek = {
     model,
@@ -138,40 +141,36 @@ async function main () {
     }
   }
 
-  // Try the primary model then the fallbacks — the same thing the bot does.
-  // A diagnostic that tests one model while the bot tries three is testing
-  // the wrong program: it reported failure while the bot would have coped.
-  const denenecek = [model, ...(s.yedekModeller || []).filter((m) => m !== model)]
+  // Walk exactly the list the bot walks. A diagnostic that tests something
+  // else is testing the wrong program — this one reported failure while the
+  // bot would have coped, until it was fixed to match.
   console.log(`\n=== 4. ISTEK: "${mesaj}" ===`)
-  console.log('  Denenecek modeller:', denenecek.join(' -> '))
 
   let ham
   let calisan
-  for (const m of denenecek) {
-    process.stdout.write(`  ${m} ... `)
+  for (const d of denemeler) {
+    process.stdout.write(`  ${d.model} / ${d.tasiyici.ad} ... `)
+    const tam = { ...istek, model: d.model }
     try {
-      const cevap = await zamanliFetch(s.url({ ...istek, model: m }), {
+      const cevap = await zamanliFetch(d.tasiyici.url(tam), {
         method: 'POST',
         headers: s.baslik(config),
-        body: JSON.stringify(s.govde({ ...istek, model: m }))
+        body: JSON.stringify(d.tasiyici.govde(tam))
       }, 25000)
       const metin = await cevap.text()
       if (cevap.ok) {
         console.log('HTTP', cevap.status, '- CALISTI')
         ham = JSON.parse(metin)
-        calisan = m
+        calisan = d
         break
       }
       console.log('HTTP', cevap.status)
-      let sebep = metin.slice(0, 200).replace(/\s+/g, ' ')
+      let sebep = metin.slice(0, 300).replace(/\s+/g, ' ')
       try { sebep = JSON.parse(metin).error?.message || sebep } catch {}
       console.log(`      ${sebep}`)
-      if (cevap.status < 500 && cevap.status !== 429) {
-        // 4xx = bizim hatamiz, baska model denemek anlamsiz
-        console.log('\n  NE YAPMALI:')
-        if (cevap.status === 400) console.log('  Istek bicimi yanlis. Ciktiyi bana yapistir.')
-        if (cevap.status === 401 || cevap.status === 403) console.log('  Anahtar bu API icin gecersiz. Yeni anahtar al.')
-        if (cevap.status === 404) console.log(`  Model "${m}" bulunamadi.`)
+      if (cevap.status === 401 || cevap.status === 403) {
+        console.log('\n  NE YAPMALI: anahtar bu API icin gecersiz. Yeni anahtar al:')
+        console.log('  https://aistudio.google.com/apikey')
         process.exit(1)
       }
     } catch (err) {
@@ -180,16 +179,16 @@ async function main () {
   }
 
   if (!ham) {
-    console.log('\n  Hicbir model cevap vermedi.')
-    console.log('  503/429 = Google tarafi mesgul, senin kodunla ilgisi yok.')
-    console.log('  Birkac dakika sonra tekrar dene. Surekli oluyorsa .env dosyana')
-    console.log('  baska bir model yaz, ornegin:  SOHBET_MODELI=gemini-2.5-flash')
+    console.log('\n  Hicbir kombinasyon cevap vermedi.')
+    console.log('  503/429 = Google tarafi mesgul, kodunla ilgisi yok; sonra dene.')
+    console.log('  404 = o model artik yok. Yukaridaki "3b" listesinden birini sec')
+    console.log('  ve .env dosyana yaz, ornegin:  SOHBET_MODELI=gemini-flash-latest')
     process.exit(1)
   }
-  if (calisan !== model) {
-    console.log(`\n  NOT: "${model}" mesguldu, "${calisan}" calisti.`)
-    console.log(`  Bot da ayni sekilde yedege geciyor. Kalici yapmak istersen:`)
-    console.log(`  .env dosyana ekle ->  SOHBET_MODELI=${calisan}`)
+  if (calisan !== denemeler[0]) {
+    console.log(`\n  NOT: ilk secenek olmadi, "${calisan.model} / ${calisan.tasiyici.ad}" calisti.`)
+    console.log(`  Bot da ayni sirayi izliyor, yani sorun degil. Kalici yapmak istersen:`)
+    console.log(`  .env dosyana ekle ->  SOHBET_MODELI=${calisan.model}`)
   }
 
   console.log('\n=== 5. HAM CEVAP ===')

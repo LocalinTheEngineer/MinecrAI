@@ -2212,8 +2212,9 @@ async function main () {
       ]
     }
 
-    // --- Anthropic
-    const ag = anthropic.govde(istek)
+    // --- Anthropic: tek tasiyici
+    const ad = anthropic.denemeler()[0]
+    const ag = ad.tasiyici.govde({ ...istek, model: ad.model })
     if (ag.system !== 'SISTEM METNI') throw new Error('anthropic: sistem metni kayip')
     if (ag.messages.length !== 3) throw new Error('anthropic: gecmis kayip')
     if (ag.messages[1].role !== 'assistant') throw new Error('anthropic: bot rolu yanlis')
@@ -2228,34 +2229,74 @@ async function main () {
       throw new Error(`anthropic cozumleme: ${JSON.stringify(ac)}`)
     }
 
-    // --- Gemini
-    const gg = gemini.govde(istek)
-    if (gg.system_instruction.parts[0].text !== 'SISTEM METNI') {
-      throw new Error('gemini: sistem metni kayip')
+    // --- Gemini: IKI tasiyici, ikisi de dogru bicim uretmeli
+    const gi = gemini.TASIYICILAR.interactions
+    const gc2 = gemini.TASIYICILAR.generateContent
+
+    const bi = gi.govde({ ...istek, model: 'm' })
+    if (bi.system_instruction !== 'SISTEM METNI') throw new Error('interactions: sistem metni kayip')
+    if (bi.input.length !== 3 || bi.input[1].type !== 'model_response') {
+      throw new Error('interactions: gecmis/rol yanlis')
     }
-    if (gg.contents.length !== 3) throw new Error('gemini: gecmis kayip')
-    if (gg.contents[1].role !== 'model') throw new Error('gemini: bot rolu yanlis')
-    if (!gg.tools[0].function_declarations?.[0]?.parameters) {
-      throw new Error('gemini: arac bicimi yanlis')
+    if (bi.tools[0].type !== 'function') throw new Error('interactions: arac bicimi yanlis')
+
+    const bg = gc2.govde({ ...istek, model: 'm' })
+    if (bg.system_instruction.parts[0].text !== 'SISTEM METNI') {
+      throw new Error('generateContent: sistem metni kayip')
     }
-    // Model URL'de olmali, govdede degil
-    const u = gemini.url({ model: 'test-model' })
+    if (bg.contents.length !== 3 || bg.contents[1].role !== 'model') {
+      throw new Error('generateContent: gecmis/rol yanlis')
+    }
+    if (!bg.tools[0].function_declarations?.[0]?.parameters) {
+      throw new Error('generateContent: arac bicimi yanlis')
+    }
+    // Model URL'de olmali (generateContent), govdede degil
+    const u = gc2.url({ model: 'test-model' })
     if (!u.includes('test-model') || !u.endsWith(':generateContent')) {
-      throw new Error(`gemini url yanlis: ${u}`)
+      throw new Error(`generateContent url yanlis: ${u}`)
     }
-    const gc = gemini.coz({
+    if (gi.url({ model: 'test-model' }).includes('test-model')) {
+      throw new Error('interactions url modeli icermemeli')
+    }
+
+    // Tek cozumleyici IKI bicimi de okumali
+    const cozInter = gemini.coz({
+      steps: [
+        { type: 'function_call', name: 'k', arguments: { komut: 'uret', arguman: 'tas kazma' } },
+        { type: 'model_response', content: [{ type: 'text', text: 'Tamam.' }] }
+      ]
+    })
+    const cozGen = gemini.coz({
       candidates: [{
         content: {
-          role: 'model',
           parts: [
             { text: 'Tamam.' },
-            { functionCall: { name: 'komut_calistir', args: { komut: 'uret', arguman: 'tas kazma' } } }
+            { functionCall: { name: 'k', args: { komut: 'uret', arguman: 'tas kazma' } } }
           ]
         }
       }]
     })
-    if (gc.metin !== 'Tamam.' || gc.arac?.komut !== 'uret') {
-      throw new Error(`gemini cozumleme: ${JSON.stringify(gc)}`)
+    for (const [isim, c] of [['interactions', cozInter], ['generateContent', cozGen]]) {
+      if (c.metin !== 'Tamam.' || c.arac?.komut !== 'uret') {
+        throw new Error(`${isim} cozumleme: ${JSON.stringify(c)}`)
+      }
+    }
+  })
+
+  await dene('gemini: her model IKI tasiyiciyla da deneniyor', () => {
+    // Google'in hangi API'yi kabul ettigi anahtara ve modele gore degisti ve
+    // bu iki kez yanlis tahmine mal oldu (503, sonra "use the Interactions
+    // API" diyen bir 404). Secmek yerine ikisi de deneniyor.
+    const gemini = require('../bot/sohbet/saglayici/gemini')
+    const liste = gemini.denemeler()
+    const tasiyicilar = new Set(liste.map((d) => d.tasiyici.ad))
+    if (tasiyicilar.size < 2) throw new Error(`tek tasiyici deneniyor: ${[...tasiyicilar]}`)
+    if (liste.length < 4) throw new Error(`sadece ${liste.length} kombinasyon`)
+
+    // .env'de model verilmisse ONCE o denenmeli
+    const secili = gemini.denemeler('benim-modelim')
+    if (secili[0].model !== 'benim-modelim') {
+      throw new Error('kullanicinin sectigi model ilk sirada degil')
     }
   })
 
