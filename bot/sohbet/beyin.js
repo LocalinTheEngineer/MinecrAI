@@ -163,7 +163,7 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
 /**
  * One HTTP call for one (model, transport) pair.
  */
-async function tekCagri (s, istek, deneme) {
+async function tekCagri (s, istek, deneme, govde = null) {
   const kontrolcu = new AbortController()
   const saat = setTimeout(() => kontrolcu.abort(), ZAMAN_ASIMI_MS)
   const tam = { ...istek, model: deneme.model }
@@ -171,17 +171,43 @@ async function tekCagri (s, istek, deneme) {
     const cevap = await fetch(deneme.tasiyici.url(tam), {
       method: 'POST',
       headers: s.baslik(config),
-      body: JSON.stringify(deneme.tasiyici.govde(tam)),
+      body: JSON.stringify(govde || deneme.tasiyici.govde(tam)),
       signal: kontrolcu.signal
     })
     if (!cevap.ok) {
-      const hata = new Error(`HTTP ${cevap.status}: ${(await cevap.text()).slice(0, 200)}`)
+      const govdeMetni = (await cevap.text()).slice(0, 300)
+      const hata = new Error(`HTTP ${cevap.status}: ${govdeMetni}`)
       hata.durum = cevap.status
+      hata.metin = govdeMetni
       throw hata
     }
     return s.coz(await cevap.json())
   } finally {
     clearTimeout(saat)
+  }
+}
+
+/**
+ * One attempt, retried once without the thinking setting if that is what
+ * the API objected to.
+ *
+ * Which thinking levels a model accepts varies and the docs did not match
+ * reality: 'minimal' is documented for some models, and a live 400 said
+ * "'minimal' is not a supported thinking level for this model. Allowed
+ * values are: medium, low, high." Rather than keep a per-model table that
+ * will go stale, drop the field and try again — the request is still valid
+ * without it, just slower.
+ */
+async function tekCagriEsnek (s, istek, deneme) {
+  try {
+    return await tekCagri(s, istek, deneme)
+  } catch (err) {
+    const dusunmeHatasi = err.durum === 400 && /thinking/i.test(err.metin || '')
+    if (!dusunmeHatasi || typeof s.dusunmeyiCikar !== 'function') throw err
+
+    log.uyari(`${deneme.model}: dusunme ayari kabul edilmedi, onsuz deneniyor`)
+    const tam = { ...istek, model: deneme.model }
+    return tekCagri(s, istek, deneme, s.dusunmeyiCikar(deneme.tasiyici.govde(tam)))
   }
 }
 
@@ -254,7 +280,7 @@ async function apiCagir (s, istek) {
       break
     }
     try {
-      const sonuc = await tekCagri(s, istek, deneme)
+      const sonuc = await tekCagriEsnek(s, istek, deneme)
       if (!sonCalisan || sonCalisan.model !== deneme.model ||
           sonCalisan.tasiyici.ad !== deneme.tasiyici.ad) {
         tercihiYaz(deneme)

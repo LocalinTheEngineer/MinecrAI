@@ -2574,6 +2574,58 @@ async function main () {
     }
   })
 
+  await dene('sohbet: DUSUNME ayarini reddeden modeli onsuz tekrar deniyor', async () => {
+    // Gercek 400: "'minimal' is not a supported thinking level for this
+    // model. Allowed values are: medium, low, high." Belgeler bu modelde
+    // 'minimal' destekleniyor diyordu -- uyusmuyor. Model basina tablo
+    // tutmak yerine alani dusurup tekrar deniyoruz.
+    //
+    // 400 normalde kalici hata sayilip yuruyusu durduruyor; bu tek istisna.
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test'
+    beyin.gecmisiSil(); beyin.tercihiSifirla()
+
+    const gercekFetch = global.fetch
+    const govdeler = []
+    global.fetch = async (url, secenekler) => {
+      const govde = JSON.parse(secenekler.body)
+      govdeler.push(govde)
+      const ayar = govde.generation_config || govde.generationConfig || {}
+      if (ayar.thinking_level) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({
+            error: { message: "'low' is not a supported thinking level for this model." }
+          })
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: 'Tamam.' }] } }] })
+      }
+    }
+
+    try {
+      const sonuc = await beyin.yorumla(sahteBot(), 'p', 'selam')
+      if (!sonuc || sonuc.cevap !== 'Tamam.') {
+        throw new Error(`dusunme reddedilince pes etti: ${JSON.stringify(sonuc)}`)
+      }
+      if (govdeler.length !== 2) {
+        throw new Error(`${govdeler.length} istek atildi, 2 bekleniyordu`)
+      }
+      const ikinci = govdeler[1].generation_config || govdeler[1].generationConfig || {}
+      if (ikinci.thinking_level) throw new Error('ikinci istekte hala dusunme ayari var')
+    } finally {
+      global.fetch = gercekFetch
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
+      beyin.gecmisiSil(); beyin.tercihiSifirla()
+    }
+  })
+
   await dene('sohbet: API cokerse bot calismaya devam ediyor', async () => {
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')

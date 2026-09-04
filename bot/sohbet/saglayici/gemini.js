@@ -44,9 +44,14 @@ const interactions = {
     //
     // A successful reply came back with `total_thought_tokens: 400` — four
     // hundred tokens of reasoning to map one sentence onto a 13-item enum.
-    // That is most of the latency, and it is what made a 6s timeout cut off
-    // the combination that actually worked.
-    generation_config: { thinking_level: 'minimal' },
+    // That is most of the latency.
+    //
+    // 'low', not 'minimal': the docs list 'minimal' for some models, but a
+    // live 400 said otherwise — "'minimal' is not a supported thinking level
+    // for this model. Allowed values are: medium, low, high." 'low' is
+    // accepted everywhere seen so far, and `beyin.js` drops the field
+    // entirely if a model still rejects it.
+    generation_config: { thinking_level: 'low' },
     input: istek.mesajlar.map((m) => (
       m.rol === 'bot'
         ? { type: 'model_response', content: [{ type: 'text', text: m.metin }] }
@@ -79,12 +84,31 @@ const generateContent = {
     }],
     generationConfig: {
       maxOutputTokens: istek.maksToken,
-      thinking_level: 'minimal'
+      thinking_level: 'low'
     }
   })
 }
 
 const TASIYICILAR = { interactions, generateContent }
+
+/**
+ * Strip the thinking setting from a request body.
+ *
+ * Which thinking levels a model accepts varies and is not reliably
+ * documented — a live 400 contradicted the docs. Rather than maintain a
+ * per-model table that will go stale, `beyin.js` retries once without the
+ * field when a 400 complains about it.
+ */
+function dusunmeyiCikar (govde) {
+  const kopya = { ...govde }
+  for (const alan of ['generation_config', 'generationConfig']) {
+    if (!kopya[alan]) continue
+    const { thinking_level: _atilan, ...kalan } = kopya[alan]
+    if (Object.keys(kalan).length === 0) delete kopya[alan]
+    else kopya[alan] = kalan
+  }
+  return kopya
+}
 
 // ---------------------------------------------------------------- response
 
@@ -172,5 +196,6 @@ module.exports = {
   baslik,
   denemeler,
   TASIYICILAR,
+  dusunmeyiCikar,
   varsayilanModel: VARSAYILAN_MODELLER[0]
 }
