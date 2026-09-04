@@ -2230,17 +2230,29 @@ async function main () {
 
     // --- Gemini
     const gg = gemini.govde(istek)
-    if (gg.system_instruction !== 'SISTEM METNI') throw new Error('gemini: sistem metni kayip')
-    if (gg.input.length !== 3) throw new Error('gemini: gecmis kayip')
-    if (gg.input[1].type !== 'model_response') throw new Error('gemini: bot rolu yanlis')
-    if (gg.tools[0].type !== 'function' || !gg.tools[0].parameters) {
+    if (gg.system_instruction.parts[0].text !== 'SISTEM METNI') {
+      throw new Error('gemini: sistem metni kayip')
+    }
+    if (gg.contents.length !== 3) throw new Error('gemini: gecmis kayip')
+    if (gg.contents[1].role !== 'model') throw new Error('gemini: bot rolu yanlis')
+    if (!gg.tools[0].function_declarations?.[0]?.parameters) {
       throw new Error('gemini: arac bicimi yanlis')
     }
+    // Model URL'de olmali, govdede degil
+    const u = gemini.url({ model: 'test-model' })
+    if (!u.includes('test-model') || !u.endsWith(':generateContent')) {
+      throw new Error(`gemini url yanlis: ${u}`)
+    }
     const gc = gemini.coz({
-      steps: [
-        { type: 'function_call', name: 'komut_calistir', arguments: { komut: 'uret', arguman: 'tas kazma' } },
-        { type: 'model_response', content: [{ type: 'text', text: 'Tamam.' }] }
-      ]
+      candidates: [{
+        content: {
+          role: 'model',
+          parts: [
+            { text: 'Tamam.' },
+            { functionCall: { name: 'komut_calistir', args: { komut: 'uret', arguman: 'tas kazma' } } }
+          ]
+        }
+      }]
     })
     if (gc.metin !== 'Tamam.' || gc.arac?.komut !== 'uret') {
       throw new Error(`gemini cozumleme: ${JSON.stringify(gc)}`)
@@ -2255,10 +2267,10 @@ async function main () {
     const gemini = require('../bot/sohbet/saglayici/gemini')
 
     const bicimler = [
-      { steps: [{ type: 'function_call', name: 'k', args: { komut: 'kes' } }] },
-      { output_text: 'Selam.', steps: [] },
-      { steps: [{ type: 'model_response', content: [{ type: 'text', text: 'Selam.' }] }] },
-      { candidates: [{ content: { parts: [{ type: 'text', text: 'Selam.' }] } }] }
+      { candidates: [{ content: { parts: [{ functionCall: { name: 'k', args: { komut: 'kes' } } }] } }] },
+      { output_text: 'Selam.', candidates: [] },
+      { candidates: [{ content: { parts: [{ text: 'Selam.' }] } }] },
+      { steps: [{ type: 'model_response', content: [{ type: 'text', text: 'Selam.' }] }] }
     ]
     const sonuclar = bicimler.map((b) => gemini.coz(b))
     if (sonuclar[0].arac?.komut !== 'kes') throw new Error('args alani okunmadi')

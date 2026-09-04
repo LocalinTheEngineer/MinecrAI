@@ -10,6 +10,9 @@
 
 const API = 'https://api.anthropic.com/v1/messages'
 
+/** Same endpoint for every model — the model goes in the body. */
+function url () { return API }
+
 function hazir (config) {
   return Boolean(config.anthropicAnahtari)
 }
@@ -48,4 +51,4 @@ function baslik (config) {
   }
 }
 
-module.exports = { ad: 'anthropic', API, hazir, govde, coz, baslik, varsayilanModel: 'claude-haiku-4-5-20251001' }
+module.exports = { ad: 'anthropic', url, hazir, govde, coz, baslik, varsayilanModel: 'claude-haiku-4-5-20251001' }

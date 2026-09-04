@@ -157,7 +157,7 @@ async function tekCagri (s, istek) {
   const kontrolcu = new AbortController()
   const saat = setTimeout(() => kontrolcu.abort(), ZAMAN_ASIMI_MS)
   try {
-    const cevap = await fetch(s.API, {
+    const cevap = await fetch(s.url(istek), {
       method: 'POST',
       headers: s.baslik(config),
       body: JSON.stringify(s.govde(istek)),

@@ -1,60 +1,69 @@
 'use strict'
 
 /**
- * Google Gemini Interactions API sağlayıcısı.
+ * Google Gemini provider (generateContent).
  *
- * NEDEN VAR: Gemini'nin ücretsiz katmanı var. Bu proje bir öğrenci
- * portföyü; sohbet katmanının çalışması için kimsenin kredi kartı
- * girmek zorunda kalmaması gerekiyor.
+ * Gemini has a free tier, which is why it is the default: this is a student
+ * portfolio project and running it should not require a credit card.
  *
- * CEVAP ÇÖZÜMLEMESİ BİLEREK SAVUNMACI. Anthropic tarafında cevabın
- * şekli (`content: [{type:'text'|'tool_use'}]`) belgede net; Gemini'nin
- * Interactions API'sinde `steps` dizisinin metin bloklarını tam olarak
- * nasıl sardığını anahtar olmadan doğrulayamadım. Bu yüzden çözümleyici
- * belirli bir yolu varsaymak yerine yapıyı gezip nerede olursa olsun
- * `{type:'text'}` ve `{type:'function_call'}` bloklarını topluyor.
+ * Uses `generateContent`, not the newer Interactions API. Measured: the same
+ * key returned HTTP 200 on GET /models but the Interactions POST first
+ * answered 500 "high demand" and then stopped answering at all (20s timeout).
+ * `generateContent` is the long-standing endpoint and the one every Gemini
+ * example uses.
  *
- * Bu, tahmin edip yanılmaktan iyi: yanılırsam bot sessizce hiçbir şey
- * anlamaz ve sebebi görünmez olurdu.
+ * The response parser walks the structure for `text` and `functionCall`
+ * blocks rather than assuming a fixed path — see `topla`.
  */
 
-const API = 'https://generativelanguage.googleapis.com/v1beta/interactions'
+const KOK = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 function hazir (config) {
   return Boolean(config.geminiAnahtari)
 }
 
+/** The model goes in the URL for this API, not the body. */
+function url (istek) {
+  return `${KOK}/${encodeURIComponent(istek.model)}:generateContent`
+}
+
 function govde (istek) {
   return {
-    model: istek.model,
-    system_instruction: istek.sistem,
-    store: false,
-    input: istek.mesajlar.map((m) => (
-      m.rol === 'bot'
-        ? { type: 'model_response', content: [{ type: 'text', text: m.metin }] }
-        : { type: 'user_input', content: m.metin }
-    )),
+    system_instruction: { parts: [{ text: istek.sistem }] },
+    contents: istek.mesajlar.map((m) => ({
+      role: m.rol === 'bot' ? 'model' : 'user',
+      parts: [{ text: m.metin }]
+    })),
     tools: [{
-      type: 'function',
-      name: istek.arac.ad,
-      description: istek.arac.aciklama,
-      parameters: istek.arac.sema
-    }]
+      function_declarations: [{
+        name: istek.arac.ad,
+        description: istek.arac.aciklama,
+        parameters: istek.arac.sema
+      }]
+    }],
+    generationConfig: { maxOutputTokens: istek.maksToken }
   }
 }
 
-/** Yapıyı gezip metin ve fonksiyon çağrısı bloklarını toplar. */
+/**
+ * Collect text and function-call blocks wherever they sit.
+ *
+ * Defensive on purpose: response nesting differs between API versions and a
+ * wrong assumption here means a bot that silently understands nothing.
+ */
 function topla (dugum, bulunan, derinlik = 0) {
-  if (!dugum || derinlik > 6) return bulunan
+  if (!dugum || derinlik > 8) return bulunan
   if (Array.isArray(dugum)) {
     for (const d of dugum) topla(d, bulunan, derinlik + 1)
     return bulunan
   }
   if (typeof dugum !== 'object') return bulunan
 
-  if (dugum.type === 'function_call' && dugum.name) {
+  if (dugum.functionCall && dugum.functionCall.name) {
+    bulunan.araclar.push(dugum.functionCall.args || {})
+  } else if (dugum.type === 'function_call' && dugum.name) {
     bulunan.araclar.push(dugum.arguments || dugum.args || {})
-  } else if (dugum.type === 'text' && typeof dugum.text === 'string') {
+  } else if (typeof dugum.text === 'string' && !dugum.functionCall) {
     bulunan.metinler.push(dugum.text)
   }
   for (const deger of Object.values(dugum)) {
@@ -64,8 +73,7 @@ function topla (dugum, bulunan, derinlik = 0) {
 }
 
 function coz (cevap) {
-  const bulunan = topla(cevap?.steps ?? cevap, { metinler: [], araclar: [] })
-  // `output_text` varsa güvenilir bir kısayol — ama tek kaynak değil
+  const bulunan = topla(cevap?.candidates ?? cevap, { metinler: [], araclar: [] })
   const metin = (typeof cevap?.output_text === 'string' && cevap.output_text.trim())
     ? cevap.output_text.trim()
     : bulunan.metinler.join(' ').trim()
@@ -79,17 +87,14 @@ function baslik (config) {
   }
 }
 
-// `-latest` alias rather than a pinned version: measured HTTP 500 "currently
-// experiencing high demand" on a pinned lite model while the alias served
-// fine. Google routes the alias to whatever is healthy.
 module.exports = {
   ad: 'gemini',
-  API,
+  url,
   hazir,
   govde,
   coz,
   baslik,
   varsayilanModel: 'gemini-flash-lite-latest',
-  // Tried in order when the model returns 5xx (overloaded, not our bug).
+  // Tried in order when a model returns 5xx (busy, not our bug).
   yedekModeller: ['gemini-2.5-flash-lite', 'gemini-2.5-flash']
 }

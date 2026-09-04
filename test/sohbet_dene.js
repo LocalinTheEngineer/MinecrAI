@@ -81,7 +81,7 @@ async function main () {
 
   // --- 3a. Once BAGLANTI, sonra anahtar, sonra istek. Sirayla daralt.
   console.log('\n=== 3. BAGLANTI ===')
-  const hedef = new URL(s.API).origin
+  const hedef = new URL(s.url(istek)).origin
   try {
     await zamanliFetch(hedef, { method: 'HEAD' }, 8000)
     console.log(`  ${hedef} erisilebilir.`)
@@ -110,13 +110,28 @@ async function main () {
         process.exit(1)
       }
       const liste = JSON.parse(g).models || []
-      const adlar = liste.map((m) => (m.name || '').replace('models/', ''))
-      console.log(`  Anahtar GECERLI. ${adlar.length} model erisilebilir.`)
-      const uygun = adlar.filter((a) => /flash|lite/.test(a)).slice(0, 8)
-      if (uygun.length) console.log('  Ornekler:', uygun.join(', '))
-      if (adlar.length && !adlar.includes(model)) {
+      const ad = (m) => (m.name || '').replace('models/', '')
+      const destekli = (m) => m.supportedGenerationMethods || m.supported_generation_methods || []
+      console.log(`  Anahtar GECERLI. ${liste.length} model erisilebilir.`)
+
+      // generateContent DESTEKLEYENLER — asil onemli olan bu.
+      // Bir model listede olabilir ama bu yontemi desteklemiyor olabilir;
+      // o zaman istek ya garip bir hata verir ya da hic cevap vermez.
+      const uygun = liste.filter((m) => destekli(m).includes('generateContent')).map(ad)
+      const ornek = uygun.filter((a) => /flash|lite/.test(a) && !/image|tts|audio|live/.test(a))
+      console.log(`  generateContent destekleyen: ${uygun.length} model`)
+      if (ornek.length) console.log('  Uygun ornekler:', ornek.slice(0, 6).join(', '))
+
+      const secili = liste.find((m) => ad(m) === model)
+      if (!secili) {
         console.log(`\n  DIKKAT: "${model}" listede YOK.`)
-        console.log(`  .env dosyana su satiri ekle:  SOHBET_MODELI=${uygun[0] || adlar[0]}`)
+        console.log(`  .env dosyana ekle:  SOHBET_MODELI=${ornek[0] || uygun[0]}`)
+      } else if (!destekli(secili).includes('generateContent')) {
+        console.log(`\n  DIKKAT: "${model}" generateContent DESTEKLEMIYOR.`)
+        console.log(`  Destekledikleri: ${destekli(secili).join(', ') || '(bilinmiyor)'}`)
+        console.log(`  .env dosyana ekle:  SOHBET_MODELI=${ornek[0] || uygun[0]}`)
+      } else {
+        console.log(`  "${model}" generateContent destekliyor.`)
       }
     } catch (err) {
       console.log('  Model listesi alinamadi:', err.message)
@@ -127,7 +142,7 @@ async function main () {
 
   let ham
   try {
-    const cevap = await zamanliFetch(s.API, {
+    const cevap = await zamanliFetch(s.url(istek), {
       method: 'POST',
       headers: s.baslik(config),
       body: JSON.stringify(s.govde(istek))
