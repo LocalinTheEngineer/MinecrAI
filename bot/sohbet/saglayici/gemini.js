@@ -139,12 +139,20 @@ function denemeler (istenenModel) {
   return cikti
 }
 
-// Google's own 404 message points at 3.5; the `-latest` aliases are the
-// safety net for when that one is busy.
+// ORDER IS MEASURED, NOT ASSUMED.
+//
+// Google's 404 message recommends `gemini-3.5-flash-lite`, so that led the
+// list at first. On a free-tier key it — and every other *lite* model —
+// answered 503 "high demand" or timed out, while `gemini-flash-latest`
+// answered immediately. Plausible reason: everyone defaults to the lite
+// models, so they are the contended ones.
+//
+// The one that actually answers goes first. The lite models stay as
+// fallbacks because they are cheaper when they are free.
 const VARSAYILAN_MODELLER = [
+  'gemini-flash-latest',
   'gemini-3.5-flash-lite',
-  'gemini-flash-lite-latest',
-  'gemini-flash-latest'
+  'gemini-flash-lite-latest'
 ]
 
 module.exports = {

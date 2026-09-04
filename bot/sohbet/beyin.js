@@ -23,6 +23,8 @@
  * API anahtarı olmadan da her şeyi çalıştırabilmesi gerekiyor.
  */
 
+const fs = require('fs')
+const path = require('path')
 const config = require('../config')
 const log = require('../utils/log')
 const { aracTanimi, komutSatiri } = require('./araclar')
@@ -35,9 +37,12 @@ const GECMIS_SINIRI = 6      // 3 tur (soru + cevap)
 // Oyuncu başına son çağrı zamanı — chat'i spam'leyen biri fatura üretmesin
 const sonCagri = new Map()
 
-const ZAMAN_ASIMI_MS = 12000
-// Butun denemeler icin toplam butce. Bir sohbet cevabi dakikalarca surmemeli.
-const TOPLAM_SURE_MS = 25000
+// PER-ATTEMPT timeout. Measured in game: at 12s two dead combinations ate
+// the whole budget and the walk never reached the one that works. A busy
+// model fails fast or not at all — waiting longer does not help it.
+const ZAMAN_ASIMI_MS = 6000
+// Budget for the whole walk. A chat reply that takes a minute is not a reply.
+const TOPLAM_SURE_MS = 30000
 
 /** Hangi sağlayıcı kullanılacak? Anahtar yoksa null. */
 function saglayici () {
@@ -176,17 +181,47 @@ async function tekCagri (s, istek, deneme) {
   }
 }
 
-// Which (model, transport) answered last. Measured: on a free-tier key four
-// of six combinations returned 503/500/timeout before one worked — walking
-// that list on every message would put ~40s in front of every chat reply.
-// One success is worth remembering; if it later goes busy the walk resumes.
+/**
+ * Which (model, transport) answered last — remembered ACROSS RESTARTS.
+ *
+ * Measured on a free-tier key: four of six combinations returned
+ * 503/500/timeout before one worked. Re-walking that list puts tens of
+ * seconds in front of a chat reply, and the bot gets restarted constantly
+ * during development, so an in-memory cache alone was not enough — the
+ * first message after every restart paid the full walk.
+ *
+ * The file is a hint, not state: if the remembered choice fails the walk
+ * resumes normally and the file is rewritten.
+ */
+const TERCIH_DOSYASI = path.join(__dirname, '..', '..', '.sohbet_tercihi.json')
 let sonCalisan = null
+
+function tercihiOku () {
+  try {
+    const kayit = JSON.parse(fs.readFileSync(TERCIH_DOSYASI, 'utf8'))
+    if (kayit && kayit.model && kayit.tasiyici) return kayit
+  } catch { /* dosya yok ya da bozuk — onemli degil */ }
+  return null
+}
+
+function tercihiYaz (deneme) {
+  try {
+    fs.writeFileSync(TERCIH_DOSYASI, JSON.stringify({
+      model: deneme.model,
+      tasiyici: deneme.tasiyici.ad,
+      tarih: new Date().toISOString()
+    }, null, 2))
+  } catch (err) {
+    log.uyari(`Sohbet tercihi yazilamadi: ${err.message}`)
+  }
+}
 
 /** Put the last known-good attempt first. */
 function sirala (liste) {
-  if (!sonCalisan) return liste
-  const i = liste.findIndex(
-    (d) => d.model === sonCalisan.model && d.tasiyici.ad === sonCalisan.tasiyici.ad)
+  const tercih = sonCalisan || tercihiOku()
+  if (!tercih) return liste
+  const ad = tercih.tasiyici.ad || tercih.tasiyici   // bellek | dosya
+  const i = liste.findIndex((d) => d.model === tercih.model && d.tasiyici.ad === ad)
   if (i <= 0) return liste
   return [liste[i], ...liste.slice(0, i), ...liste.slice(i + 1)]
 }
@@ -216,6 +251,10 @@ async function apiCagir (s, istek) {
     }
     try {
       const sonuc = await tekCagri(s, istek, deneme)
+      if (!sonCalisan || sonCalisan.model !== deneme.model ||
+          sonCalisan.tasiyici.ad !== deneme.tasiyici.ad) {
+        tercihiYaz(deneme)
+      }
       sonCalisan = deneme
       return sonuc
     } catch (err) {
@@ -234,7 +273,10 @@ async function apiCagir (s, istek) {
 }
 
 /** Tests reset the remembered choice. */
-function tercihiSifirla () { sonCalisan = null }
+function tercihiSifirla () {
+  sonCalisan = null
+  try { fs.unlinkSync(TERCIH_DOSYASI) } catch { /* zaten yok */ }
+}
 
 function gecmisiSil (oyuncu) {
   if (oyuncu) gecmisler.delete(oyuncu)

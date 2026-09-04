@@ -2516,6 +2516,64 @@ async function main () {
     }
   })
 
+  await dene('sohbet: tercih YENIDEN BASLATMADAN sonra da hatirlaniyor', async () => {
+    // Bellekteki tercih tek basina yetmiyordu: bot gelistirme sirasinda
+    // surekli yeniden baslatiliyor ve her baslatmadan sonraki ILK mesaj
+    // butun listeyi bastan yuruyordu. Oyunda olculdu: 12 saniyelik iki olu
+    // deneme butceyi bitirdi ve calisan kombinasyona hic sira gelmedi.
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test'
+    beyin.gecmisiSil(); beyin.tercihiSifirla()
+
+    const gercekFetch = global.fetch
+    const gorulen = []
+    const basarisiz = new Set()
+    global.fetch = async (url, secenekler) => {
+      const govde = JSON.parse(secenekler.body)
+      const model = govde.model || url.split('/').pop().split(':')[0]
+      const kimlik = `${model}@${url}`
+      gorulen.push(kimlik)
+      if (basarisiz.has(kimlik)) return { ok: false, status: 503, text: async () => 'busy' }
+      if (basarisiz.size < 2) {
+        basarisiz.add(kimlik)
+        return { ok: false, status: 503, text: async () => 'busy' }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: 'Tamam.' }] } }] })
+      }
+    }
+
+    try {
+      await beyin.yorumla(sahteBot(), 'p1', 'selam')
+      const calisan = gorulen[gorulen.length - 1]
+
+      // YENIDEN BASLATMA benzetimi: modulu bellekten at, bastan yukle.
+      // Dosyaya yazilmadiysa yeni ornek hicbir sey hatirlamaz.
+      delete require.cache[require.resolve('../bot/sohbet/beyin')]
+      const yeniBeyin = require('../bot/sohbet/beyin')
+
+      gorulen.length = 0
+      await yeniBeyin.yorumla(sahteBot(), 'p2', 'selam')
+
+      if (gorulen.length !== 1) {
+        throw new Error(
+          `yeniden baslatmadan sonra ${gorulen.length} istek atti — tercih diske yazilmamis`)
+      }
+      if (gorulen[0] !== calisan) {
+        throw new Error(`yanlis kombinasyonla basladi: ${gorulen[0]}`)
+      }
+    } finally {
+      global.fetch = gercekFetch
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
+      delete require.cache[require.resolve('../bot/sohbet/beyin')]
+      require('../bot/sohbet/beyin').tercihiSifirla()
+    }
+  })
+
   await dene('sohbet: API cokerse bot calismaya devam ediyor', async () => {
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')

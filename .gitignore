@@ -166,3 +166,6 @@ BASLAT.md
 
 # Ham video kayitlari — GIF uretildikten sonra repoya girmesine gerek yok
 docs/ham/
+
+# Sohbet katmaninin hatirladigi model/tasiyici tercihi (makineye ozel)
+.sohbet_tercihi.json
