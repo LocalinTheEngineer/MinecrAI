@@ -52,9 +52,12 @@ const interactions = {
     // accepted everywhere seen so far, and `beyin.js` drops the field
     // entirely if a model still rejects it.
     generation_config: { thinking_level: 'low' },
+    // 'model_output', not 'model_response': the docs example showed the
+    // latter, a live 400 listed the former among supported values. The
+    // user turn was accepted either way — only the assistant turn was wrong.
     input: istek.mesajlar.map((m) => (
       m.rol === 'bot'
-        ? { type: 'model_response', content: [{ type: 'text', text: m.metin }] }
+        ? { type: 'model_output', content: [{ type: 'text', text: m.metin }] }
         : { type: 'user_input', content: m.metin }
     )),
     tools: [{
@@ -92,22 +95,51 @@ const generateContent = {
 const TASIYICILAR = { interactions, generateContent }
 
 /**
- * Strip the thinking setting from a request body.
+ * Progressive simplifications, applied in order when the API returns 400.
  *
- * Which thinking levels a model accepts varies and is not reliably
- * documented — a live 400 contradicted the docs. Rather than maintain a
- * per-model table that will go stale, `beyin.js` retries once without the
- * field when a 400 complains about it.
+ * THE DOCS AND THE LIVE API DISAGREED THREE TIMES on this integration:
+ * which endpoint to use, which thinking levels exist, and how to encode an
+ * assistant turn. Each time the fix was a one-word change discoverable only
+ * by sending a request.
+ *
+ * So rather than a per-model table that goes stale, the request degrades:
+ * drop the optional part the API objected to and send it again. Every step
+ * still produces a valid request — just a less capable one. The bot answers
+ * with a stale thinking setting or without conversation history far more
+ * usefully than it refuses to answer at all.
  */
-function dusunmeyiCikar (govde) {
-  const kopya = { ...govde }
-  for (const alan of ['generation_config', 'generationConfig']) {
-    if (!kopya[alan]) continue
-    const { thinking_level: _atilan, ...kalan } = kopya[alan]
-    if (Object.keys(kalan).length === 0) delete kopya[alan]
-    else kopya[alan] = kalan
+const BASITLESTIRMELER = [
+  {
+    ad: 'dusunme ayari',
+    esles: /thinking/i,
+    uygula (govde) {
+      const kopya = { ...govde }
+      for (const alan of ['generation_config', 'generationConfig']) {
+        if (!kopya[alan]) continue
+        const { thinking_level: _atilan, ...kalan } = kopya[alan]
+        if (Object.keys(kalan).length === 0) delete kopya[alan]
+        else kopya[alan] = kalan
+      }
+      return kopya
+    }
+  },
+  {
+    ad: 'konusma gecmisi',
+    esles: /input\[|contents\[|not supported for/i,
+    uygula (govde) {
+      const kopya = { ...govde }
+      // Keep only the last user turn. History is a convenience ("three more
+      // please"); answering at all is not.
+      if (Array.isArray(kopya.input)) kopya.input = kopya.input.slice(-1)
+      if (Array.isArray(kopya.contents)) kopya.contents = kopya.contents.slice(-1)
+      return kopya
+    }
   }
-  return kopya
+]
+
+/** Backwards-compatible single-step helper (used by older callers/tests). */
+function dusunmeyiCikar (govde) {
+  return BASITLESTIRMELER[0].uygula(govde)
 }
 
 // ---------------------------------------------------------------- response
@@ -197,5 +229,6 @@ module.exports = {
   denemeler,
   TASIYICILAR,
   dusunmeyiCikar,
+  BASITLESTIRMELER,
   varsayilanModel: VARSAYILAN_MODELLER[0]
 }

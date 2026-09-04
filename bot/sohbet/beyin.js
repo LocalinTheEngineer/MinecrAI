@@ -188,26 +188,36 @@ async function tekCagri (s, istek, deneme, govde = null) {
 }
 
 /**
- * One attempt, retried once without the thinking setting if that is what
- * the API objected to.
+ * One attempt, degrading the request if the API rejects part of it.
  *
- * Which thinking levels a model accepts varies and the docs did not match
- * reality: 'minimal' is documented for some models, and a live 400 said
- * "'minimal' is not a supported thinking level for this model. Allowed
- * values are: medium, low, high." Rather than keep a per-model table that
- * will go stale, drop the field and try again — the request is still valid
- * without it, just slower.
+ * A 400 normally means our request is wrong and no retry helps. The
+ * exception is a 400 about an OPTIONAL field: the provider lists
+ * simplifications (see gemini.js `BASITLESTIRMELER`), each dropping one
+ * optional part. Every step is still a valid request — the bot answers
+ * without conversation history far more usefully than it refuses to answer.
+ *
+ * Measured three separate times that the docs and the live API disagreed on
+ * exactly such a field: which endpoint, which thinking levels, and how to
+ * encode an assistant turn.
  */
 async function tekCagriEsnek (s, istek, deneme) {
-  try {
-    return await tekCagri(s, istek, deneme)
-  } catch (err) {
-    const dusunmeHatasi = err.durum === 400 && /thinking/i.test(err.metin || '')
-    if (!dusunmeHatasi || typeof s.dusunmeyiCikar !== 'function') throw err
+  const tam = { ...istek, model: deneme.model }
+  let govde = deneme.tasiyici.govde(tam)
+  const kalan = [...(s.BASITLESTIRMELER || [])]
 
-    log.uyari(`${deneme.model}: dusunme ayari kabul edilmedi, onsuz deneniyor`)
-    const tam = { ...istek, model: deneme.model }
-    return tekCagri(s, istek, deneme, s.dusunmeyiCikar(deneme.tasiyici.govde(tam)))
+  for (;;) {
+    try {
+      return await tekCagri(s, istek, deneme, govde)
+    } catch (err) {
+      if (err.durum !== 400) throw err
+
+      const i = kalan.findIndex((b) => b.esles.test(err.metin || ''))
+      if (i === -1) throw err
+
+      const [secilen] = kalan.splice(i, 1)
+      log.uyari(`${deneme.model}: "${secilen.ad}" kabul edilmedi, onsuz deneniyor`)
+      govde = secilen.uygula(govde)
+    }
   }
 }
 
@@ -302,6 +312,15 @@ async function apiCagir (s, istek) {
   throw sonHata || new Error('sure butcesi doldu')
 }
 
+/**
+ * Clear the per-player rate-limit stamps.
+ *
+ * Only tests need this: two messages from one player in the same tick are
+ * exactly what the limiter exists to stop, but a test that wants to build
+ * up conversation history has to send them back to back.
+ */
+function hizSinirlariniSifirla () { sonCagri.clear() }
+
 /** Tests reset the remembered choice. */
 function tercihiSifirla () {
   sonCalisan = null
@@ -314,5 +333,6 @@ function gecmisiSil (oyuncu) {
 }
 
 module.exports = {
-  yorumla, acik, saglayici, gecmisiSil, tercihiSifirla, durumOzeti, sistemMetni
+  yorumla, acik, saglayici, gecmisiSil, tercihiSifirla, hizSinirlariniSifirla,
+  durumOzeti, sistemMetni
 }

@@ -2235,7 +2235,7 @@ async function main () {
 
     const bi = gi.govde({ ...istek, model: 'm' })
     if (bi.system_instruction !== 'SISTEM METNI') throw new Error('interactions: sistem metni kayip')
-    if (bi.input.length !== 3 || bi.input[1].type !== 'model_response') {
+    if (bi.input.length !== 3 || bi.input[1].type !== 'model_output') {
       throw new Error('interactions: gecmis/rol yanlis')
     }
     if (bi.tools[0].type !== 'function') throw new Error('interactions: arac bicimi yanlis')
@@ -2574,13 +2574,15 @@ async function main () {
     }
   })
 
-  await dene('sohbet: DUSUNME ayarini reddeden modeli onsuz tekrar deniyor', async () => {
-    // Gercek 400: "'minimal' is not a supported thinking level for this
-    // model. Allowed values are: medium, low, high." Belgeler bu modelde
-    // 'minimal' destekleniyor diyordu -- uyusmuyor. Model basina tablo
-    // tutmak yerine alani dusurup tekrar deniyoruz.
+  await dene('sohbet: reddedilen ISTEGE GORE basitlestirip devam ediyor', async () => {
+    // Belgeler ile canli API bu entegrasyonda UC KEZ ayrildi: hangi uc
+    // nokta, hangi dusunme seviyeleri, ve bot turunun nasil kodlandigi.
+    // Her seferinde tek kelimelik bir fark ve ancak istek atarak bulunuyor.
     //
-    // 400 normalde kalici hata sayilip yuruyusu durduruyor; bu tek istisna.
+    // Model basina tablo tutmak yerine istek KADEMELI OLARAK sadelesiyor:
+    // API neye itiraz ettiyse o istege bagli opsiyonel parca dusuruluyor.
+    // Her adim hala gecerli bir istek -- bot gecmissiz cevap verir, hic
+    // cevap vermemekten iyidir.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
     const eski = [config.geminiAnahtari, config.anthropicAnahtari]
@@ -2593,32 +2595,81 @@ async function main () {
       const govde = JSON.parse(secenekler.body)
       govdeler.push(govde)
       const ayar = govde.generation_config || govde.generationConfig || {}
+      // 1. itiraz: dusunme ayari
       if (ayar.thinking_level) {
-        return {
-          ok: false,
-          status: 400,
-          text: async () => JSON.stringify({
-            error: { message: "'low' is not a supported thinking level for this model." }
-          })
-        }
+        return { ok: false, status: 400, text: async () => JSON.stringify({
+          error: { message: "'low' is not a supported thinking level for this model." }
+        }) }
       }
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ candidates: [{ content: { parts: [{ text: 'Tamam.' }] } }] })
+      // 2. itiraz: gecmisteki bot turu
+      const girdi = govde.input || govde.contents || []
+      if (girdi.length > 1) {
+        return { ok: false, status: 400, text: async () => JSON.stringify({
+          error: { message: "The value 'model_output' is not supported for 'type' at 'input[1]'." }
+        }) }
       }
+      return { ok: true, status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: 'Tamam.' }] } }] }) }
     }
 
     try {
-      const sonuc = await beyin.yorumla(sahteBot(), 'p', 'selam')
+      const b = sahteBot()
+      // AYNI oyuncu: gecmis oyuncu basina tutuluyor. Ilk yazisimda iki
+      // farkli ad kullanmisim, yani gecmis hic olusmadi ve test ikinci
+      // basitlestirmeyi hic denemedi -- sabotaji yakalayamadi.
+      await beyin.yorumla(b, 'ayni', 'selam')
+      // Hiz siniri oyuncu basina 2 saniye; test arka arkaya iki mesaj
+      // gonderdigi icin sifirlaniyor. (Ilk yazisimda iki FARKLI oyuncu
+      // adi kullanmistim -- sinir asilmiyordu ama gecmis de olusmuyordu,
+      // yani test ikinci basitlestirmeyi hic denemiyordu.)
+      beyin.hizSinirlariniSifirla()
+      govdeler.length = 0
+      const sonuc = await beyin.yorumla(b, 'ayni', 'ikinci mesaj')
+
+      const ilkGirdi = govdeler[0].input || govdeler[0].contents || []
+      if (ilkGirdi.length < 2) {
+        throw new Error('test kurulumu bozuk: gecmis olusmamis')
+      }
+
       if (!sonuc || sonuc.cevap !== 'Tamam.') {
-        throw new Error(`dusunme reddedilince pes etti: ${JSON.stringify(sonuc)}`)
+        throw new Error(`iki itiraz sonrasi pes etti: ${JSON.stringify(sonuc)}`)
       }
-      if (govdeler.length !== 2) {
-        throw new Error(`${govdeler.length} istek atildi, 2 bekleniyordu`)
+      const son = govdeler[govdeler.length - 1]
+      const sonAyar = son.generation_config || son.generationConfig || {}
+      if (sonAyar.thinking_level) throw new Error('son istekte hala dusunme ayari var')
+      const sonGirdi = son.input || son.contents || []
+      if (sonGirdi.length !== 1) {
+        throw new Error(`son istekte ${sonGirdi.length} girdi var, gecmis dusurulmemis`)
       }
-      const ikinci = govdeler[1].generation_config || govdeler[1].generationConfig || {}
-      if (ikinci.thinking_level) throw new Error('ikinci istekte hala dusunme ayari var')
+    } finally {
+      global.fetch = gercekFetch
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
+      beyin.gecmisiSil(); beyin.tercihiSifirla()
+    }
+  })
+
+  await dene('sohbet: bilinmeyen 400 SESSIZCE dongude kalmiyor', async () => {
+    // Basitlestirme zinciri esles etmeyen bir 400'de durmali; yoksa
+    // sonsuz donguye girer.
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test'
+    beyin.gecmisiSil(); beyin.tercihiSifirla()
+
+    const gercekFetch = global.fetch
+    let sayac = 0
+    global.fetch = async () => {
+      sayac++
+      if (sayac > 200) throw new Error('SONSUZ DONGU')
+      return { ok: false, status: 400, text: async () => '{"error":{"message":"tamamen baska bir sey"}}' }
+    }
+    try {
+      const sonuc = await beyin.yorumla(sahteBot(), 'p', 'selam')
+      if (sonuc !== null) throw new Error('bilinmeyen 400de cevap uretti')
+      // 6 kombinasyon x en fazla 3 basitlestirme adimi = 18 ust sinir.
+      // Guard kalkarsa ayni deneme sonsuza kadar tekrarlanir ve bu asilir.
+      if (sayac > 18) throw new Error(`${sayac} istek atti — dongude kalmis`)
     } finally {
       global.fetch = gercekFetch
       ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
