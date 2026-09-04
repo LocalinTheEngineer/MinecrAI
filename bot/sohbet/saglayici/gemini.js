@@ -94,7 +94,9 @@ module.exports = {
   govde,
   coz,
   baslik,
-  varsayilanModel: 'gemini-flash-lite-latest',
-  // Tried in order when a model returns 5xx (busy, not our bug).
-  yedekModeller: ['gemini-2.5-flash-lite', 'gemini-2.5-flash']
+  // Measured on a free-tier key: `gemini-flash-lite-latest` returned 503
+  // "high demand" repeatedly. The pinned 2.5 models are less contended.
+  varsayilanModel: 'gemini-2.5-flash-lite',
+  // Tried in order when a model returns 5xx or 429 (busy, not our bug).
+  yedekModeller: ['gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-flash-latest']
 }

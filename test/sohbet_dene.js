@@ -138,32 +138,58 @@ async function main () {
     }
   }
 
+  // Try the primary model then the fallbacks — the same thing the bot does.
+  // A diagnostic that tests one model while the bot tries three is testing
+  // the wrong program: it reported failure while the bot would have coped.
+  const denenecek = [model, ...(s.yedekModeller || []).filter((m) => m !== model)]
   console.log(`\n=== 4. ISTEK: "${mesaj}" ===`)
+  console.log('  Denenecek modeller:', denenecek.join(' -> '))
 
   let ham
-  try {
-    const cevap = await zamanliFetch(s.url(istek), {
-      method: 'POST',
-      headers: s.baslik(config),
-      body: JSON.stringify(s.govde(istek))
-    }, 20000)
-    const metin = await cevap.text()
-    console.log('  HTTP', cevap.status)
-    if (!cevap.ok) {
-      console.log('\n  SUNUCU CEVABI:')
-      console.log('  ' + metin.slice(0, 1200).replace(/\n/g, '\n  '))
-      console.log('\n  NE YAPMALI:')
-      if (cevap.status === 400) console.log('  400 = istek bicimi yanlis. Cikti bana yapistir.')
-      if (cevap.status === 401 || cevap.status === 403) console.log('  Anahtar gecersiz ya da yetkisi yok. Yeni anahtar al.')
-      if (cevap.status === 404) console.log(`  Model "${model}" bulunamadi. .env'e SOHBET_MODELI=<baska model> yaz.`)
-      if (cevap.status === 429) console.log('  Ucretsiz kota doldu. Birkaç dakika bekle.')
-      process.exit(1)
+  let calisan
+  for (const m of denenecek) {
+    process.stdout.write(`  ${m} ... `)
+    try {
+      const cevap = await zamanliFetch(s.url({ ...istek, model: m }), {
+        method: 'POST',
+        headers: s.baslik(config),
+        body: JSON.stringify(s.govde({ ...istek, model: m }))
+      }, 25000)
+      const metin = await cevap.text()
+      if (cevap.ok) {
+        console.log('HTTP', cevap.status, '- CALISTI')
+        ham = JSON.parse(metin)
+        calisan = m
+        break
+      }
+      console.log('HTTP', cevap.status)
+      let sebep = metin.slice(0, 200).replace(/\s+/g, ' ')
+      try { sebep = JSON.parse(metin).error?.message || sebep } catch {}
+      console.log(`      ${sebep}`)
+      if (cevap.status < 500 && cevap.status !== 429) {
+        // 4xx = bizim hatamiz, baska model denemek anlamsiz
+        console.log('\n  NE YAPMALI:')
+        if (cevap.status === 400) console.log('  Istek bicimi yanlis. Ciktiyi bana yapistir.')
+        if (cevap.status === 401 || cevap.status === 403) console.log('  Anahtar bu API icin gecersiz. Yeni anahtar al.')
+        if (cevap.status === 404) console.log(`  Model "${m}" bulunamadi.`)
+        process.exit(1)
+      }
+    } catch (err) {
+      console.log('HATA -', err.message)
     }
-    ham = JSON.parse(metin)
-  } catch (err) {
-    console.log('  AG HATASI:', err.message)
-    console.log('\n  Internet baglantisi ya da guvenlik duvari engelliyor olabilir.')
+  }
+
+  if (!ham) {
+    console.log('\n  Hicbir model cevap vermedi.')
+    console.log('  503/429 = Google tarafi mesgul, senin kodunla ilgisi yok.')
+    console.log('  Birkac dakika sonra tekrar dene. Surekli oluyorsa .env dosyana')
+    console.log('  baska bir model yaz, ornegin:  SOHBET_MODELI=gemini-2.5-flash')
     process.exit(1)
+  }
+  if (calisan !== model) {
+    console.log(`\n  NOT: "${model}" mesguldu, "${calisan}" calisti.`)
+    console.log(`  Bot da ayni sekilde yedege geciyor. Kalici yapmak istersen:`)
+    console.log(`  .env dosyana ekle ->  SOHBET_MODELI=${calisan}`)
   }
 
   console.log('\n=== 5. HAM CEVAP ===')

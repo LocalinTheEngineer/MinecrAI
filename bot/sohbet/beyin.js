@@ -190,8 +190,9 @@ async function apiCagir (s, istek) {
       return await tekCagri(s, { ...istek, model })
     } catch (err) {
       sonHata = err
-      // 5xx = sunucu mesgul, baska modeli dene. 4xx = bizim hatamiz, dene deme.
-      if (!(err.durum >= 500)) throw err
+      // 5xx / 429 = busy on their side, try the next model.
+      // Other 4xx = our request is wrong; another model will not help.
+      if (!(err.durum >= 500 || err.durum === 429)) throw err
       if (model !== modeller[modeller.length - 1]) {
         log.uyari(`${model} mesgul (${err.durum}), yedek modele geciliyor`)
       }
