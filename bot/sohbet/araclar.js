@@ -22,6 +22,11 @@
  */
 
 // Modelin seçebileceği komutlar. Anahtar = komut, değer = ne işe yaradığı.
+// En fazla kaç iş arka arkaya istenebilir. Sınır var çünkü model uzun bir
+// liste uydurursa bot dakikalarca meşgul kalır; "dur" her zaman çalışıyor
+// ama oyuncunun beklemek zorunda kalması da bir maliyet.
+const MAKS_ADIM = 4
+
 const IZINLI_KOMUTLAR = {
   gel: 'Oyuncunun yanına yürür. Argüman almaz.',
   kes: 'Ağaç keser. Argüman: adet (1-64) ya da "surekli". Boş bırakılırsa 1 ağaç.',
@@ -59,25 +64,39 @@ function aracTanimi () {
     sema: {
       type: 'object',
       properties: {
-        komut: {
-          type: 'string',
-          enum: Object.keys(IZINLI_KOMUTLAR),
-          description: 'Çalıştırılacak komut'
-        },
-        arguman: {
-          type: 'string',
+        adimlar: {
+          type: 'array',
+          maxItems: MAKS_ADIM,
           description:
-            'Komutun argümanı, yoksa boş bırak. Örn kes için "3", ' +
-            'uret için "tas kazma", kaz için "demir 5".'
+            'Sırayla çalıştırılacak komutlar. Tek iş için tek eleman yaz. ' +
+            'Oyuncu birden fazla iş istediyse ("önce odun kes sonra kazma yap") ' +
+            'hepsini SIRAYLA buraya koy — bot birini bitirmeden diğerine geçmez.',
+          items: {
+            type: 'object',
+            properties: {
+              komut: {
+                type: 'string',
+                enum: Object.keys(IZINLI_KOMUTLAR),
+                description: 'Çalıştırılacak komut'
+              },
+              arguman: {
+                type: 'string',
+                description:
+                  'Komutun argümanı, yoksa boş bırak. Örn kes için "3", ' +
+                  'uret için "tas kazma", kaz için "demir 5".'
+              }
+            },
+            required: ['komut']
+          }
         }
       },
-      required: ['komut']
+      required: ['adimlar']
     }
   }
 }
 
 /**
- * Modelin seçtiğini çalıştırılabilir bir komut satırına çevirir.
+ * Tek bir adımı çalıştırılabilir komut satırına çevirir.
  *
  * DOĞRULAMA BURADA, model çıktısına güvenmiyoruz: bilinmeyen komut
  * reddediliyor ve argümandan komut satırını bozabilecek karakterler
@@ -97,4 +116,27 @@ function komutSatiri (girdi) {
   return arguman ? `${komut} ${arguman}` : komut
 }
 
-module.exports = { IZINLI_KOMUTLAR, aracTanimi, komutSatiri }
+/**
+ * Modelin döndürdüğü adım listesini komut satırlarına çevirir.
+ *
+ * Neden liste: bot tek komut alabildiği sürece "önce odun kes sonra kazma
+ * yap" gibi sıradan bir istek çalışmıyordu — model niyeti anlıyor ama
+ * ifade edemiyordu. Beceriler değişmedi, sadece kaç tanesinin arka arkaya
+ * istenebileceği değişti.
+ *
+ * TEKİL BİÇİM DE KABUL EDİLİYOR: model bazen `adimlar` yerine doğrudan
+ * `{komut, arguman}` döndürüyor. Şema listeyi zorunlu kılıyor ama modelin
+ * şemaya uyacağına güvenip cevabı çöpe atmak gereksiz katılık.
+ *
+ * Geçersiz adımlar atılıyor, geçerliler kalıyor: üç adımın ikisi tanınıyorsa
+ * o ikisini yapmak hiçbirini yapmamaktan iyi.
+ */
+function komutSatirlari (girdi) {
+  if (!girdi) return []
+  const ham = Array.isArray(girdi.adimlar) ? girdi.adimlar : [girdi]
+  return ham.slice(0, MAKS_ADIM).map(komutSatiri).filter(Boolean)
+}
+
+module.exports = {
+  IZINLI_KOMUTLAR, MAKS_ADIM, aracTanimi, komutSatiri, komutSatirlari
+}

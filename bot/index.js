@@ -188,6 +188,9 @@ function botOlustur () {
    * ürettiği bir komut satırı olabilir — ikisi de AYNI yoldan geçiyor.
    * Böylece LLM'in çalıştırabildiği her şey zaten test edilmiş kod.
    */
+  // Oyuncu "dur" dediginde sohbet zincirinin kalan adimlari da atlanmali.
+  let iptalEdildi = false
+
   async function mesajiIsle (username, mesaj) {
     const parcalar = mesaj.trim().toLowerCase().split(/\s+/)
     const komut = parcalar[0]
@@ -195,6 +198,7 @@ function botOlustur () {
 
     // "dur" her zaman çalışır — meşgulken bile
     if (komut === 'dur') {
+      iptalEdildi = true   // sohbet zincirinin kalanini da atla
       kontrol.durdur()
       skills.takipBirak(bot)
       pathfinderDurdur(bot)
@@ -387,9 +391,30 @@ function botOlustur () {
     if (!yorum) return
 
     if (yorum.cevap) bot.chat(yorum.cevap)
-    if (yorum.komut) {
-      log.bilgi(`Sohbet: "${mesaj}" -> ${yorum.komut}`)
-      await mesajiIsle(username, yorum.komut)
+
+    // KOMUT ZİNCİRİ.
+    //
+    // Model birden fazla iş önerebiliyor ("önce odun kes sonra kazma yap").
+    // Sırayla çalıştırıyoruz ve her birini BEKLİYORUZ: `gorevCalistir`
+    // meşgulken yeni iş almıyor, yani beklemezsek ikinci adım "şu an
+    // meşgulüm" cevabıyla düşerdi.
+    //
+    // Oyuncu araya "dur" yazarsa `kontrol` iptal ediliyor ve kalan
+    // adımlar da atlanıyor — yoksa "dur" sadece o anki işi durdurur,
+    // sıradaki hemen başlardı.
+    if (Array.isArray(yorum.komutlar) && yorum.komutlar.length > 0) {
+      log.bilgi(`Sohbet: "${mesaj}" -> ${yorum.komutlar.join(' ; ')}`)
+      for (const [i, komutSatiri] of yorum.komutlar.entries()) {
+        if (i > 0) {
+          if (iptalEdildi) {
+            bot.chat('Kalan işleri bıraktım.')
+            break
+          }
+          bot.chat(`(${i + 1}/${yorum.komutlar.length}) ${komutSatiri}`)
+        }
+        iptalEdildi = false
+        await mesajiIsle(username, komutSatiri)
+      }
     }
   })
 

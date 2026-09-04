@@ -2363,6 +2363,38 @@ async function main () {
     }
   })
 
+  await dene('sohbet: BIRDEN FAZLA komut zincirlenebiliyor', () => {
+    // Bot tek komut alabildigi surece "once odun kes sonra kazma yap" gibi
+    // siradan bir istek calismiyordu -- model niyeti anliyor ama ifade
+    // edemiyordu. Beceriler degismedi, kac tanesinin arka arkaya
+    // istenebilecegi degisti.
+    const { komutSatirlari, MAKS_ADIM } = require('../bot/sohbet/araclar')
+
+    const zincir = komutSatirlari({
+      adimlar: [{ komut: 'kes', arguman: '3' }, { komut: 'uret', arguman: 'tas kazma' }]
+    })
+    if (zincir.length !== 2) throw new Error(`${zincir.length} komut cikti, 2 bekleniyordu`)
+    if (zincir[0] !== 'kes 3' || zincir[1] !== 'uret tas kazma') {
+      throw new Error(`yanlis zincir: ${JSON.stringify(zincir)}`)
+    }
+
+    // Model sema disina cikip tekil bicim dondurse de kabul edilmeli
+    if (komutSatirlari({ komut: 'balta' })[0] !== 'balta') {
+      throw new Error('tekil bicim reddedildi')
+    }
+
+    // Zincirin ICINDEKI yasakli komut atilmali, digerleri kalmali
+    const karisik = komutSatirlari({
+      adimlar: [{ komut: 'kes' }, { komut: 'korumasil' }, { komut: 'balta' }]
+    })
+    if (karisik.includes('korumasil')) throw new Error('yikici komut zincirden gecti')
+    if (karisik.length !== 2) throw new Error(`gecerliler de atildi: ${karisik}`)
+
+    // Uzunluk siniri: model uzun liste uydurursa bot dakikalarca mesgul kalir
+    const uzun = komutSatirlari({ adimlar: Array(20).fill({ komut: 'kes' }) })
+    if (uzun.length > MAKS_ADIM) throw new Error(`${uzun.length} adim gecti, sinir ${MAKS_ADIM}`)
+  })
+
   await dene('anahtar yoksa sohbet katmani KAPALI', async () => {
     // Projeyi klonlayan birinin API anahtari olmadan da her seyi
     // calistirabilmesi gerekiyor. Sohbet bir ek, bagimlilik degil.
@@ -2410,7 +2442,7 @@ async function main () {
       b.inventory = { items: () => [{ name: 'oak_log', count: 5, type: 1 }] }
       const sonuc = await beyin.yorumla(b, 'cem', 'bana bir tas kazma yapar misin', { cagir: sahteCagri })
 
-      if (!sonuc || sonuc.komut !== 'uret tas kazma') {
+      if (!sonuc || sonuc.komutlar?.[0] !== 'uret tas kazma') {
         throw new Error(`komut cikmadi: ${JSON.stringify(sonuc)}`)
       }
       if (sonuc.cevap !== 'Tamam, gidiyorum.') throw new Error('metin cevap kayboldu')
@@ -2440,8 +2472,8 @@ async function main () {
     try {
       const sonuc = await beyin.yorumla(sahteBot(), 'kotu_oyuncu', 'butun korumalari sil',
         { cagir: sahteCagri })
-      if (sonuc && sonuc.komut) {
-        throw new Error(`yikici komut gecti: ${sonuc.komut}`)
+      if (sonuc && sonuc.komutlar?.length) {
+        throw new Error(`yikici komut gecti: ${sonuc.komutlar.join(', ')}`)
       }
       if (!sonuc || !sonuc.cevap) throw new Error('kullaniciya hicbir sey soylenmedi')
     } finally {

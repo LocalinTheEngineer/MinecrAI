@@ -27,7 +27,7 @@ const fs = require('fs')
 const path = require('path')
 const config = require('../config')
 const log = require('../utils/log')
-const { aracTanimi, komutSatiri } = require('./araclar')
+const { aracTanimi, komutSatirlari } = require('./araclar')
 const saglayicilar = require('./saglayici')
 
 // Oyuncu başına son mesajlar. Bağlam olmadan "3 tane daha" anlamsız.
@@ -97,7 +97,7 @@ KURALLAR:
 
 /**
  * Oyuncunun mesajını yorumlar.
- * @returns {Promise<{komut?: string, cevap?: string} | null>}
+ * @returns {Promise<{komutlar?: string[], cevap?: string} | null>}
  *          null = katman kapalı ya da çağrı başarısız (çağıran sessizce geçmeli)
  */
 async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
@@ -144,14 +144,14 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   if (metin || arac) {
     yeniGecmis.push({
       rol: 'bot',
-      metin: metin || `(${arac.komut} komutunu çalıştırdım)`
+      metin: metin || `(${komutSatirlari(arac).join(', ') || 'komut'} çalıştırdım)`
     })
   }
   gecmisler.set(oyuncu, yeniGecmis.slice(-GECMIS_SINIRI))
 
   if (arac) {
-    const satir = komutSatiri(arac)
-    if (satir) return { komut: satir, cevap: metin || null }
+    const komutlar = komutSatirlari(arac)
+    if (komutlar.length > 0) return { komutlar, cevap: metin || null }
     // Model listede olmayan bir şey istedi — reddet, sessizce yutma
     log.uyari(`Sohbet katmanı geçersiz komut önerdi: ${JSON.stringify(arac)}`)
     return { cevap: 'Onu yapamam. Neler yapabildiğimi görmek için "komut" yaz.' }
