@@ -1287,6 +1287,55 @@ async function main () {
     if (y.kullan !== 1) throw new Error(`1 komur 8 esya pisirir, ${y.kullan} dedi`)
   })
 
+  await dene('yakitBul() - yakit YETMEDIGINDE bunu SOYLUYOR', () => {
+    // Oyunda gorulen: bot demiri kazdi, firini yerlestirdi, yeterince
+    // yakit koymadi, bekledi ve "yapamadim" dedi.
+    //
+    // Sebep: eski yakitBul yeterli ve yetersiz durumda AYNI seyi
+    // donduruyordu, yani cagiran ayirt edemiyordu. uret.js'teki
+    // "yakit yoksa komur getir" kontrolu bu yuzden hic calismadi --
+    // botun envanterinde neredeyse her zaman tahta var.
+    const b = sahteBot()
+    b.inventory = { items: () => [{ name: 'oak_planks', count: 2 }] }
+
+    // 2 tahta = 3 esya. 20 esya isteniyor: YETMEZ ve bunu soylemeli.
+    const az = eritModul.yakitBul(b, 20)
+    if (!az) throw new Error('yakit var ama null dondu')
+    if (az.yeterli) throw new Error('2 tahta ile 20 esya eritilebilir dedi')
+    if (az.pisebilecek >= 20) throw new Error(`pisebilecek ${az.pisebilecek}, 20den az olmali`)
+
+    // 3 esya isteniyor: YETER
+    const yeter = eritModul.yakitBul(b, 3)
+    if (!yeter.yeterli) throw new Error('2 tahta 3 esyaya yetmez dedi')
+  })
+
+  await dene('yakitBul() - AYNI turun butun yiginlarini sayiyor', () => {
+    // `find` her turden tek yigin goruyordu: iki yigina bolunmus komurun
+    // yarisi gorunmuyordu ve bot "yakitim yetmez" diye erken pes ediyordu.
+    const b = sahteBot()
+    b.inventory = { items: () => [{ name: 'coal', count: 2 }, { name: 'coal', count: 3 }] }
+
+    // 5 komur = 40 esya. Tek yigin sayilsaydi 2 komur = 16 esya olurdu.
+    const y = eritModul.yakitBul(b, 40)
+    if (!y.yeterli) throw new Error('5 komuru 40 esyaya yetmez saydi (yiginlar toplanmiyor)')
+  })
+
+  await dene('yakitBul() - tek basina bitirebilen turu seciyor', () => {
+    // Komur listede once ama 1 komur (8 esya) 30 esyayi bitiremez.
+    // Bitirebilen tur varsa o secilmeli, "listede once" oldugu icin degil.
+    const b = sahteBot()
+    b.inventory = {
+      items: () => [{ name: 'coal', count: 1 }, { name: 'coal_block', count: 1 }]
+    }
+    const y = eritModul.yakitBul(b, 30)
+    if (y.esya.name !== 'coal_block') throw new Error(`secilen ${y.esya.name}, bitiremiyor`)
+    if (!y.yeterli) throw new Error('bitirebilen tur varken yetersiz dedi')
+
+    // Ama kucuk isde komur BLOGU israf: komur secilmeli
+    const kucuk = eritModul.yakitBul(b, 5)
+    if (kucuk.esya.name !== 'coal') throw new Error('kucuk is icin blok harcadi')
+  })
+
   await dene('erit() - girdi yoksa NEYIN eksik oldugunu soyluyor', async () => {
     const r = await eritModul.erit(bot, k, 'iron_ingot', 1)
     if (r.basarili) throw new Error('bos envanterle erittigini iddia etti')

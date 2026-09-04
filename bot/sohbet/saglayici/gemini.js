@@ -79,4 +79,17 @@ function baslik (config) {
   }
 }
 
-module.exports = { ad: 'gemini', API, hazir, govde, coz, baslik, varsayilanModel: 'gemini-3.5-flash-lite' }
+// `-latest` alias rather than a pinned version: measured HTTP 500 "currently
+// experiencing high demand" on a pinned lite model while the alias served
+// fine. Google routes the alias to whatever is healthy.
+module.exports = {
+  ad: 'gemini',
+  API,
+  hazir,
+  govde,
+  coz,
+  baslik,
+  varsayilanModel: 'gemini-flash-lite-latest',
+  // Tried in order when the model returns 5xx (overloaded, not our bug).
+  yedekModeller: ['gemini-2.5-flash-lite', 'gemini-2.5-flash']
+}

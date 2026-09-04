@@ -3,41 +3,24 @@
 const { kutukMu, oduncuSay, dogalAgacMi, govdeninDibi } = require('../skills/chopTree')
 
 /**
- * GÖREV TANIMLARI
+ * Task definitions.
  *
- * Ortam bugüne kadar tek bir işi biliyordu: odun topla. "Kütük mü?",
- * "kaç odunum var?", "5 odunda bitir" — hepsi environment.js'in içine
- * gömülüydü. Madencilik eklemek için ya her satırı ikiye bölmek ya da
- * ikinci bir ortam yazıp yarısını kopyalamak gerekiyordu.
- *
- * Üçüncü yol: ortamın DEĞİŞMEYEN kısmını (gözlem, aksiyonlar, ödül
- * şekli, bölüm mantığı) yerinde bırakıp, göreve göre değişen dört
- * soruyu dışarı çıkarmak:
- *
- *   1. Bu blok hedefim mi?
- *   2. Bu blok gerçekten toplanabilir mi? (oyuncunun evi değil, doğru
- *      kazmam var mı...)
- *   3. Envanterimde bu kaynaktan kaç tane var?
- *   4. Bölüm kaçta biter?
- *
- * Böylece iki görev aynı gözlem uzayını, aynı aksiyonları ve aynı PPO
- * kodunu paylaşıyor. Çok görevli öğrenmeye geçmek istersek gözleme tek
- * bir "hangi görevdeyim" alanı eklemek yetecek — ortamı yeniden yazmak
- * gerekmeyecek.
+ * The environment keeps everything a learning algorithm sees — observation,
+ * actions, reward shape, episode logic. What differs per task lives here:
+ * what counts as a target, whether it is collectable, how to count progress,
+ * and how far to look. Two tasks, one environment, one PPO script.
  */
 
 const CEVHER = /_ore$/
 
-// Odun görevinde ajanın kırmasına izin verilen "yol açma" blokları.
-// Taş ve toprak BİLEREK dışarıda: bot bir mağaraya düşünce elleriyle taş
-// kazmaya çalışıyordu; elle taş kazmak dakikalar sürer ve görevle ilgisi yok.
+// Blocks the wood agent may break to clear a path. Stone and dirt are
+// excluded on purpose: mining stone by hand takes minutes and has nothing
+// to do with the task.
 const YUMUSAK = /_leaves$|vine|_sapling$|bamboo|cobweb|azalea|moss_|snow|sugar_cane|cactus|_mushroom_block$|shroomlight|_wart_block$/
 
-// HANGİ CEVHER HANGİ KAZMA SEVİYESİNİ İSTER?
-//
-// `uygunAlet` "elinde kazma var mı" sorusuna cevap veriyor, "bu cevher
-// için YETER Mİ" sorusuna değil. Taş kazmayla elmasa vurmak elması YOK
-// EDİYOR — blok kırılıyor, yere hiçbir şey düşmüyor.
+// Required pickaxe tier per ore. `uygunAlet` answers "do I hold a pickaxe",
+// not "is it good enough" — hitting diamond with a stone pickaxe destroys
+// the ore: the block breaks and nothing drops.
 //
 // Bu tabloyla ajan yetersiz kazmayla cevhere hiç yönlendirilmiyor.
 const KAZMA_SEVIYELERI = ['wooden', 'stone', 'iron', 'diamond', 'netherite']
@@ -149,38 +132,28 @@ const GOREVLER = {
     dogalMi: (bot, blok) => dogalAgacMi(bot, blok),
     say: (bot) => oduncuSay(bot),
 
-    // Ağacın ortasındaki kütüğü değil GÖVDENİN DİBİNİ hedefle: yukarıdan
-    // aşağı kesmek hem daha yavaş hem de ajanı tepeye tırmandırıyor.
+    // Target the trunk base, not the log we found — cutting top-down is
+    // slower and sends the agent climbing.
     hedefiDuzelt: (bot, blok) => govdeninDibi(bot, blok),
 
-    // Yolu kapatan neyi kırabiliriz? Odunda sadece yumuşak bitki blokları.
+    // Only soft plant blocks may be cleared here.
     engelKirilabilirMi: (bot, blok) => !!blok && YUMUSAK.test(blok.name),
 
-    // Hedef seçerken maliyet: ormanda düz kuş uçuşu mesafe doğru ölçü.
+    // Straight-line distance is the right measure in open terrain.
     hedefMaliyeti: (bot, konum) => konum.distanceTo(bot.entity.position),
 
-    // Bölüm başında ajanı hedefe yakın bir yere yürüt.
-    // Ormanda meşru: açık arazide yürümek görevi çözmüyor.
+    // Walking the agent near a target at episode start is fair here:
+    // crossing open ground is not the task.
     baslangictaYurut: true,
 
-    // Kaynak ararken kaç blok uzağa bakılsın. Ormanda 64 blok makul:
-    // arazi açık, ajan 64 bloğu bir bölümde yürüyebiliyor.
+    // 64 blocks is walkable within one episode in open terrain.
     aramaYaricapi: 64,
 
     ekGozlem: EK_GOZLEM,
 
-    /**
-     * ODUN GÖREVİNİN VARSAYILAN GÖZLEMİ DAR (16 sayı).
-     *
-     * `ekGozlem` tanımlı ama varsayılan olarak KAPALI, çünkü Milestone 4'ün
-     * eğitilmiş modelleri (`bc_policy.pt`, `ppo_son.zip`) 19 boyutlu girdi
-     * bekliyor. Genişletmek onları yüklenemez hale getirirdi — ölçülmüş ve
-     * yayınlanmış sonuçları yeni bir görev uğruna bozmak doğru takas değil.
-     *
-     * Python tarafı `genisGozlem: true` isterse açılıyor. Çok görevli
-     * eğitim (Milestone 6) bunu istiyor, çünkü tek ağ iki görevi de
-     * görecekse gözlem genişliği ortak olmak zorunda.
-     */
+    // Narrow (16) by default: the Milestone 4 models expect 19 inputs and
+    // would stop loading if this grew. Multi-task training turns it on via
+    // `genisGozlem` because one network needs one input size.
     gozlemProfili: 'dar'
   },
 
@@ -188,16 +161,11 @@ const GOREVLER = {
   maden: {
     ad: 'maden',
     hedefAdet: 5,
-    // ENVANTERİ TAMAMEN BOŞALT.
-    //
-    // Odunda tek bir etiket (`#minecraft:logs`) bütün kütükleri
-    // kapsıyordu ve balta envanterde kalıyordu. Cevherlerin böyle tek
-    // bir etiketi yok, ben de "o zaman temizlemeyelim" dedim — ve
-    // envanter bölümden bölüme doldu.
-    //
-    // Sonucu ölçtük: 36 slot dolunca `/give iron_pickaxe` sunucu
-    // tarafında BAŞARILI oluyor ("Gave 1 [Iron Pickaxe]") ama eşya
-    // envantere giremiyor. Kazmasız kalan bot cevheri yok ediyor ve
+    // Wipe the whole inventory. Ores have no single tag like
+    // `#minecraft:logs`, so skipping the clear let the inventory fill up
+    // across episodes. Measured: with 36 slots full, `/give iron_pickaxe`
+    // succeeds server-side ("Gave 1 [Iron Pickaxe]") but the item never
+    // arrives. A pickaxe-less bot destroys ore instead of collecting it, and
     // bölümler boşa gidiyor. Aynı hatayı odun görevinde de yaşamıştık.
     //
     // '*' = her şeyi sil. Kazma zaten bölüm kurulumunda veriliyor,

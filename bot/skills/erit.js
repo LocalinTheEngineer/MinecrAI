@@ -64,17 +64,52 @@ function sayim (bot, ad) {
     .reduce((t, i) => t + i.count, 0)
 }
 
-/** Envanterdeki en uygun yakıt ve kaç eşya pişirebileceği */
+/**
+ * Pick a fuel and say honestly whether it covers the job.
+ *
+ * Three bugs lived in the previous version and together they produced the
+ * symptom "the bot placed a furnace, under-fuelled it, waited, and gave up":
+ *
+ *   1. It returned the same shape whether the fuel was enough or not, so no
+ *      caller could tell. `uret.js` has a "fetch coal if there is no fuel"
+ *      check that therefore never fired — the bot almost always holds planks.
+ *   2. `find()` sees one stack per fuel type. Coal split across two stacks
+ *      counted as half.
+ *   3. A furnace has one fuel slot, so types cannot be mixed — but the code
+ *      also never checked whether the chosen type alone could finish.
+ *
+ * Returns null if there is no fuel at all, otherwise:
+ *   { esya, kullan, yeterli, pisebilecek }
+ */
 function yakitBul (bot, gerekenAdet) {
+  const secenekler = []
   for (const { desen, adet } of YAKITLAR) {
-    const esya = bot.inventory.items().find((i) => desen.test(i.name))
-    if (!esya) continue
-    const gerekenYakit = Math.ceil(gerekenAdet / adet)
-    if (esya.count >= gerekenYakit) return { esya, kullan: gerekenYakit }
-    // Elimizdeki kadarıyla idare et
-    return { esya, kullan: esya.count }
+    const yiginlar = bot.inventory.items().filter((i) => desen.test(i.name))
+    if (yiginlar.length === 0) continue
+    const toplam = yiginlar.reduce((t, i) => t + i.count, 0)
+    secenekler.push({
+      esya: yiginlar[0],
+      toplam,
+      birim: adet,
+      kapasite: Math.floor(toplam * adet)
+    })
   }
-  return null
+  if (secenekler.length === 0) return null
+
+  // YAKITLAR is in PREFERENCE order, not efficiency order — a coal block
+  // burns 80 items against coal's 8, but spending a block on a two-item job
+  // is waste. Take the first listed type that can finish alone; if none can,
+  // take whichever gets furthest.
+  const yeterli = secenekler.find((y) => y.kapasite >= gerekenAdet)
+  const secim = yeterli || secenekler.reduce((a, b) => (b.kapasite > a.kapasite ? b : a))
+
+  const kullan = Math.min(secim.toplam, 64, Math.ceil(gerekenAdet / secim.birim))
+  return {
+    esya: secim.esya,
+    kullan,
+    yeterli: Boolean(yeterli),
+    pisebilecek: Math.floor(kullan * secim.birim)
+  }
 }
 
 /**
@@ -116,10 +151,21 @@ async function erit (bot, kontrol, hedefAd, adet = 1) {
   const elde = sayim(bot, girdiAd)
   if (elde <= 0) return { basarili: false, mesaj: `${girdiAd} yok, eritemem.`, eksik: girdiAd }
 
-  const pisecek = Math.min(adet, elde)
+  let pisecek = Math.min(adet, elde)
 
   const yakit = yakitBul(bot, pisecek)
-  if (!yakit) return { basarili: false, mesaj: 'Yakıtım yok (kömür veya odun lazım).', eksik: 'coal' }
+  if (!yakit || yakit.pisebilecek < 1) {
+    return { basarili: false, mesaj: 'Yakıtım yok (kömür veya odun lazım).', eksik: 'coal' }
+  }
+
+  // Not enough fuel to finish: smelt what we can rather than nothing, but
+  // say so, so the production loop can fetch coal and come back. Silently
+  // under-fuelling is what made the bot sit at a furnace and then fail.
+  const hedeflenen = pisecek
+  if (!yakit.yeterli) {
+    pisecek = Math.min(pisecek, yakit.pisebilecek)
+    log.uyari(`Yakıt ${hedeflenen} için yetmiyor, ${pisecek} tane eritebilirim.`)
+  }
 
   const firin = await firinBul(bot, kontrol)
   if (!firin) return { basarili: false, mesaj: 'Fırınım yok veya koyacak yer bulamadım.', eksik: 'furnace' }
@@ -160,7 +206,21 @@ async function erit (bot, kontrol, hedefAd, adet = 1) {
   }
 
   if (alinan === 0) {
-    return { basarili: false, mesaj: `${hedefAd} çıkmadı — yakıt yetmemiş olabilir.` }
+    return {
+      basarili: false,
+      eksik: yakit.yeterli ? undefined : 'coal',
+      mesaj: yakit.yeterli
+        ? `${hedefAd} çıkmadı — fırın çalışmamış olabilir.`
+        : `${hedefAd} çıkmadı — yakıt yetmedi, kömür lazım.`
+    }
+  }
+  if (alinan < hedeflenen) {
+    return {
+      basarili: true,
+      alinan,
+      eksik: 'coal',
+      mesaj: `${alinan}/${hedeflenen}x ${hedefAd} eritildi — yakıt bitti.`
+    }
   }
   return { basarili: true, alinan, mesaj: `${alinan}x ${hedefAd} eritildi.` }
 }

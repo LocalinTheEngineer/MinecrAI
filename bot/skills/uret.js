@@ -216,8 +216,15 @@ async function eritmeyiDene (bot, mcData, ad, adet, kontrol, altSaglama) {
   const f = await altSaglama('furnace', 1)
   if (!f.ok) return { ok: false, hata: f }
 
-  // Yakıt: kömür yoksa odun da yanıyor, o yüzden zorunlu değil
-  if (!yakitBul(bot, eksik)) await altSaglama('coal', 1)
+  // Fuel. This check used to be `if (!yakitBul(...))`, which never fired:
+  // the old yakitBul returned a truthy value even when the fuel could not
+  // finish the job, and the bot almost always holds planks. It would then
+  // under-fuel the furnace, wait out the timeout and report failure.
+  const yakit = yakitBul(bot, eksik)
+  if (!yakit || !yakit.yeterli) {
+    const gereken = Math.max(1, Math.ceil((eksik - (yakit?.pisebilecek || 0)) / 8))
+    await altSaglama('coal', gereken)
+  }
 
   const sonuc = await erit(bot, kontrol, ad, eksik)
   if (sonuc.basarili && sayim(bot, ad) >= adet) return { ok: true }

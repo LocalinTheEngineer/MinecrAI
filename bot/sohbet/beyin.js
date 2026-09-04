@@ -150,7 +150,10 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   return metin ? { cevap: metin.slice(0, 200) } : null
 }
 
-async function apiCagir (s, istek) {
+/**
+ * One HTTP call. No retry logic here — see `apiCagir`.
+ */
+async function tekCagri (s, istek) {
   const kontrolcu = new AbortController()
   const saat = setTimeout(() => kontrolcu.abort(), ZAMAN_ASIMI_MS)
   try {
@@ -161,12 +164,40 @@ async function apiCagir (s, istek) {
       signal: kontrolcu.signal
     })
     if (!cevap.ok) {
-      throw new Error(`HTTP ${cevap.status}: ${(await cevap.text()).slice(0, 200)}`)
+      const hata = new Error(`HTTP ${cevap.status}: ${(await cevap.text()).slice(0, 200)}`)
+      hata.durum = cevap.status
+      throw hata
     }
     return s.coz(await cevap.json())
   } finally {
     clearTimeout(saat)
   }
+}
+
+/**
+ * Calls the API, falling back to another model on 5xx.
+ *
+ * Measured: a pinned lite model returned HTTP 500 "currently experiencing
+ * high demand" while the account, key and request were all fine. That is
+ * the provider being busy, not a bug to surface to the player — so try the
+ * next model instead of going quiet.
+ */
+async function apiCagir (s, istek) {
+  const modeller = [istek.model, ...(s.yedekModeller || [])]
+  let sonHata
+  for (const model of modeller) {
+    try {
+      return await tekCagri(s, { ...istek, model })
+    } catch (err) {
+      sonHata = err
+      // 5xx = sunucu mesgul, baska modeli dene. 4xx = bizim hatamiz, dene deme.
+      if (!(err.durum >= 500)) throw err
+      if (model !== modeller[modeller.length - 1]) {
+        log.uyari(`${model} mesgul (${err.durum}), yedek modele geciliyor`)
+      }
+    }
+  }
+  throw sonHata
 }
 
 function gecmisiSil (oyuncu) {
