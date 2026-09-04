@@ -575,7 +575,22 @@ three layers of decision-making over the same body:
 | RL agent | learned low-level control | `bot/bridge/` |
 | chat | language → intent | `bot/sohbet/` |
 
-Costs roughly $0.001 per message on the default model.
+**Two providers, and the free one is the default.** Gemini and Anthropic are both
+supported; whichever API key is present is used, and if both are, Gemini wins
+because it has a free tier. This is a student portfolio project — running it should
+not require a credit card.
+
+The provider modules translate one provider-independent request into each API's own
+shape and normalise the reply back, so the system prompt, the tool definition and
+the conversation history live in one place. The Gemini response parser is
+deliberately defensive: Anthropic's response shape is unambiguous in the docs, but
+the exact nesting of text blocks in Gemini's Interactions API could not be verified
+without a key, so it walks the structure for `text` and `function_call` blocks
+rather than assuming a path. Guessing wrong there would have meant a bot that
+silently understood nothing.
+
+Costs roughly $0.001 per message on Anthropic's cheapest model, or nothing at all
+on Gemini's free tier.
 
 ## Quick start
 
@@ -704,6 +719,7 @@ bot/                  Node.js — everything that touches Minecraft
   sohbet/
     beyin.js            LLM layer: plain language -> an existing command
     araclar.js          the fixed command enum the model may choose from
+    saglayici/          Gemini and Anthropic adapters behind one interface
   bridge/
     server.js           WebSocket server exposing reset/step to Python
     environment.js      observation, reward and episode logic

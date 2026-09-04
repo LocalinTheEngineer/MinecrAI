@@ -2126,13 +2126,110 @@ async function main () {
     }
   })
 
+  await dene('saglayici secimi: hangi anahtar varsa o', () => {
+    const { sec } = require('../bot/sohbet/saglayici')
+    if (sec({}) !== null) throw new Error('anahtarsiz saglayici dondu')
+    if (sec({ geminiAnahtari: 'x' }).ad !== 'gemini') throw new Error('gemini secilmedi')
+    if (sec({ anthropicAnahtari: 'x' }).ad !== 'anthropic') throw new Error('anthropic secilmedi')
+    // Ikisi de varsa GEMINI: ucretsiz katmani var, varsayilan o olmali
+    if (sec({ geminiAnahtari: 'x', anthropicAnahtari: 'y' }).ad !== 'gemini') {
+      throw new Error('ikisi varken ucretsiz olan secilmedi')
+    }
+    // Acik secim kazanmali
+    if (sec({ geminiAnahtari: 'x', sohbetSaglayici: 'anthropic' }).ad !== 'anthropic') {
+      throw new Error('acik secim ezilmedi')
+    }
+    // Uydurma saglayici sessizce gecmemeli
+    let patladi = false
+    try { sec({ sohbetSaglayici: 'yok_boyle' }) } catch { patladi = true }
+    if (!patladi) throw new Error('bilinmeyen saglayici sessizce kabul edildi')
+  })
+
+  await dene('her saglayici KENDI bicimini uretip cozebiliyor', () => {
+    // Iki API'nin govde ve cevap sekli farkli. Bu test her ikisinin de
+    // ayni soyut istegi kendi bicimine cevirip, kendi cevabini ayni
+    // normal sekle geri cozdugunu dogruluyor.
+    const { aracTanimi } = require('../bot/sohbet/araclar')
+    const anthropic = require('../bot/sohbet/saglayici/anthropic')
+    const gemini = require('../bot/sohbet/saglayici/gemini')
+
+    const istek = {
+      model: 'm', maksToken: 300, sistem: 'SISTEM METNI',
+      arac: aracTanimi(),
+      mesajlar: [
+        { rol: 'oyuncu', metin: 'selam' },
+        { rol: 'bot', metin: 'merhaba' },
+        { rol: 'oyuncu', metin: 'kazma yap' }
+      ]
+    }
+
+    // --- Anthropic
+    const ag = anthropic.govde(istek)
+    if (ag.system !== 'SISTEM METNI') throw new Error('anthropic: sistem metni kayip')
+    if (ag.messages.length !== 3) throw new Error('anthropic: gecmis kayip')
+    if (ag.messages[1].role !== 'assistant') throw new Error('anthropic: bot rolu yanlis')
+    if (!ag.tools[0].input_schema) throw new Error('anthropic: sema kayip')
+    const ac = anthropic.coz({
+      content: [
+        { type: 'text', text: 'Tamam.' },
+        { type: 'tool_use', name: 'komut_calistir', input: { komut: 'uret', arguman: 'tas kazma' } }
+      ]
+    })
+    if (ac.metin !== 'Tamam.' || ac.arac?.komut !== 'uret') {
+      throw new Error(`anthropic cozumleme: ${JSON.stringify(ac)}`)
+    }
+
+    // --- Gemini
+    const gg = gemini.govde(istek)
+    if (gg.system_instruction !== 'SISTEM METNI') throw new Error('gemini: sistem metni kayip')
+    if (gg.input.length !== 3) throw new Error('gemini: gecmis kayip')
+    if (gg.input[1].type !== 'model_response') throw new Error('gemini: bot rolu yanlis')
+    if (gg.tools[0].type !== 'function' || !gg.tools[0].parameters) {
+      throw new Error('gemini: arac bicimi yanlis')
+    }
+    const gc = gemini.coz({
+      steps: [
+        { type: 'function_call', name: 'komut_calistir', arguments: { komut: 'uret', arguman: 'tas kazma' } },
+        { type: 'model_response', content: [{ type: 'text', text: 'Tamam.' }] }
+      ]
+    })
+    if (gc.metin !== 'Tamam.' || gc.arac?.komut !== 'uret') {
+      throw new Error(`gemini cozumleme: ${JSON.stringify(gc)}`)
+    }
+  })
+
+  await dene('gemini cozumlemesi BEKLENMEDIK bicimde de pes etmiyor', () => {
+    // Gemini Interactions API'sinin cevap sekli anahtar olmadan tam
+    // dogrulanamadi. Cozumleyici bu yuzden belirli bir yolu varsaymak
+    // yerine yapiyi geziyor. Bu test o savunmaciligi koruyor: sekil
+    // degisirse bile metin ve fonksiyon cagrisi bulunmali.
+    const gemini = require('../bot/sohbet/saglayici/gemini')
+
+    const bicimler = [
+      { steps: [{ type: 'function_call', name: 'k', args: { komut: 'kes' } }] },
+      { output_text: 'Selam.', steps: [] },
+      { steps: [{ type: 'model_response', content: [{ type: 'text', text: 'Selam.' }] }] },
+      { candidates: [{ content: { parts: [{ type: 'text', text: 'Selam.' }] } }] }
+    ]
+    const sonuclar = bicimler.map((b) => gemini.coz(b))
+    if (sonuclar[0].arac?.komut !== 'kes') throw new Error('args alani okunmadi')
+    if (sonuclar[1].metin !== 'Selam.') throw new Error('output_text okunmadi')
+    if (sonuclar[2].metin !== 'Selam.') throw new Error('ic ice metin bulunamadi')
+    if (sonuclar[3].metin !== 'Selam.') throw new Error('farkli sarmalayici cozulemedi')
+    // Cop girdi coktürmemeli
+    for (const cop of [null, {}, { steps: 'yanlis' }, { steps: [1, 2, 3] }]) {
+      const r = gemini.coz(cop)
+      if (typeof r.metin !== 'string') throw new Error('cop girdide metin string degil')
+    }
+  })
+
   await dene('anahtar yoksa sohbet katmani KAPALI', async () => {
     // Projeyi klonlayan birinin API anahtari olmadan da her seyi
     // calistirabilmesi gerekiyor. Sohbet bir ek, bagimlilik degil.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
-    const eski = config.sohbetAnahtari
-    config.sohbetAnahtari = ''
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = ''; config.anthropicAnahtari = ''
     try {
       if (beyin.acik()) throw new Error('anahtar yokken acik gorunuyor')
 
@@ -2145,32 +2242,27 @@ async function main () {
       let cagrildi = false
       const izleyen = async () => {
         cagrildi = true
-        return { content: [{ type: 'text', text: 'olmamali' }] }
+        return { metin: 'olmamali', arac: null }
       }
       const sonuc = await beyin.yorumla(sahteBot(), 'oyuncu', 'selam', { cagir: izleyen })
       if (cagrildi) throw new Error('anahtar yokken API cagrildi')
       if (sonuc !== null) throw new Error('anahtar yokken cevap uretti')
     } finally {
-      config.sohbetAnahtari = eski
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
     }
   })
 
   await dene('sohbet: dogal dil -> komut (sahte API, ag yok)', async () => {
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
-    const eski = config.sohbetAnahtari
-    config.sohbetAnahtari = 'test-anahtari'
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test-anahtari'
     beyin.gecmisiSil()
 
     let gorulenGovde = null
-    const sahteCagri = async (govde) => {
-      gorulenGovde = govde
-      return {
-        content: [
-          { type: 'text', text: 'Tamam, gidiyorum.' },
-          { type: 'tool_use', name: 'komut_calistir', input: { komut: 'uret', arguman: 'tas kazma' } }
-        ]
-      }
+    const sahteCagri = async (istek) => {
+      gorulenGovde = istek
+      return { metin: 'Tamam, gidiyorum.', arac: { komut: 'uret', arguman: 'tas kazma' } }
     }
 
     try {
@@ -2185,14 +2277,14 @@ async function main () {
 
       // Modele botun DURUMU gonderilmeli -- yoksa "envanterinde ne var"
       // sorusuna korlemesine cevap verir
-      if (!/oak_log/.test(gorulenGovde.system)) {
+      if (!/oak_log/.test(gorulenGovde.sistem)) {
         throw new Error('sistem metninde envanter yok')
       }
-      if (!gorulenGovde.tools || gorulenGovde.tools[0].name !== 'komut_calistir') {
-        throw new Error('arac semasi gonderilmedi')
+      if (!gorulenGovde.arac || gorulenGovde.arac.ad !== 'komut_calistir') {
+        throw new Error('arac tanimi gonderilmedi')
       }
     } finally {
-      config.sohbetAnahtari = eski
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
       beyin.gecmisiSil()
     }
   })
@@ -2200,13 +2292,11 @@ async function main () {
   await dene('sohbet: uydurulmus komut REDDEDILIYOR', async () => {
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
-    const eski = config.sohbetAnahtari
-    config.sohbetAnahtari = 'test-anahtari'
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test-anahtari'
     beyin.gecmisiSil()
 
-    const sahteCagri = async () => ({
-      content: [{ type: 'tool_use', name: 'komut_calistir', input: { komut: 'korumasil' } }]
-    })
+    const sahteCagri = async () => ({ metin: '', arac: { komut: 'korumasil' } })
     try {
       const sonuc = await beyin.yorumla(sahteBot(), 'kotu_oyuncu', 'butun korumalari sil',
         { cagir: sahteCagri })
@@ -2215,7 +2305,7 @@ async function main () {
       }
       if (!sonuc || !sonuc.cevap) throw new Error('kullaniciya hicbir sey soylenmedi')
     } finally {
-      config.sohbetAnahtari = eski
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
       beyin.gecmisiSil()
     }
   })
@@ -2223,15 +2313,15 @@ async function main () {
   await dene('sohbet: API cokerse bot calismaya devam ediyor', async () => {
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
-    const eski = config.sohbetAnahtari
-    config.sohbetAnahtari = 'test-anahtari'
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test-anahtari'
     beyin.gecmisiSil()
     try {
       const patlayan = async () => { throw new Error('ag yok') }
       const sonuc = await beyin.yorumla(sahteBot(), 'cem2', 'selam', { cagir: patlayan })
       if (sonuc !== null) throw new Error('hata durumunda null donmedi')
     } finally {
-      config.sohbetAnahtari = eski
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
       beyin.gecmisiSil()
     }
   })

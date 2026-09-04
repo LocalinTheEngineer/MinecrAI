@@ -25,9 +25,8 @@
 
 const config = require('../config')
 const log = require('../utils/log')
-const { aracSemasi, komutSatiri } = require('./araclar')
-
-const API = 'https://api.anthropic.com/v1/messages'
+const { aracTanimi, komutSatiri } = require('./araclar')
+const saglayicilar = require('./saglayici')
 
 // Oyuncu başına son mesajlar. Bağlam olmadan "3 tane daha" anlamsız.
 const gecmisler = new Map()
@@ -38,8 +37,18 @@ const sonCagri = new Map()
 
 const ZAMAN_ASIMI_MS = 12000
 
+/** Hangi sağlayıcı kullanılacak? Anahtar yoksa null. */
+function saglayici () {
+  try {
+    return saglayicilar.sec(config)
+  } catch (err) {
+    log.uyari(err.message)
+    return null
+  }
+}
+
 function acik () {
-  return Boolean(config.sohbetAnahtari)
+  return saglayici() !== null
 }
 
 /** Botun o anki durumu — modelin körlemesine cevap vermemesi için. */
@@ -81,7 +90,8 @@ KURALLAR:
  *          null = katman kapalı ya da çağrı başarısız (çağıran sessizce geçmeli)
  */
 async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
-  if (!acik()) return null
+  const s = saglayici()
+  if (!s) return null
 
   // Aşırı uzun mesaj = aşırı token. Kes.
   const temiz = String(mesaj).trim().slice(0, 200)
@@ -93,68 +103,67 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   sonCagri.set(oyuncu, simdi)
 
   const gecmis = gecmisler.get(oyuncu) || []
-  const mesajlar = [...gecmis, { role: 'user', content: temiz }]
+  const mesajlar = [...gecmis, { rol: 'oyuncu', metin: temiz }]
 
-  const cagir = secenekler.cagir || apiCagir
-  let cevap
+  // İstek SAĞLAYICIDAN BAĞIMSIZ biçimde kuruluyor; her sağlayıcı onu
+  // kendi API'sinin şekline çeviriyor (bkz. saglayici/). Böylece
+  // sistem metni, araç tanımı ve geçmiş mantığı tek yerde kalıyor.
+  const istek = {
+    model: config.sohbetModeli || s.varsayilanModel,
+    maksToken: 300,
+    sistem: sistemMetni(bot, secenekler.mesgul),
+    arac: aracTanimi(),
+    mesajlar
+  }
+
+  const cagir = secenekler.cagir || ((i) => apiCagir(s, i))
+  let cozulmus
   try {
-    cevap = await cagir({
-      model: config.sohbetModeli,
-      max_tokens: 300,
-      system: sistemMetni(bot, secenekler.mesgul),
-      tools: aracSemasi(),
-      messages: mesajlar
-    })
+    cozulmus = await cagir(istek, s)
   } catch (err) {
-    log.uyari(`Sohbet katmanı cevap veremedi: ${err.message}`)
+    log.uyari(`Sohbet katmanı cevap veremedi (${s.ad}): ${err.message}`)
     return null
   }
 
-  const parcalar = Array.isArray(cevap?.content) ? cevap.content : []
-  const arac = parcalar.find((p) => p.type === 'tool_use' && p.name === 'komut_calistir')
-  const metin = parcalar.filter((p) => p.type === 'text')
-    .map((p) => p.text).join(' ').trim()
+  const arac = cozulmus?.arac || null
+  const metin = (cozulmus?.metin || '').trim()
 
   // Geçmişi güncelle (sadece metin — araç bloklarını saklamak protokolü
   // karmaşıklaştırır ve bağlam için metin yeterli)
   const yeniGecmis = [...mesajlar]
   if (metin || arac) {
     yeniGecmis.push({
-      role: 'assistant',
-      content: metin || `(${arac.input?.komut} komutunu çalıştırdım)`
+      rol: 'bot',
+      metin: metin || `(${arac.komut} komutunu çalıştırdım)`
     })
   }
   gecmisler.set(oyuncu, yeniGecmis.slice(-GECMIS_SINIRI))
 
   if (arac) {
-    const satir = komutSatiri(arac.input)
+    const satir = komutSatiri(arac)
     if (satir) return { komut: satir, cevap: metin || null }
     // Model listede olmayan bir şey istedi — reddet, sessizce yutma
-    log.uyari(`Sohbet katmanı geçersiz komut önerdi: ${JSON.stringify(arac.input)}`)
+    log.uyari(`Sohbet katmanı geçersiz komut önerdi: ${JSON.stringify(arac)}`)
     return { cevap: 'Onu yapamam. Neler yapabildiğimi görmek için "komut" yaz.' }
   }
 
   return metin ? { cevap: metin.slice(0, 200) } : null
 }
 
-async function apiCagir (govde) {
+async function apiCagir (s, istek) {
   const kontrolcu = new AbortController()
   const saat = setTimeout(() => kontrolcu.abort(), ZAMAN_ASIMI_MS)
   try {
-    const cevap = await fetch(API, {
+    const cevap = await fetch(s.API, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': config.sohbetAnahtari,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(govde),
+      headers: s.baslik(config),
+      body: JSON.stringify(s.govde(istek)),
       signal: kontrolcu.signal
     })
     if (!cevap.ok) {
       throw new Error(`HTTP ${cevap.status}: ${(await cevap.text()).slice(0, 200)}`)
     }
-    return await cevap.json()
+    return s.coz(await cevap.json())
   } finally {
     clearTimeout(saat)
   }
@@ -165,4 +174,4 @@ function gecmisiSil (oyuncu) {
   else gecmisler.clear()
 }
 
-module.exports = { yorumla, acik, gecmisiSil, durumOzeti, sistemMetni }
+module.exports = { yorumla, acik, saglayici, gecmisiSil, durumOzeti, sistemMetni }

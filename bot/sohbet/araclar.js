@@ -38,19 +38,25 @@ const IZINLI_KOMUTLAR = {
   komut: 'Bütün komutların listesini chat\'e yazar. Argüman almaz.'
 }
 
-/** Anthropic araç şeması — model bu biçimde cevap veriyor. */
-function aracSemasi () {
+/**
+ * Araç tanımı — SAĞLAYICIDAN BAĞIMSIZ.
+ *
+ * Her sağlayıcı bunu kendi API'sinin şekline çeviriyor
+ * (Anthropic `input_schema`, Gemini `parameters`). Şemanın kendisi
+ * ikisinde de JSON Schema, o yüzden tek yerde duruyor.
+ */
+function aracTanimi () {
   const satirlar = Object.entries(IZINLI_KOMUTLAR)
     .map(([k, a]) => `- ${k}: ${a}`)
     .join('\n')
 
-  return [{
-    name: 'komut_calistir',
-    description:
+  return {
+    ad: 'komut_calistir',
+    aciklama:
       'Botun bir işi yapmasını sağlar. SADECE oyuncu gerçekten bir iş ' +
       'istediyse kullan; sohbet ya da soru ise bunu çağırma, düz metinle cevap ver.\n\n' +
       'Kullanılabilir komutlar:\n' + satirlar,
-    input_schema: {
+    sema: {
       type: 'object',
       properties: {
         komut: {
@@ -67,7 +73,7 @@ function aracSemasi () {
       },
       required: ['komut']
     }
-  }]
+  }
 }
 
 /**
@@ -91,4 +97,4 @@ function komutSatiri (girdi) {
   return arguman ? `${komut} ${arguman}` : komut
 }
 
-module.exports = { IZINLI_KOMUTLAR, aracSemasi, komutSatiri }
+module.exports = { IZINLI_KOMUTLAR, aracTanimi, komutSatiri }

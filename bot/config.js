@@ -16,8 +16,14 @@ const config = {
   // SOHBET KATMANI (bot/sohbet/). Anahtar yoksa sessizce kapalı:
   // bot tam komutlarla çalışmaya devam eder. Projeyi klonlayan birinin
   // API anahtarı olmadan da her şeyi çalıştırabilmesi gerekiyor.
-  sohbetAnahtari: process.env.ANTHROPIC_API_KEY || '',
-  sohbetModeli: process.env.SOHBET_MODELI || 'claude-haiku-4-5-20251001',
+  //
+  // İki sağlayıcı destekleniyor; hangi anahtar varsa o kullanılır.
+  // Gemini'nin ÜCRETSİZ katmanı olduğu için o önce deneniyor —
+  // bu bir öğrenci portföyü, çalışması için kredi kartı gerekmemeli.
+  geminiAnahtari: process.env.GEMINI_API_KEY || '',
+  anthropicAnahtari: process.env.ANTHROPIC_API_KEY || '',
+  sohbetSaglayici: process.env.SOHBET_SAGLAYICI || '', // boş = otomatik
+  sohbetModeli: process.env.SOHBET_MODELI || '',       // boş = sağlayıcının varsayılanı
 
   // Botun davranış ayarları
   searchRadius: 64, // kaynak ararken kaç blok uzağa bakılsın
