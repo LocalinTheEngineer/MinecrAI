@@ -36,6 +36,8 @@ const GECMIS_SINIRI = 6      // 3 tur (soru + cevap)
 const sonCagri = new Map()
 
 const ZAMAN_ASIMI_MS = 12000
+// Butun denemeler icin toplam butce. Bir sohbet cevabi dakikalarca surmemeli.
+const TOPLAM_SURE_MS = 25000
 
 /** Hangi sağlayıcı kullanılacak? Anahtar yoksa null. */
 function saglayici () {
@@ -174,39 +176,71 @@ async function tekCagri (s, istek, deneme) {
   }
 }
 
+// Which (model, transport) answered last. Measured: on a free-tier key four
+// of six combinations returned 503/500/timeout before one worked — walking
+// that list on every message would put ~40s in front of every chat reply.
+// One success is worth remembering; if it later goes busy the walk resumes.
+let sonCalisan = null
+
+/** Put the last known-good attempt first. */
+function sirala (liste) {
+  if (!sonCalisan) return liste
+  const i = liste.findIndex(
+    (d) => d.model === sonCalisan.model && d.tasiyici.ad === sonCalisan.tasiyici.ad)
+  if (i <= 0) return liste
+  return [liste[i], ...liste.slice(0, i), ...liste.slice(i + 1)]
+}
+
 /**
  * Walks the provider's (model, transport) list until one answers.
  *
- * Both failure modes seen in practice are transient or per-model, not
- * per-request: 503 "high demand" on a busy model, and 404 "no longer
- * available to new users" on a retired one. Neither is worth surfacing to
+ * Failures seen in practice are transient or per-model, not per-request:
+ * 503/500 "high demand" on a busy model, 404 "no longer available to new
+ * users" on a retired one, and plain timeouts. None is worth surfacing to
  * the player as long as some combination works.
  *
  * 4xx other than 404/429 stops the walk — that is our request being wrong,
  * and another model will fail the same way.
+ *
+ * TOPLAM SURE SINIRI: a chat reply that takes a minute is not a reply. The
+ * walk gives up once the budget is spent, even with combinations left.
  */
 async function apiCagir (s, istek) {
-  const liste = s.denemeler(config.sohbetModeli)
+  const liste = sirala(s.denemeler(config.sohbetModeli))
+  const bitis = Date.now() + TOPLAM_SURE_MS
   let sonHata
   for (const deneme of liste) {
+    if (Date.now() > bitis) {
+      log.uyari('Sohbet: sure butcesi doldu, kalan modeller denenmedi')
+      break
+    }
     try {
-      return await tekCagri(s, istek, deneme)
+      const sonuc = await tekCagri(s, istek, deneme)
+      sonCalisan = deneme
+      return sonuc
     } catch (err) {
       sonHata = err
       const gecici = err.durum >= 500 || err.durum === 429 || err.durum === 404 ||
                      err.durum === undefined // timeout / network
       if (!gecici) throw err
-      if (deneme !== liste[liste.length - 1]) {
-        log.uyari(`${deneme.model}/${deneme.tasiyici.ad} olmadi (${err.durum || 'zaman asimi'}), siradakine geciliyor`)
+      if (sonCalisan && sonCalisan.model === deneme.model &&
+          sonCalisan.tasiyici.ad === deneme.tasiyici.ad) {
+        sonCalisan = null // artik calismiyor, tercihi birak
       }
+      log.uyari(`${deneme.model}/${deneme.tasiyici.ad} olmadi (${err.durum || 'zaman asimi'})`)
     }
   }
-  throw sonHata
+  throw sonHata || new Error('sure butcesi doldu')
 }
+
+/** Tests reset the remembered choice. */
+function tercihiSifirla () { sonCalisan = null }
 
 function gecmisiSil (oyuncu) {
   if (oyuncu) gecmisler.delete(oyuncu)
   else gecmisler.clear()
 }
 
-module.exports = { yorumla, acik, saglayici, gecmisiSil, durumOzeti, sistemMetni }
+module.exports = {
+  yorumla, acik, saglayici, gecmisiSil, tercihiSifirla, durumOzeti, sistemMetni
+}

@@ -2450,6 +2450,72 @@ async function main () {
     }
   })
 
+  await dene('sohbet: CALISAN kombinasyonu hatirliyor', async () => {
+    // Olculdu: ucretsiz anahtarla alti kombinasyonun dordu 503/500/zaman
+    // asimi verdi, besincisi calisti. Her mesajda o listeyi bastan yurumek
+    // her cevabin onune ~40 saniye koyardi. Bir kez bulunan calisan
+    // kombinasyon hatirlanmali.
+    const config = require('../bot/config')
+    const beyin = require('../bot/sohbet/beyin')
+    const eski = [config.geminiAnahtari, config.anthropicAnahtari]
+    config.geminiAnahtari = 'test'
+    beyin.gecmisiSil(); beyin.tercihiSifirla()
+
+    // Bu testte gercek HTTP yok: `cagir` sahtesi zaten cozulmus donuyor,
+    // yani dogrudan sirayi olcemeyiz. Onun yerine gercek yolu kullanan
+    // bir sahte fetch kuruyoruz.
+    // URL DEGIL, MODEL+URL kaydediyoruz. Interactions uc noktasinin URL'i
+    // modeli ICERMIYOR, o yuzden sadece URL'e bakan bir test iki farkli
+    // denemeyi ayirt edemiyor -- ilk yazisimda tam bu yuzden sabotaji
+    // yakalayamadi.
+    const gercekFetch = global.fetch
+    const gorulen = []
+    const basarisiz = new Set()   // hangi kimlikler 503 dondu
+    global.fetch = async (url, secenekler) => {
+      const govde = JSON.parse(secenekler.body)
+      const model = govde.model || url.split('/').pop().split(':')[0]
+      const kimlik = `${model}@${url}`
+      gorulen.push(kimlik)
+      // Ilk iki BENZERSIZ kombinasyon basarisiz, sonrakiler basarili
+      if (basarisiz.size < 2 && !basarisiz.has(kimlik)) {
+        basarisiz.add(kimlik)
+        return { ok: false, status: 503, text: async () => 'busy' }
+      }
+      if (basarisiz.has(kimlik)) {
+        return { ok: false, status: 503, text: async () => 'busy' }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: 'Tamam.' }] } }] })
+      }
+    }
+
+    try {
+      const b = sahteBot()
+      const ilk = await beyin.yorumla(b, 'oyuncu1', 'selam')
+      if (!ilk || ilk.cevap !== 'Tamam.') throw new Error(`ilk cagri: ${JSON.stringify(ilk)}`)
+      const ilkSayi = gorulen.length
+      if (ilkSayi !== 3) throw new Error(`ilk mesaj ${ilkSayi} istek atti, 3 bekleniyordu`)
+
+      const calisanKimlik = gorulen[2]
+      gorulen.length = 0
+      await beyin.yorumla(b, 'oyuncu2', 'selam')
+
+      if (gorulen.length !== 1) {
+        throw new Error(`ikinci mesaj ${gorulen.length} istek atti — tercih hatirlanmadi`)
+      }
+      if (gorulen[0] !== calisanKimlik) {
+        throw new Error(
+          `ikinci mesaj ${gorulen[0]} ile basladi, ${calisanKimlik} bekleniyordu`)
+      }
+    } finally {
+      global.fetch = gercekFetch
+      ;[config.geminiAnahtari, config.anthropicAnahtari] = eski
+      beyin.gecmisiSil(); beyin.tercihiSifirla()
+    }
+  })
+
   await dene('sohbet: API cokerse bot calismaya devam ediyor', async () => {
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
