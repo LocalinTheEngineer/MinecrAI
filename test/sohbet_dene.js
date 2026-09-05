@@ -82,7 +82,7 @@ async function main () {
     mesajlar: [{ rol: 'oyuncu', metin: mesaj }]
   }
 
-  // --- 3a. Once BAGLANTI, sonra anahtar, sonra istek. Sirayla daralt.
+  // --- 3a. Connection first, then the key, then the request. Narrow down in order.
   console.log('\n=== 3. BAGLANTI ===')
   const hedef = new URL(denemeler[0].tasiyici.url({ ...istek, model })).origin
   try {
@@ -95,7 +95,7 @@ async function main () {
     process.exit(1)
   }
 
-  // --- 3b. Anahtar gecerli mi? Basit bir GET, arac/model karmasasi yok.
+  // --- 3b. Is the key valid? A plain GET, no tool/model complications.
   if (s.ad === 'gemini') {
     console.log('\n=== 3b. ANAHTAR GECERLI MI (model listesi) ===')
     try {
@@ -117,9 +117,9 @@ async function main () {
       const destekli = (m) => m.supportedGenerationMethods || m.supported_generation_methods || []
       console.log(`  Anahtar GECERLI. ${liste.length} model erisilebilir.`)
 
-      // generateContent DESTEKLEYENLER — asil onemli olan bu.
-      // Bir model listede olabilir ama bu yontemi desteklemiyor olabilir;
-      // o zaman istek ya garip bir hata verir ya da hic cevap vermez.
+      // The ones that support generateContent -- that is what actually
+      // matters. A model can be in the list without supporting this method,
+      // and then the request either fails oddly or never answers.
       const uygun = liste.filter((m) => destekli(m).includes('generateContent')).map(ad)
       const ornek = uygun.filter((a) => /flash|lite/.test(a) && !/image|tts|audio|live/.test(a))
       console.log(`  generateContent destekleyen: ${uygun.length} model`)

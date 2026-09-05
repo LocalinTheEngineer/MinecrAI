@@ -1,10 +1,10 @@
-"""Milestone 3, adim 2: taklit ederek ogrenme (behaviour cloning).
+"""Milestone 3, step 2: behaviour cloning.
 
-collect_demos.py ile toplanan (gozlem, aksiyon) ciftlerini kullanarak bir
-sinir agini uzmani taklit etmesi icin egitir. Burada Minecraft'a hic
-baglanmiyoruz — bu asama tamamen cevrimdisi.
+Trains a network to imitate the expert from the (observation, action) pairs
+collected by collect_demos.py. Nothing connects to Minecraft here -- this
+stage is fully offline.
 
-Kullanim:
+Usage:
     python train_bc.py --epoch 60
 """
 
@@ -37,9 +37,10 @@ def veriyi_bol(X, y, dogrulama_orani=0.2, tohum=0):
 
 
 def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
-    """Uzman cogu adimda ayni seyi yapiyorsa model o aksiyona saplanir.
+    """Weight rare actions higher.
 
-    Az goruleni daha agir tartarak dengeliyoruz.
+    If the expert does the same thing on most steps, the model collapses onto
+    that one action.
     """
     sayim = np.bincount(y, minlength=len(AKSIYONLAR)).astype(np.float32)
     sayim[sayim == 0] = 1.0
@@ -47,9 +48,9 @@ def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
     return torch.as_tensor(agirlik, dtype=torch.float32)
 
 
-# `gozlemleri_hazirla` artik minecrai/veri.py icinde -- kopyasi
-# pretrain_ppo.py icinde de vardi ve ayni duzeltmeyi iki kez yapmak
-# zorunda kaldik. Eski ice aktarmalar calissin diye buradan da gorunuyor.
+# `gozlemleri_hazirla` now lives in minecrai/veri.py -- a copy was in
+# pretrain_ppo.py too and the same fix had to be made twice. Still visible
+# from here so the old imports keep working.
 from minecrai.veri import gozlemleri_hazirla  # noqa: F401
 
 
@@ -64,8 +65,9 @@ def main() -> None:
     ap.add_argument("--ogrenme-orani", type=float, default=1e-3)
     args = ap.parse_args()
 
-    # Yollar göreve göre. Odun mevcut adları korur (geriye dönük uyum),
-    # maden '_maden' ekiyle ayrılır — biri diğerinin modelini ezmesin.
+    # Paths depend on the task. Odun keeps the existing names (backwards
+    # compatible), maden gets a '_maden' suffix so neither overwrites the
+    # other's model.
     y = yollar(args.gorev)
     if args.veri is None:
         args.veri = y["veri"]
@@ -81,9 +83,9 @@ def main() -> None:
         )
 
     d = np.load(args.veri)
-    # Kayitli veri HAM gozlem iceriyor; agin gordugu bicime cevir.
-    # Turetilmis ozellikler ham veriden hesaplanabildigi icin eski kayitlar
-    # yeniden toplanmadan kullanilabiliyor.
+    # Saved data holds raw observations; convert to the form the net sees.
+    # Derived features are computed from the raw values, so recordings made
+    # before they existed still work without re-collecting.
     from minecrai.env import gozlem_boyutu
     GOZLEM = gozlem_boyutu(args.gorev)
     X = gozlemleri_hazirla(d["gozlemler"], args.gorev)

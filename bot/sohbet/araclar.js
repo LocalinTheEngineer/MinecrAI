@@ -17,6 +17,11 @@
  *   koru / korumalar / korumasil — protection zones are the player's own
  *   call, and `korumasil` is destructive: one misunderstanding wipes every
  *   zone and there is no undo.
+ *   yersil — same reason. Saving and walking to a place is safe, deleting
+ *   one the player spent time marking is not.
+ *   korun — turns on fighting back automatically, on a world the model
+ *   cannot see. Pets, villagers and other players are all in swinging
+ *   range of that decision.
  */
 
 // Commands the model can pick from. Key = command, value = what it does.
@@ -27,6 +32,14 @@ const MAKS_ADIM = 4
 
 const IZINLI_KOMUTLAR = {
   gel: 'Oyuncunun yanına yürür. Argüman almaz.',
+  git: 'Bir koordinata ya da kayıtlı bir yere yürür. Argüman: "<x> <y> <z>" (örn "120 64 -300"), sadece "<x> <z>" ya da kayıtlı yer adı (örn "ev").',
+  burasi: 'Oyuncunun durduğu noktayı verilen adla kaydeder, sonra "git <ad>" ile oraya gidilir. Argüman: yer adı, örn "ev", "koy".',
+  yerler: 'Kayıtlı yerleri chat\'e yazar. Argüman almaz.',
+  ye: 'Envanterindeki en iyi yemeği yer. Argüman almaz.',
+  savas: 'Yakındaki düşman yaratığa saldırır (creeper\'a bulaşmaz, ondan uzaklaşır). Argüman: arama yarıçapı, örn "10". Boş bırakılabilir.',
+  platform: 'Ayağının altına kare bir zemin örer. Argüman: kenar uzunluğu 1-7, örn "3".',
+  duvar: 'Baktığı yöne duvar örer. Argüman: "<en> [yukseklik]", örn "3 2".',
+  kapat: 'Tam önündeki 1 genişlik 2 yükseklik boşluğu kapatır. Argüman almaz.',
   kes: 'Ağaç keser. Argüman: adet (1-64) ya da "surekli". Boş bırakılırsa 1 ağaç.',
   kaz: 'Yer altına inip cevher kazar. Argüman: "<cevher> [adet]", örn "demir 5", "elmas", "tas 20".',
   uret: 'Bir eşya üretir; eksik ham maddeyi kendi toplar ve eritir. Argüman: "<esya> [adet]", örn "tas kazma", "cubuk 8", "demir kazma".',
@@ -81,7 +94,7 @@ function aracTanimi () {
                 type: 'string',
                 description:
                   'Komutun argümanı, yoksa boş bırak. Örn kes için "3", ' +
-                  'uret için "tas kazma", kaz için "demir 5".'
+                  'uret için "tas kazma", kaz için "demir 5", git için "ev" ya da "120 64 -300".'
               }
             },
             required: ['komut']
@@ -108,7 +121,10 @@ function komutSatiri (girdi) {
   let arguman = typeof girdi.arguman === 'string' ? girdi.arguman : ''
   // Letters, digits, spaces and Turkish characters only. No newlines and no
   // '/': something starting with '/' can be read as a server command.
-  arguman = arguman.toLowerCase().replace(/[^a-z0-9çğıöşü\s]/g, ' ')
+  // '-' is allowed because coordinates are negative half the time; stripping
+  // it turned "git 100 64 -300" into a walk to +300. '/' stays out: an
+  // argument starting with it can be read as a server command.
+  arguman = arguman.toLowerCase().replace(/[^a-z0-9çğıöşü\-\s]/g, ' ')
     .replace(/\s+/g, ' ').trim().slice(0, 40)
 
   return arguman ? `${komut} ${arguman}` : komut

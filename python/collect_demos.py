@@ -1,15 +1,15 @@
-"""Milestone 3, adim 1: uzmandan demo verisi topla.
+"""Milestone 3, step 1: collect demo data from the expert.
 
-Uzman politika (bot/bridge/expert.js) gorevi zaten dogru yapiyor. Onu
-calistirip her adimda iki seyi kaydediyoruz:
+The expert policy (bot/bridge/expert.js) already does the task correctly.
+Run it and record two things on every step:
 
-    gozlem (12 sayi)  ->  uzmanin sectigi aksiyon (0-4)
+    observation (12 numbers)  ->  the action the expert chose (0-4)
 
-Ortaya cikan veri seti artik bir RL problemi degil, duz bir siniflandirma
-problemi: "bu duruma bak, uzman ne yapardi?"
+The resulting dataset is no longer an RL problem, it is a plain
+classification problem: "look at this state, what would the expert do?"
 
-Kullanim:
-    1) Minecraft sunucusunu baslat
+Usage:
+    1) start the Minecraft server
     2) npm run bridge
     3) python collect_demos.py --bolum 30
 """
@@ -48,16 +48,16 @@ def topla(
     gurultu: float = 0.0,
     tohum: int = 0,
 ):
-    """Uzmani calistirip (gozlem, uzman_aksiyonu) ciftlerini kaydeder.
+    """Runs the expert and records (observation, expert_action) pairs.
 
-    gurultu > 0 ise bazen uzmanin dedigi yerine RASTGELE bir aksiyon uygulanir
-    ama etiket olarak yine UZMANIN aksiyonu kaydedilir.
+    With gurultu > 0 a random action is sometimes applied instead of the one
+    the expert asked for, but the label recorded is still the expert's action.
 
-    Bu kasitli: uzman hicbir zaman hata yapmadigi icin demolar hep "her sey
-    yolunda" durumlarindan olusuyor. Ajan calisirken kacinilmaz olarak
-    uzmanin hic gormedigi durumlara dusuyor ve ne yapacagini bilemiyor
-    (covariate shift). Gurultu, "isler ters gittiginde uzman ne yapardi"
-    orneklerini uretir.
+    That is deliberate: the expert never makes a mistake, so the demos consist
+    entirely of "everything is going fine" states. A running agent inevitably
+    ends up in states the expert never saw and has no idea what to do there
+    (covariate shift). The noise produces "what would the expert do when
+    things go wrong" examples.
     """
     rng = np.random.default_rng(tohum)
     gozlemler: list[np.ndarray] = []
@@ -73,19 +73,20 @@ def topla(
         for adim in range(1, maks_adim + 1):
             aksiyon = env.uzman_aksiyonu()
 
-            # ONEMLI: gozlem, aksiyonun UYGULANMASINDAN ONCEKI durum olmali.
+            # The observation has to be the state before the action is
+            # applied, not after.
             #
-            # Ve HAM gozlem kaydedilmeli, zenginlestirilmis olan degil:
-            # zenginlestirme egitim tarafinda yapiliyor, burada da
-            # yaparsak iki kez uygulanmis oluyor (16 -> 19 -> 22) ve ag
-            # coker. `zenginlestir` ham gozlemin saf bir fonksiyonu
-            # oldugu icin ham hali saklamak ayrica esneklik veriyor:
-            # turetilmis alanlari degistirirsek eski demolar hala gecerli.
+            # And it has to be the raw observation, not the enriched one:
+            # enrichment happens on the training side, so doing it here too
+            # applies it twice (16 -> 19 -> 22) and the net collapses. Since
+            # `zenginlestir` is a pure function of the raw observation,
+            # storing the raw form also keeps things flexible: change the
+            # derived fields and old demos are still valid.
             gozlemler.append(env.son_ham_gozlem.copy())
             aksiyonlar.append(aksiyon)
 
-            # Uygulanan aksiyon bazen rastgele — ama YUKARIDA kaydedilen
-            # etiket her zaman uzmanin aksiyonu.
+            # The action actually applied is sometimes random -- the label
+            # recorded above is always the expert's.
             uygulanan = aksiyon
             if gurultu > 0 and rng.random() < gurultu:
                 uygulanan = int(rng.integers(env.action_space.n))
@@ -99,17 +100,17 @@ def topla(
         bolum_odulleri.append(toplam_odul)
         bolum_odunlari.append(odun)
 
-        # HER BOLUM SONUNDA kaydet. Toplama uzun surer ve yarida kesilirse
-        # (Ctrl+C, zaman asimi, sunucu kopmasi) o ana kadarki veri durur.
+        # Save at the end of every episode. Collection takes a long time, and
+        # if it is cut short (Ctrl+C, timeout, server drop) the data up to
+        # that point survives.
         _kaydet(cikti, gozlemler, aksiyonlar, bolum_odulleri, bolum_odunlari)
 
-        # HANGI GOREV OLDUGUNU YAZ.
+        # Print which task this episode was.
         #
-        # Cok gorevli toplamada (Milestone 6) bu satir olmadan kullanici
-        # gorevlerin gercekten donusumlu geldigini goremiyor -- ilk denemede
-        # bunu ancak kaydedilen dosyayi acip gorev sutununu sayarak
-        # dogrulayabildim. Ekranda gorunmeyen bir sey ariza cikardiginda
-        # fark edilmiyor.
+        # In multi-task collection (Milestone 6) nothing on screen shows that
+        # the tasks really do alternate; the first run had to be verified by
+        # opening the saved file and counting the task column. A failure in
+        # something invisible does not get noticed.
         etiket = bolum_bilgisi.get("gorev", "")
         etiket = f"  [{etiket}]" if etiket else ""
         print(
@@ -130,17 +131,18 @@ def topla(
 
 
 def veri_sagligi(X: np.ndarray, y: np.ndarray) -> bool:
-    """Toplanan verinin OGRENILEBILIR olup olmadigini soyler.
+    """Says whether the collected data is learnable at all.
 
-    NEDEN VAR: iki toplama turu (~45 dakika) cope gitti ve bunu ancak
-    taklit egitimi cokunce fark ettik -- hatta o zaman bile once yanlis
-    teshis koyduk. Sebep `MinecraftEnv.step()` icinde `son_ham_gozlem`in
-    guncellenmemesiydi: bir bolumun butun ornekleri AYNI gozleme, farkli
-    aksiyonlara sahipti. 4498 ornekte 30 benzersiz gozlem satiri.
+    Two collection runs (~45 minutes) were thrown away, and the problem only
+    showed up when BC training collapsed -- and even then it was misdiagnosed
+    first. The cause was `son_ham_gozlem` not being updated inside
+    `MinecraftEnv.step()`: every sample of an episode had the same observation
+    with different actions. 4498 samples, 30 unique observation rows.
 
-    Boyle bir veri sessizce kaydediliyor, dosya normal gorunuyor ve hata
-    ancak saatler sonra "ag ogrenemiyor" olarak ortaya cikiyor. Olcebildigimiz
-    bir ariza sessiz kalmamali -- burada, toplama biter bitmez soyluyoruz.
+    Data like that is written out silently, the file looks normal, and the
+    fault only surfaces hours later as "the net won't learn". A failure that
+    can be measured should not stay quiet, so it is reported here as soon as
+    collection ends.
     """
     if len(X) < 2:
         return True
@@ -176,10 +178,11 @@ def main() -> None:
                     help="hangi gorevin demolari toplanacak")
     args = ap.parse_args()
 
-    # Demoları göreve göre AYRI dosyalara yaz. Karıştırmak, iki farklı
-    # görevin (gözlem, aksiyon) çiftlerini tek bir ağa aynı etiketmiş gibi
-    # göstermek olurdu — "önümde taş var" durumunda odun görevi dolaşmayı,
-    # maden görevi kırmayı öğretiyor. Aynı girdi, zıt etiket.
+    # Separate demo file per task. Mixing them would show one net the
+    # (observation, action) pairs of two different tasks as if they carried
+    # the same label -- in "stone in front of me" the odun task teaches
+    # walking around it, the maden task teaches breaking it. Same input,
+    # opposite label.
     if args.cikti == VARSAYILAN_CIKTI:
         args.cikti = yollar(args.gorev)["veri"]
 

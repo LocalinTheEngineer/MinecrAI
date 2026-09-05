@@ -1,13 +1,13 @@
-"""Milestone 3, adim 3: politikalari karsilastir.
+"""Milestone 3, step 3: compare the policies.
 
-Uc politikayi ayni kosullarda calistirip karsilastirir:
-  - rastgele : hicbir sey ogrenmemis taban cizgisi
-  - bc       : uzmani taklit etmeyi ogrenmis ag
-  - uzman    : elle yazilmis kural seti (tavan degeri)
+Runs three policies under the same conditions and compares them:
+  - rastgele : baseline that learned nothing
+  - bc       : net that learned to imitate the expert
+  - uzman    : hand-written rule set (the ceiling)
 
-README'ye koyacagimiz "before/after" grafigi buradan cikiyor.
+The "before/after" plot for the README comes from here.
 
-Kullanim:
+Usage:
     python eval_agent.py --bolum 10
 """
 
@@ -48,36 +48,35 @@ def bolum_calistir(env: MinecraftEnv, politika, maks_adim: int, gorev=None):
 
 
 def donusumlu_degerlendir(env, politikalar, bolum, maks_adim):
-    """Politikalari SIRAYLA degil DONUSUMLU calistirir.
+    """Runs the policies alternating, not one block at a time.
 
-    Neden onemli: dunya degerlendirme sirasinda degisiyor. Agaclar kesiliyor,
-    yere odun dokuluyor. Politikalari blok blok calistirinca ilki en taze
-    ormani goruyor, sonuncusu tukenmis alani. Olctuk: rastgele ajan ilk
-    sirada 4.6 odun "topluyor" — becerisinden degil, oncekilerin dokttugu
-    yiginlarin ustunden gectigi icin.
+    The world changes during evaluation: trees get cut, wood ends up on the
+    ground. Run policy by policy and the first one sees the freshest forest,
+    the last one a stripped patch. Measured: the random agent "collects" 4.6
+    wood when it goes first -- not from skill, but from walking over the piles
+    the earlier ones dropped.
 
-    Donusumlu sirada (A,B,C, A,B,C, ...) tukenme hepsini esit etkiliyor.
+    Alternating (A,B,C, A,B,C, ...) lets the depletion hit all of them equally.
     """
     sonuc = {ad: {"oduller": [], "odunlar": [], "adimlar": []} for ad, _ in politikalar}
 
-    # HER TUR SONUNDA HAM SONUCU DISKE YAZ.
+    # Write the raw result to disk at the end of every round.
     #
-    # Bu yoktu ve degerlendirme 40+ dakika suruyor. Yarida kesilince
-    # (Ctrl+C, elektrik, soket kopmasi) hicbir sey kaydedilmiyordu --
-    # sadece ekrana basilanlar kaliyordu. Uzun suren hicbir is, yarida
-    # kesilince tamamen kaybolmamali; demo toplama zaten her bolumde
-    # kaydediyor, degerlendirme de artik oyle.
+    # This was missing, and evaluation takes 40+ minutes. Interrupted halfway
+    # (Ctrl+C, power, socket drop) nothing was saved -- only what had already
+    # been printed. No long job should vanish completely when it is cut short;
+    # demo collection already saves every episode, and evaluation now does too.
     ham_yol = KOK / "models" / "eval_ham.csv"
     ham_yol.parent.mkdir(parents=True, exist_ok=True)
     with open(ham_yol, "w", encoding="utf-8", newline="") as f:
         yazici = csv.writer(f)
         yazici.writerow(["tur", "gorev", "politika", "odul", "odun", "adim"])
 
-        # TURUN GOREVINI ACIKCA SEC (cok gorevli ortamda).
+        # Pick the round's task explicitly (multi-task environment).
         #
-        # Bir turdaki BUTUN politikalar ayni gorevi oynasin. Bkz.
-        # minecrai/coklu.py -- bunu ortama birakmak politika sayisinin
-        # tek olmasina bagli, sessiz bir olcum hatasiydi.
+        # Every policy in a round has to play the same task. See
+        # minecrai/coklu.py -- leaving this to the environment only worked
+        # when the policy count was odd, a silent measurement error.
         tur_gorevleri = getattr(env, "gorevler", None)
 
         for tur in range(bolum):
@@ -92,7 +91,7 @@ def donusumlu_degerlendir(env, politikalar, bolum, maks_adim):
                 sonuc[ad]["odunlar"].append(w)
                 sonuc[ad]["adimlar"].append(a)
                 yazici.writerow([tur + 1, tur_gorevi or "", ad, f"{o:.4f}", w, a])
-                f.flush()  # kesilirse diskte olsun
+                f.flush()  # so it is on disk if this gets interrupted
                 print(f"  tur {tur + 1}/{bolum}  {ad:<9} odul={o:+7.2f}  odun={w:2d}  adim={a}")
             print()
 
@@ -138,13 +137,13 @@ def main() -> None:
     if args.model.exists():
         from minecrai.policy import yukle
         model = yukle(args.model)
-        # ORNEKLEYEREK sec, argmax ile degil.
+        # Sample, do not take the argmax.
         #
-        # argmax deterministik: politika bir duruma saplandiginda ayni
-        # aksiyonu sonsuza kadar tekrarliyor ve kendini kilitliyor. Olctuk:
-        # 5 bolumun 3'u tam 60 adimda durgunluk siniriyla bitti.
-        # Olasiliga gore ornekleme bu kilidi kiriyor; PPO da egitim sirasinda
-        # zaten boyle davraniyor.
+        # argmax is deterministic: once the policy gets stuck in a state it
+        # repeats the same action forever and locks itself up. Measured: 3 of
+        # 5 episodes ended at exactly 60 steps on the stall limit. Sampling by
+        # probability breaks the lock, and PPO behaves this way during
+        # training anyway.
         politikalar.append(
             ("bc", lambda obs, e: model.aksiyon_sec(obs, orneklem=not args.argmax))
         )
@@ -152,7 +151,7 @@ def main() -> None:
         print(f"UYARI: {args.model} yok — bc atlaniyor. Once train_bc.py calistir.")
 
     def ppo_ekle(ad: str, yol: Path) -> None:
-        """PPO tabanli bir politikayi karsilastirmaya ekler."""
+        """Adds a PPO-based policy to the comparison."""
         if not yol.exists():
             print(f"UYARI: {yol} yok — {ad} atlaniyor.")
             return
@@ -160,36 +159,35 @@ def main() -> None:
         m = PPO.load(yol, device="cpu")
 
         def politika(obs, e, _m=m):
-            # deterministic=False: PPO da egitim sirasinda ornekleyerek
-            # davraniyor; argmax ile calistirmak ajani kilitleyebiliyor
-            # (bc politikasinda tam olarak bu oldu)
+            # deterministic=False: PPO samples during training too, and
+            # running it with argmax can lock the agent up (exactly what
+            # happened with the bc policy)
             aksiyon, _ = _m.predict(obs, deterministic=False)
             return int(aksiyon)
 
         politikalar.append((ad, politika))
 
-    # RL'IN KATKISINI DOGRUDAN OLC.
+    # Measure what RL contributes, directly.
     #
-    # Onceden karsilastirma "ppo vs bc" idi ve bu YANLIS SORU: ikisi farkli
-    # ag mimarileri, farkli egitim yordamlari, farkli ornekleme davranislari.
-    # Aralarindaki farkin ne kadari RL'den geliyor bilinemiyor. Milestone
-    # 4'te tam olarak buna takildik -- fark anlamli cikmadi ve sebebini
-    # soyleyemedik.
+    # The comparison used to be "ppo vs bc", which is the wrong question: the
+    # two are different architectures, different training procedures,
+    # different sampling behaviour. There is no telling how much of the gap
+    # comes from RL. Milestone 4 got stuck on exactly this -- the difference
+    # came out insignificant and there was no way to say why.
     #
-    # 'ppo_on' ile 'ppo' AYNI ag, AYNI mimari; aralarindaki TEK fark RL
-    # egitimi. Ikisini ayni turlarda, donusumlu sirayla kosturunca
-    # "pekistirmeli ogrenme taklidin ustune ne katti" sorusunun cevabi
-    # dogrudan okunuyor. Eslestirilmis karsilastirma oldugu icin bolumler
-    # arasi degiskenlik de (cevher damarlarinin seyrekligi) buyuk olcude
-    # sadelesiyor.
+    # 'ppo_on' and 'ppo' are the same net and the same architecture; the only
+    # difference between them is RL training. Running them in the same rounds,
+    # alternating, reads off the answer to "what did reinforcement learning add
+    # on top of imitation". Being a paired comparison, it also removes most of
+    # the between-episode variance (how sparse the ore veins happen to be).
     if args.ppo_on is not None:
         ppo_ekle("ppo_on", args.ppo_on)
     ppo_ekle("ppo", args.ppo)
 
     politikalar.append(("uzman", lambda obs, e: e.uzman_aksiyonu()))
 
-    # Uzmanin gerekcelerini say — "hicbir sey yapmiyor" durumunda
-    # NEDEN yapmadigini tahmin etmek yerine okuyoruz
+    # Count the expert's reasons -- when it does nothing, read why instead of
+    # guessing
     sebepler: dict[str, int] = {}
 
     print(f"\n{len(politikalar)} politika, {args.bolum} tur, donusumlu sira\n")
@@ -204,7 +202,7 @@ def main() -> None:
     print("-" * 72)
     for r in sonuclar:
         o, w = r["oduller"], r["odunlar"]
-        # Ortalamanin standart hatasi: sd / sqrt(n)
+        # Standard error of the mean: sd / sqrt(n)
         hata = o.std(ddof=1) / np.sqrt(len(o)) if len(o) > 1 else 0.0
         print(
             f"{r['ad']:<10} {o.mean():>+12.2f} ± {hata:>5.2f} (sd {o.std(ddof=1):>4.1f})"
@@ -213,18 +211,18 @@ def main() -> None:
         )
     print("=" * 72)
 
-    # FARK GURULTUNUN ICINDE MI?
+    # Is the difference inside the noise?
     #
-    # Bu gorevde bolumler arasi degiskenlik cok yuksek: ayni politika bir
-    # bolumde +8, digerinde -2 alabiliyor. Az orneklem ile ortalamalari
-    # siralamak, olmayan bir sonucu iddia etmek olur.
+    # Between-episode variance is very high on this task: the same policy can
+    # score +8 in one episode and -2 in the next. Ranking means on a small
+    # sample claims a result that is not there.
     #
-    # Olcut: iki politikanin farki, ikisinin standart hatalarinin
-    # toplamindan buyuk mu? (kaba ama okunakli bir anlamlilik testi)
+    # Test: is the gap between two policies larger than the sum of their
+    # standard errors? (crude but readable significance check)
     #
-    # ONEMLI: sadece ilk ikiyi karsilastirmak sonucu EKSIK raporlar.
-    # "ppo vs bc" gurultude olabilir ama "ppo vs rastgele" anlamli olabilir --
-    # ve asil rapor edilecek sonuc odur. O yuzden butun ciftlere bakiyoruz.
+    # Comparing only the top two reports an incomplete result. "ppo vs bc" may
+    # be in the noise while "ppo vs rastgele" is significant -- and that is the
+    # result worth reporting. So every pair is checked.
     sirali = sorted(sonuclar, key=lambda r: -r["oduller"].mean())
     if len(sirali) >= 2 and n > 1:
         def _hata(r):
@@ -250,8 +248,9 @@ def main() -> None:
         else:
             print("\n  >> Hicbir cift ayrisMIyor: bu veriyle siralama yapma.")
 
-        # Kac bolum gerekirdi? Gozlenen sd'den hesapla, sabit sayi uydurma.
-        # Iki ortalamanin farkinin ayrismasi icin kabaca: n >= 2*(sd/fark)^2
+        # How many episodes would it take? Compute it from the observed sd
+        # instead of inventing a fixed number. For two means to separate,
+        # roughly: n >= 2*(sd/diff)^2
         a, b = sirali[0], sirali[1]
         fark12 = a["oduller"].mean() - b["oduller"].mean()
         sd_ort = (a["oduller"].std(ddof=1) + b["oduller"].std(ddof=1)) / 2

@@ -1,18 +1,18 @@
-"""HIZLI KONTROL — Python tarafi. Minecraft gerekmez, ~20 saniye surer.
+"""Quick check, Python side. No Minecraft needed, takes ~20 seconds.
 
-NEDEN VAR: `test/smoke.js` Node tarafini koruyor ama Python tarafinda
-hicbir ag yoktu. Iki kez ayni sinif hata kullaniciya kaldi:
+`test/smoke.js` covers the Node side, but the Python side had no net at all.
+The same class of bug reached the user twice:
 
-  - `komut.startsWith('uret ')` (Node) -- kod calisiyordu ama dal hic
-    tetiklenmiyordu
-  - `NameError: name 'a' is not defined` (Python) -- `train_bc.py` 40
-    dakikalik veri toplamanin HEMEN ARDINDAN coktu
+  - `komut.startsWith('uret ')` (Node) -- the code ran but the branch never
+    fired
+  - `NameError: name 'a' is not defined` (Python) -- `train_bc.py` crashed
+    right after 40 minutes of data collection
 
-Ikisi de `python -m py_compile` ile yakalanmiyor: sozdizimi dogru, hata
-calisma aninda. Tek guvenilir yol kodu gercekten CALISTIRMAK.
+Neither is caught by `python -m py_compile`: the syntax is fine, the error is
+at runtime. The only reliable way is to actually run the code.
 
-Bu dosya sentetik veriyle butun egitim scriptlerini bastan sona kosuyor.
-Kod degistirdikten sonra:  python test/smoke.py
+This file runs every training script end to end on synthetic data.
+After changing code:  python test/smoke.py
 """
 
 from __future__ import annotations
@@ -35,18 +35,18 @@ def dene(ad, fn):
     try:
         fn()
         print(f"  PASS  {ad}")
-    except Exception as err:  # noqa: BLE001 - test kosucusu
+    except Exception as err:  # noqa: BLE001 - test runner
         print(f"  FAIL  {ad} -> {type(err).__name__}: {err}")
         hata += 1
 
 
 def sahte_veri(yol: Path, ham_boyut: int, n: int = 400) -> None:
-    """Gercekci sekilli sentetik demo dosyasi."""
+    """Synthetic demo file with realistic shapes."""
     rng = np.random.default_rng(0)
     gozlemler = rng.uniform(-1, 1, size=(n, ham_boyut)).astype(np.float32)
-    if ham_boyut == 21:  # cok gorevli: son sutun GOREV INDISI, rastgele ondalik degil
+    if ham_boyut == 21:  # multi-task: last column is the task index, not a random float
         gozlemler[:, -1] = rng.integers(0, 2, n)
-    # Her aksiyon en az bir kez gecsin: sinif agirliklari bos sinifta patlar
+    # Every action has to appear at least once: class weights blow up on an empty class
     aksiyonlar = np.concatenate([
         np.arange(5, dtype=np.int64),
         rng.integers(0, 5, size=n - 5, dtype=np.int64),
@@ -55,7 +55,7 @@ def sahte_veri(yol: Path, ham_boyut: int, n: int = 400) -> None:
 
 
 def script_kos(ad: str, argv: list[str]) -> None:
-    """Bir CLI scriptini gercekten calistir (__main__ olarak)."""
+    """Actually run a CLI script (as __main__)."""
     eski = sys.argv
     sys.argv = [ad] + argv
     try:
@@ -78,10 +78,10 @@ def main() -> None:
         assert HAM_BOYUTLARI == beklenen, HAM_BOYUTLARI
         for gorev, ham in HAM_BOYUTLARI.items():
             assert ham_boyutu(gorev) == ham
-        # odun/maden: ham + 3 turetilmis
+        # odun/maden: raw + 3 derived
         assert gozlem_boyutu("odun") == 19
         assert gozlem_boyutu("maden") == 23
-        # hepsi: gorev indisi (1 sayi) one-hot'a (2 sayi) aciliyor
+        # hepsi: the task index (1 number) expands into a one-hot (2 numbers)
         assert gozlem_boyutu("hepsi") == 25, gozlem_boyutu("hepsi")
     dene("odun 16->19, maden 20->23, hepsi 21->25", boyutlar)
 
@@ -94,12 +94,13 @@ def main() -> None:
     dene("zenginlestirici() her gorevde dogru sekli veriyor", zengin_sekli)
 
     def gorev_bayragi():
-        """Cok gorevli gozlem HANGI GOREVDE oldugunu tasimali.
+        """A multi-task observation has to carry which task it is in.
 
-        Tasimazsa ayni girdiye celiskili etiket dusuyor: "onumde tas var"
-        durumunda odun gorevi "dolas", maden gorevi "kir" diyor. Ag ikisinin
-        ortalamasini ogrenir, yani hicbirini. Milestone 5b'de bunun baska bir
-        bicimini yasadik (donmus gozlem) ve kayip tam ln(4)'te takilmisti.
+        Without it the same input gets contradictory labels: in "stone in
+        front of me" the odun task says "walk around it", the maden task says
+        "break it". The net learns the average of the two, which is neither.
+        Milestone 5b hit another form of this (frozen observation) and the
+        loss stuck at exactly ln(4).
         """
         from minecrai.env import COKLU_GOREVLER, ham_boyutu, zenginlestir_coklu
         n = ham_boyutu("hepsi")
@@ -111,7 +112,7 @@ def main() -> None:
             cikti.append(g)
             tek = g[-len(COKLU_GOREVLER):]
             assert tek[indis] == 1 and tek.sum() == 1, (indis, tek)
-        # Iki gorevin gozlemi BIRBIRINDEN AYIRT EDILEBILIR olmali
+        # The observations of the two tasks have to be distinguishable
         assert not np.array_equal(cikti[0], cikti[1]), "gorevler ayirt edilemiyor"
     dene("cok gorevli gozlem GOREV bilgisini tasiyor", gorev_bayragi)
 
@@ -126,9 +127,9 @@ def main() -> None:
     dene("PolitikaAgi iki boyutta da calisiyor", ag_boyutu)
 
     def yukle_cikarimi():
-        # `yukle` gozlem boyutunu DOSYADAN okumali; cagirandan istemek
-        # sessiz bir hata kaynagi olurdu (yanlis sayi -> anlasilmaz
-        # boyut hatasi).
+        # `yukle` has to read the observation size from the file; asking the
+        # caller for it would be a silent source of bugs (wrong number ->
+        # baffling shape error).
         from minecrai.policy import PolitikaAgi, kaydet, yukle
         with tempfile.TemporaryDirectory() as gecici:
             yol = Path(gecici) / "m.pt"
@@ -139,15 +140,14 @@ def main() -> None:
     print("\nDemo kaydi (celiskili veri uretmiyor mu)")
 
     def gozlem_her_adimda_degisiyor():
-        """EN PAHALI HATAYI yakalayan test.
+        """The test that catches the most expensive bug so far.
 
-        `son_ham_gozlem` sadece `reset()`te guncelleniyordu; `step()`te
-        degil. `collect_demos.py` her adimda onu kaydettigi icin bir
-        bolumun butun ornekleri AYNI gozleme, farkli aksiyonlara sahip
-        oluyordu -- 4498 ornekte 30 benzersiz satir. Iki toplama turu
-        (~45 dakika) cope gitti.
+        `son_ham_gozlem` was only updated in `reset()`, not in `step()`. Since
+        `collect_demos.py` records it on every step, all the samples of an
+        episode had the same observation with different actions -- 30 unique
+        rows in 4498 samples. Two collection runs (~45 minutes) were wasted.
 
-        Sahte bir kopru kullaniyoruz: Minecraft da Node de gerekmiyor.
+        Uses a fake bridge: no Minecraft, no Node.
         """
         import minecrai.env as env_mod
         from minecrai.env import MinecraftEnv, ham_boyutu
@@ -161,7 +161,7 @@ def main() -> None:
             def _gozlem(self):
                 self.sayac += 1
                 g = np.zeros(n, dtype=np.float32)
-                g[0] = self.sayac / 100.0  # her cagride FARKLI
+                g[0] = self.sayac / 100.0  # different on every call
                 return g.tolist()
 
             def reset(self, gorev=None, genis_gozlem=None):
@@ -177,7 +177,7 @@ def main() -> None:
             def close(self):
                 pass
 
-        # Gercek kopruyu sahtesiyle degistir: Minecraft da Node de gerekmiyor.
+        # Swap the real bridge for the fake one: no Minecraft, no Node.
         gercek = env_mod.BridgeClient
         env_mod.BridgeClient = lambda *a, **k: SahteKopru()
         try:
@@ -201,10 +201,10 @@ def main() -> None:
     def saglik_kontrolu_celiskiyi_yakaliyor():
         from collect_demos import veri_sagligi
         rng = np.random.default_rng(0)
-        # Saglikli veri: her satir farkli
+        # Healthy data: every row different
         iyi = rng.uniform(-1, 1, size=(200, 20)).astype(np.float32)
         assert veri_sagligi(iyi, rng.integers(0, 4, 200)), "saglikli veriyi bozuk saydi"
-        # Bozuk veri: 5 benzersiz satir, 200 ornek (gercek hatanin sekli)
+        # Broken data: 5 unique rows, 200 samples (the shape of the real bug)
         bozuk = np.repeat(iyi[:5], 40, axis=0)
         assert not veri_sagligi(bozuk, rng.integers(0, 4, 200)), \
             "tekrar eden gozlemleri fark etmedi"
@@ -213,14 +213,16 @@ def main() -> None:
     print("\nCok gorevli ortam (Milestone 6)")
 
     def coklu_ortam():
-        """Tek ajan, iki gorev. Sahte kopru: Minecraft da Node de gerekmiyor.
+        """One agent, two tasks. Fake bridge: no Minecraft, no Node.
 
-        Uc sey ayni anda dogru olmali, yoksa cok gorevli egitimin anlami yok:
-          1) gozlem genisligi HER bolumde ayni (tek ag, tek girdi boyutu)
-          2) gorevler DONUSUMLU (rastgele secim kisa kosularda dengesiz
-             dagilim uretip "hangi gorevde daha iyi" karsilastirmasini bozar)
-          3) Node'dan GENIS gozlem isteniyor (odun varsayilani dar; istenmezse
-             genislik gorevden goreve degisir ve ag coker)
+        Three things have to hold at once or multi-task training is pointless:
+          1) observation width is the same in every episode (one net, one
+             input size)
+          2) the tasks alternate (random choice gives an uneven split on short
+             runs and ruins the "better at which task" comparison)
+          3) the wide observation is requested from Node (odun defaults to the
+             narrow one; without asking, the width changes from task to task
+             and the net collapses)
         """
         import minecrai.env as env_mod
         from minecrai.coklu import CokluGorevEnv
@@ -277,28 +279,29 @@ def main() -> None:
         if not all(g is True for _, g in istekler):
             raise AssertionError(f"Node'dan genis gozlem istenmedi: {istekler}")
 
-        # Milestone 5b'nin en pahali hatasi burada da olmamali
+        # Milestone 5b's most expensive bug must not happen here either
         benzersiz = len(np.unique(np.stack(gozlemler), axis=0))
         if benzersiz != len(gozlemler):
             raise AssertionError(
                 f"{len(gozlemler)} adimda {benzersiz} benzersiz gozlem")
 
-        # Demo kaydi icin ham hal: gorev indisi son sutunda
+        # Raw form for demo recording: task index in the last column
         if env.son_ham_gozlem.shape != (ORTAK + EK + 1,):
             raise AssertionError(f"ham gozlem sekli {env.son_ham_gozlem.shape}")
     dene("CokluGorevEnv donusumlu, sabit genislikte, gorev bilgili", coklu_ortam)
 
     def gorev_dayatilabiliyor():
-        """Degerlendirmenin dogru olcmesi icin sart olan davranis.
+        """Behaviour evaluation needs in order to measure the right thing.
 
-        SESSIZ OLCUM HATASI: `eval_agent` politikalari sirayla kosturuyor
-        ve her bolum gorevi bir ilerletiyor. Politika sayisi TEK ise (su an
-        5) her politika turdan tura gorev degistiriyor ve dengeli cikiyor --
-        ama bu KAZARA. Cift olsaydi (bc modeli bulunamayip 4'e duserse) her
-        politika HEP AYNI gorevi alirdi: rastgele ajan hep odun, PPO hep
-        maden. Karsilastirma anlamsiz olur ve hicbir belirti vermez.
+        Silent measurement error: `eval_agent` runs the policies in order and
+        every episode advances the task by one. With an odd policy count
+        (currently 5) each policy changes task from round to round and it
+        comes out balanced -- but only by accident. With an even count (drop
+        to 4 when the bc model is missing) every policy would always get the
+        same task: the random agent always odun, PPO always maden. The
+        comparison would be meaningless and show no symptom at all.
 
-        Cozum: degerlendirme turun gorevini acikca soyluyor.
+        Fix: evaluation states the round's task explicitly.
         """
         import minecrai.env as env_mod
         from minecrai.coklu import CokluGorevEnv
@@ -334,19 +337,19 @@ def main() -> None:
         finally:
             env_mod.BridgeClient = gercek
 
-        # Ayni gorev ust uste dayatilabilmeli (donusumlu sira EZILMELI)
+        # The same task has to be forceable repeatedly (rotation overridden)
         for _ in range(3):
             _, info = env.reset(options={"gorev": "maden"})
             if info["gorev"] != "maden":
                 raise AssertionError(f"gorev dayatilamadi: {info['gorev']}")
 
-        # Dayatma olmayinca donusumlu sira surmeli
+        # Without an override the rotation has to carry on
         ilk = env.reset()[1]["gorev"]
         ikinci = env.reset()[1]["gorev"]
         if ilk == ikinci:
             raise AssertionError("dayatma yokken donusumlu sira calismiyor")
 
-        # Bilinmeyen gorev SESSIZCE kabul edilmemeli
+        # An unknown task must not be accepted silently
         try:
             env.reset(options={"gorev": "yok_boyle"})
         except ValueError:
@@ -356,10 +359,11 @@ def main() -> None:
     dene("cok gorevli ortamda GOREV dayatilabiliyor", gorev_dayatilabiliyor)
 
     def ortam_kur_secimi():
-        """'hepsi' cok gorevli ortam kurmali, digerleri tekil.
+        """'hepsi' has to build the multi-task env, the others a single one.
 
-        Bu secim tek yerde (`ortam_kur`) durmali: her scriptte ayri bir if
-        olsaydi biri unutulur ve o script sessizce yanlis ortami kurardi.
+        The choice belongs in one place (`ortam_kur`): with a separate if in
+        every script one of them gets forgotten and that script silently
+        builds the wrong environment.
         """
         import minecrai.env as env_mod
         from minecrai.coklu import CokluGorevEnv, ortam_kur
@@ -386,8 +390,8 @@ def main() -> None:
     print("\nEgitim scriptleri (sentetik veriyle, bastan sona)")
 
     def bc_kos(gorev, ham):
-        # ISTE BU, `NameError: name 'a'` hatasini yakalayan test.
-        # Script gercekten `main()`ine kadar calisiyor.
+        # This is the test that catches `NameError: name 'a'`.
+        # The script really does run all the way into its `main()`.
         with tempfile.TemporaryDirectory() as gecici:
             g = Path(gecici)
             sahte_veri(g / "d.npz", ham)
@@ -415,17 +419,17 @@ def main() -> None:
     dene("pretrain_ppo.py --gorev hepsi", lambda: on_egitim_kos("hepsi", 21))
 
     def yanlis_boyut_yakalaniyor():
-        # Sessiz bozulma en pahali hata turu: 20 sayilik maden verisini
-        # odun gorevi diye yuklersek net bir hata gormeliyiz.
+        # Silent corruption is the most expensive kind of bug: loading
+        # 20-number maden data as the odun task has to give a clear error.
         from minecrai.veri import gozlemleri_hazirla
-        # 20 sayilik maden verisini odun gorevi diye yuklemek: net hata olmali
+        # loading 20-number maden data as the odun task: has to be a clear error
         try:
             gozlemleri_hazirla(np.zeros((5, 20), np.float32), "odun")
         except SystemExit:
             pass
         else:
             raise AssertionError("yanlis boyut sessizce kabul edildi")
-        # train_bc.py hala ayni ismi disa vermeli (eski ice aktarmalar)
+        # train_bc.py still has to export the same name (old imports)
         from train_bc import gozlemleri_hazirla as ikinci
         assert ikinci is gozlemleri_hazirla, "kopya fonksiyon geri gelmis"
     dene("yanlis gozlem boyutu SESSIZ gecmiyor", yanlis_boyut_yakalaniyor)

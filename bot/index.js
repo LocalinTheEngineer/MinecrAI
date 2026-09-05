@@ -10,6 +10,8 @@
  *   kes          -> chops the nearest tree
  *   kes 3        -> chops 3 trees
  *   kes surekli  -> chops until told "dur"
+ *   git ev       -> walks to a saved place (or to "x y z")
+ *   burasi ev    -> saves where you stand under that name
  *   balta        -> crafts a wooden axe from inventory wood (if it has none)
  *   koru         -> never chops within 24 blocks of where you stand
  *   koru 40      -> you set the radius
@@ -29,6 +31,7 @@ const config = require('./config')
 const log = require('./utils/log')
 const skills = require('./skills')
 const koruma = require('./utils/koruma')
+const yerler = require('./utils/yerler')
 const { renkliListe } = require('./utils/chat')
 const sohbet = require('./sohbet/beyin')
 const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
@@ -42,6 +45,17 @@ const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
  */
 const KOMUTLAR = [
   { ad: 'gel', aciklama: 'yanına yürür' },
+  { ad: 'git 100 64 -200', aciklama: 'koordinata yürür (x z de olur)' },
+  { ad: 'git ev', aciklama: 'kayıtlı yere yürür' },
+  { ad: 'burasi ev', aciklama: 'durduğun yeri o adla kaydeder' },
+  { ad: 'yerler', aciklama: 'kayıtlı yerleri listeler' },
+  { ad: 'yersil ev', aciklama: 'bir yeri siler' },
+  { ad: 'ye', aciklama: 'envanterindeki en iyi yemeği yer' },
+  { ad: 'savas', aciklama: 'yakındaki düşmana saldırır' },
+  { ad: 'korun', aciklama: 'kendiliğinden savaşmayı açar (korun kapat)' },
+  { ad: 'platform 3', aciklama: 'ayağının altına kare zemin örer' },
+  { ad: 'duvar 3 2', aciklama: 'önüne duvar örer (en yükseklik)' },
+  { ad: 'kapat', aciklama: 'tam önündeki 1x2 boşluğu kapatır' },
   { ad: 'kes', aciklama: 'en yakın doğal ağacı keser' },
   { ad: 'kes 3', aciklama: '3 ağaç keser (1-64)' },
   { ad: 'kes surekli', aciklama: 'dur diyene kadar keser' },
@@ -129,6 +143,22 @@ function botOlustur () {
     const balta = skills.uygunAlet(bot, { name: 'oak_log' })
     if (balta) bot.chat(`Elimde ${balta.name} var, onunla keseceğim.`)
     else bot.chat('Baltam yok — elle keseceğim. Odun toplayınca "balta" yaz, kendim yaparım.')
+
+    // Two background loops. Eating and noticing damage are not commands: a
+    // 20-minute mining run has to survive on its own, and by the time the
+    // player types something the bot is already dead.
+    //
+    // Fighting back is NOT started here. That one is a decision about the
+    // world the bot is in (pets, villagers, other players), so it waits for
+    // the "korun" command.
+    skills.otomatikYemekBaslat(bot, kontrol)
+    skills.canIzleyiciBaslat(bot, kontrol, { muafMi: skills.dovusuyorMu })
+  })
+
+  bot.on('death', () => {
+    log.hata('Öldüm.')
+    bot.chat('Öldüm — eşyalarım öldüğüm yerde kaldı.')
+    kontrol.durdur()
   })
 
   bot.on('kicked', (sebep) => log.hata('Sunucudan atıldım:', sebep))
@@ -179,7 +209,10 @@ function botOlustur () {
     'dur', 'komut', 'komutlar', 'yardim', 'yardım', 'help', '?',
     'nerede', 'envanter', 'takip', 'takibi', 'takipbirak', 'ver',
     'koru', 'korumalar', 'korumasil', 'balta', 'cik', 'çık',
-    'kaz', 'uret', 'üret', 'yap', 'gel', 'kes'
+    'kaz', 'uret', 'üret', 'yap', 'gel', 'kes',
+    'git', 'burasi', 'burası', 'burayi', 'burayı', 'yerler', 'yersil',
+    'ye', 'savas', 'savaş', 'saldir', 'saldır', 'korun',
+    'platform', 'duvar', 'kapat'
   ])
 
   /**
@@ -201,6 +234,7 @@ function botOlustur () {
     if (komut === 'dur') {
       iptalEdildi = true   // skip the rest of the chat chain too
       kontrol.durdur()
+      skills.korunmaDurdur() // "dur" means everything, background defence included
       skills.takipBirak(bot)
       pathfinderDurdur(bot)
       bot.stopDigging()
@@ -345,6 +379,111 @@ function botOlustur () {
 
     if (komut === 'gel') {
       await gorevCalistir('gel', () => skills.gel(bot, kontrol, username))
+      return
+    }
+
+    if (komut === 'git') {
+      // "git yanima" is the same job as "gel"; the player should not have to
+      // know which of the two words this bot happens to use.
+      if (arguman === 'yanima' || arguman === 'yanıma' || arguman === 'bana') {
+        await gorevCalistir('gel', () => skills.gel(bot, kontrol, username))
+        return
+      }
+      const hedef = parcalar.slice(1).join(' ')
+      await gorevCalistir('git', () => skills.git(bot, kontrol, hedef))
+      return
+    }
+
+    if (komut === 'burasi' || komut === 'burası' || komut === 'burayı' || komut === 'burayi') {
+      // Saves where the PLAYER stands, not where the bot stands. The player
+      // is the one who knows this spot matters, and the bot may be 40 blocks
+      // away chopping something.
+      const ad = parcalar.slice(1).join(' ')
+      if (!ad) { bot.chat('Adı ne olsun? Örnek: "burasi ev"'); return }
+
+      const oyuncu = bot.players[username]
+      if (!oyuncu || !oyuncu.entity) {
+        bot.chat('Seni göremiyorum, yaklaş da neresi olduğunu bileyim.')
+        return
+      }
+
+      const sonuc = yerler.kaydet(ad, oyuncu.entity.position, username)
+      if (!sonuc.basarili) {
+        bot.chat(sonuc.hata === 'dolu'
+          ? `Yer listem dolu (${yerler.MAKS_YER}). Önce "yersil <ad>" ile birini sil.`
+          : 'Bu adı kaydedemem, harf ve rakam kullan.')
+        return
+      }
+
+      const y = sonuc.yer
+      bot.chat(sonuc.uzerineYazildi
+        ? `"${y.ad}" artık burası: ${y.x}, ${y.y}, ${y.z}`
+        : `Kaydettim: "${y.ad}" = ${y.x}, ${y.y}, ${y.z}. "git ${y.ad}" dersen gelirim.`)
+      return
+    }
+
+    if (komut === 'yerler') {
+      const l = yerler.liste()
+      bot.chat(l.length === 0
+        ? 'Kayıtlı yerim yok. Bir yere gel ve "burasi ev" yaz.'
+        : l.map((y) => `${y.ad} (${y.x},${y.y},${y.z})`).join(' | '))
+      return
+    }
+
+    if (komut === 'yersil') {
+      const ad = parcalar.slice(1).join(' ')
+      if (!ad) { bot.chat('Hangi yer? Örnek: "yersil ev"'); return }
+      bot.chat(yerler.sil(ad) ? `"${ad}" silindi.` : `"${ad}" diye bir yer yok.`)
+      return
+    }
+
+    if (komut === 'ye') {
+      const sonuc = await skills.yemekYe(bot)
+      bot.chat(sonuc.basarili
+        ? `${sonuc.yemek} yedim (açlık ${bot.food}/20).`
+        : 'Yiyecek bir şeyim yok.')
+      return
+    }
+
+    if (komut === 'savas' || komut === 'savaş' || komut === 'saldir' || komut === 'saldır') {
+      const yaricap = arguman && !isNaN(parseInt(arguman, 10))
+        ? Math.max(2, Math.min(parseInt(arguman, 10), 32))
+        : undefined
+      await gorevCalistir('savas', () => skills.savas(bot, kontrol, yaricap))
+      return
+    }
+
+    // Auto-defence is off by default. A bot that swings at anything nearby is
+    // a problem on a server with pets, villagers and other players around.
+    if (komut === 'korun') {
+      const acik = arguman !== 'kapat' && arguman !== 'kapali' && arguman !== 'yok'
+      if (acik) {
+        skills.korunmaBaslat(bot, kontrol)
+        bot.chat('Yakınımdaki düşmanlara kendim karşılık vereceğim.')
+      } else {
+        skills.korunmaDurdur()
+        bot.chat('Kendiliğinden savaşmayı bıraktım.')
+      }
+      return
+    }
+
+    if (komut === 'platform') {
+      const boyut = arguman && !isNaN(parseInt(arguman, 10)) ? parseInt(arguman, 10) : 3
+      await gorevCalistir('platform', () => skills.platform(bot, kontrol, boyut))
+      return
+    }
+
+    if (komut === 'duvar') {
+      const en = arguman && !isNaN(parseInt(arguman, 10)) ? parseInt(arguman, 10) : 3
+      const yukseklik = parcalar[2] && !isNaN(parseInt(parcalar[2], 10))
+        ? parseInt(parcalar[2], 10)
+        : 2
+      await gorevCalistir('duvar', () => skills.duvar(bot, kontrol, en, yukseklik))
+      return
+    }
+
+    if (komut === 'kapat') {
+      await gorevCalistir('kapat', () => skills.kapat(bot, kontrol))
       return
     }
 

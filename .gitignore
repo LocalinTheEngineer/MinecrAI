@@ -169,3 +169,6 @@ docs/ham/
 
 # Sohbet katmaninin hatirladigi model/tasiyici tercihi (makineye ozel)
 .sohbet_tercihi.json
+
+# Kayitli yerler makineye/dunyaya ozel, testler de bu dosyaya yaziyor
+data/yerler.json

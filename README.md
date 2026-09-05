@@ -549,7 +549,7 @@ the worst outcome is a legitimate command running. The model cannot express
 anything else. Arguments are stripped to letters, digits and spaces before
 execution, so `"3; /kill @a"` reaches the router as `kes 3`.
 
-Some commands are deliberately **not** exposed: `koru` / `korumalar` / `korumasil`
+Some commands are deliberately **not** exposed: `koru` / `korumalar` / `korumasil` / `yersil` / `korun`
 manage no-dig protection zones. Those should be the player's explicit decision, and
 `korumasil` is irreversible — one misreading would erase every protected area.
 
@@ -634,6 +634,16 @@ Then type in the in-game chat:
 | Command | Effect |
 |---|---|
 | `gel` | Walk to the player who typed it |
+| `git 120 64 -300` | Walk to a coordinate (`x z` works too — the bot finds the ground) |
+| `burasi ev` | Save where you stand under that name |
+| `git ev` | Walk to a saved place |
+| `yerler` / `yersil ev` | List saved places / remove one |
+| `ye` | Eat the best food in the inventory |
+| `savas` | Attack the nearest hostile (walks away from creepers instead) |
+| `korun` | Turn on fighting back automatically (`korun kapat` turns it off) |
+| `platform 3` | Build a square floor under its feet |
+| `duvar 3 2` | Build a wall in front of it (width, height) |
+| `kapat` | Plug the 1x2 gap directly in front |
 | `kes` | Find the nearest tree, chop it, pick up the drops |
 | `kes 3` | Chop 3 trees (1-64) |
 | `kes surekli` | Keep chopping until told to stop |

@@ -1,10 +1,10 @@
-"""Egitilmis PPO politikasini calistir - sadece onu, baska hicbir seyi.
+"""Run the trained PPO policy, and nothing else.
 
-`eval_agent.py` dort politikayi donusumlu calistirir (rastgele, bc, ppo,
-uzman). Olcum icin dogru olan bu, ama DEMO icin degil: kaydin yarisinda
-rastgele ajan sallanip duruyor.
+`eval_agent.py` cycles through four policies (random, bc, ppo, expert). That
+is the right thing for measurement, not for a demo: half the recording is the
+random agent flailing around.
 
-Bu script tek isi yapar: modeli yukle, N bolum oynat, sonucu yaz.
+This script loads the model, plays N episodes, prints the result.
 
     python demo_ppo.py --bolum 3
 """

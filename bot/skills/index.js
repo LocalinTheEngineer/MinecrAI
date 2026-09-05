@@ -2,6 +2,7 @@
 
 const { chopTree, chopTrees, oduncuSay, kutukMu, agaciTopla, dusenleriTopla } = require('./chopTree')
 const { gel } = require('./gel')
+const { git, hedefCoz } = require('./git')
 const { baltaYap, aletKusan, uygunAlet } = require('./alet')
 const { takipBaslat, takipBirak, takipVarMi } = require('./takip')
 const { ver } = require('./ver')
@@ -9,6 +10,9 @@ const { uret } = require('./uret')
 const { kaz, kazmaSeviyesi } = require('./kaz')
 const { erit } = require('./erit')
 const { sutunaCik, sutundanIn, yuzeyeSutunla } = require('./sutun')
+const yasam = require('./yasam')
+const savasModul = require('./savas')
+const insa = require('./insa')
 
 /**
  * Base material supplier.
@@ -122,6 +126,22 @@ module.exports = {
   chopTree,
   chopTrees,
   gel,
+  git,
+  hedefCoz,
+  yemekYe: yasam.yemekYe,
+  yemekBul: yasam.yemekBul,
+  otomatikYemekBaslat: yasam.otomatikYemekBaslat,
+  otomatikYemekDurdur: yasam.otomatikYemekDurdur,
+  canIzleyiciBaslat: yasam.canIzleyiciBaslat,
+  savas: savasModul.savas,
+  enYakinDusman: savasModul.enYakinDusman,
+  enIyiSilah: savasModul.enIyiSilah,
+  korunmaBaslat: savasModul.korunmaBaslat,
+  dovusuyorMu: savasModul.dovusuyorMu,
+  korunmaDurdur: savasModul.korunmaDurdur,
+  platform: insa.platform,
+  duvar: insa.duvar,
+  kapat: insa.kapat,
   baltaYap,
   aletKusan,
   uygunAlet,

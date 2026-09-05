@@ -1,10 +1,10 @@
-"""Rastgele ajan — kopru + environment gercekten calisiyor mu diye bakar.
+"""Random agent — checks that the bridge and the environment actually work.
 
-Ogrenme yok: sadece rastgele aksiyon secer. Amac, Python'dan gonderilen
-komutlarin Minecraft'ta gercekten bir seyler yaptigini gormek.
+No learning, it just picks random actions. The point is to see that commands
+sent from Python really do something in Minecraft.
 
-Once Minecraft sunucusunu, sonra 'npm run bridge' komutunu calistir,
-sonra:  python random_agent.py
+Start the Minecraft server, then `npm run bridge`, then:
+    python random_agent.py
 """
 
 import argparse

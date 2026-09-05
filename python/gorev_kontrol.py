@@ -1,14 +1,14 @@
-"""Bir gorev CALISIYOR MU? Rakam degil, evet/hayir cevabi.
+"""Does a task work at all? A yes/no answer, not numbers.
 
-NEDEN VAR: `npm run bridge` calistirip ekranda akan sayilara bakmak
-"bu ise yariyor mu?" sorusuna cevap vermiyor. Bu script uzman politikayi
-birkac bolum kosturup net bir hukum veriyor.
+Running `npm run bridge` and watching numbers scroll past does not answer
+"is this working?". This script runs the expert policy for a few episodes
+and gives a verdict.
 
     python gorev_kontrol.py --gorev maden
     python gorev_kontrol.py --gorev odun
 
-Ogrenme YOK: elle yazilmis uzman kullaniliyor. Uzman toplayamiyorsa ajan
-hic toplayamaz -- once ortamin saglam oldugunu bilmek gerekiyor.
+No learning: it uses the hand-written expert. If the expert cannot collect
+anything, the agent never will — the environment has to be sound first.
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ def main() -> None:
     print("\n" + "=" * 56)
     ortalama = toplam_kaynak / args.bolum
 
-    # HUKUM. Esik keyfi degil: bolum hedefi 5 kaynak. Uzman ortalama
-    # 1'in altinda kaliyorsa ortamda bir sey bozuk demektir -- ajani
-    # egitmenin anlami yok.
+    # Verdict. The threshold is not arbitrary: an episode targets 5 resources.
+    # If the expert averages under 1, something in the environment is broken
+    # and training an agent is pointless.
     if ortalama >= 3:
         print(f"  CALISIYOR. Uzman bolum basina {ortalama:.1f} kaynak topladi.")
         print("  Ortam saglam; veri toplayip egitime gecebilirsin.")
@@ -76,8 +76,8 @@ def main() -> None:
         pay = 100 * adet / max(1, sum(sebepler.values()))
         print(f"    {sebep:<34} {adet:5d}  (%{pay:.0f})")
 
-    # Tek bir sebep her seyi kapliyorsa bu bir arizadir: uzman tek bir
-    # duruma sikismis demektir.
+    # One reason covering almost everything is a fault: the expert is stuck in
+    # a single state.
     if sebepler:
         en_cok, adet = sebepler.most_common(1)[0]
         if adet > 0.8 * sum(sebepler.values()):

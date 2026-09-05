@@ -1,16 +1,16 @@
-"""Milestone 4, adim 1: BC agirliklarini PPO'ya devret (warm start).
+"""Milestone 4, step 1: hand the BC weights over to PPO (warm start).
 
-Neden gerekli: PPO sifirdan baslarsa rastgele davranir ve Minecraft'ta her adim
-~0.4 saniye surdugu icin ilk anlamli davranisi gormek saatler alir. Elimizde
-zaten uzmani taklit etmeyi ogrenmis bir politika var — PPO'yu oradan
-baslatirsak ogrenme cok daha erken ise yarar hale gelir.
+Why: PPO from scratch behaves randomly, and since every step in Minecraft
+takes ~0.4 seconds it takes hours to see the first meaningful behaviour. A
+policy that already imitates the expert exists, so starting PPO from there
+makes learning useful much sooner.
 
-Teknik nokta: train_bc.py kendi kucuk agini egitiyor, ama Stable-Baselines3
-kendi politika nesnesini kullaniyor. Agirliklari elle kopyalamak kirilgan.
-Bunun yerine BURADA dogrudan SB3'un politikasini denetimli (supervised)
-egitiyoruz. Cikan .zip dosyasi PPO'nun anlayacagi formatta.
+Technical point: train_bc.py trains its own small net while Stable-Baselines3
+uses its own policy object, and copying weights across by hand is fragile.
+Instead SB3's policy is trained supervised right here. The .zip that comes out
+is in the format PPO understands.
 
-Kullanim (Minecraft'a baglanmaya GEREK YOK):
+Usage (no Minecraft connection needed):
     python pretrain_ppo.py --epoch 80
 """
 
@@ -34,17 +34,17 @@ KOK = Path(__file__).parent.parent
 VARSAYILAN_VERI = KOK / "data" / "demonstrations" / "demos.npz"
 VARSAYILAN_CIKTI = KOK / "models" / "ppo_pretrained.zip"
 
-# PPO ile BC ayni mimariyi kullanmali ki agirliklar anlamli olsun.
-# SB3'un varsayilan aktivasyonu Tanh; train_bc.py ReLU kullaniyor —
-# karsilastirmalarin anlamli olmasi icin ikisini esitliyoruz.
+# PPO and BC have to use the same architecture for the weights to mean
+# anything. SB3 defaults to Tanh activation and train_bc.py uses ReLU, so the
+# two are matched here.
 AG_MIMARISI = dict(pi=[128, 128], vf=[128, 128])
 
 
 class SahteEnv(gym.Env):
-    """Sadece PPO nesnesini olusturmak icin gereken bos environment.
+    """Empty environment, needed only to construct the PPO object.
 
-    PPO bir env ister ama on-egitim asamasinda hicbir adim atmiyoruz;
-    Minecraft'a baglanmaya gerek kalmasin diye sahte bir env veriyoruz.
+    PPO wants an env, but pre-training never takes a step; the fake one saves
+    having to connect to Minecraft.
     """
 
     def __init__(self, boyut: int = GOZLEM_BOYUTU) -> None:
@@ -67,7 +67,7 @@ def sinif_agirliklari(y: np.ndarray) -> torch.Tensor:
     return torch.as_tensor(sayim.sum() / (len(AKSIYONLAR) * sayim), dtype=torch.float32)
 
 
-from minecrai.veri import gozlemleri_hazirla  # bkz. minecrai/veri.py
+from minecrai.veri import gozlemleri_hazirla  # see minecrai/veri.py
 
 
 def main() -> None:
@@ -92,7 +92,7 @@ def main() -> None:
         )
 
     d = np.load(args.veri)
-    # Kayitli veri HAM gozlem iceriyor; agin gordugu bicime cevir
+    # Saved data holds raw observations; convert to the form the net sees
     from minecrai.env import gozlem_boyutu
     GOZLEM = gozlem_boyutu(args.gorev)
     X = torch.as_tensor(
@@ -113,13 +113,14 @@ def main() -> None:
     iyilestirici = torch.optim.Adam(politika.parameters(), lr=args.ogrenme_orani)
     kayip_fn = nn.CrossEntropyLoss(weight=sinif_agirliklari(d["aksiyonlar"]))
 
-    # KARISTIRARAK bol.
+    # Shuffle before splitting.
     #
-    # Onceden ilk %80 egitim, son %20 dogrulama aliniyordu — sirayi bozmadan.
-    # Veri bolum bolum kaydedildigi icin son %20 tamamen farkli turlardan
-    # olusuyor ve o turlar ormanin tukenmis kisminda gecmis olabiliyor.
-    # Ag bir dagilimda egitilip baska bir dagilimda sinaniyordu: ayni veriyle
-    # train_bc.py %61 alirken burasi %33 aliyordu.
+    # It used to take the first 80% as training and the last 20% as
+    # validation, in order. Data is saved episode by episode, so the last 20%
+    # comes from entirely different runs, which may have happened in a part of
+    # the forest that was already used up. The net was trained on one
+    # distribution and tested on another: on the same data train_bc.py scored
+    # 61% while this scored 33%.
     olcut = torch.Generator().manual_seed(0)
     sira = torch.randperm(len(X), generator=olcut)
     X, y = X[sira], y[sira]
@@ -127,9 +128,9 @@ def main() -> None:
     kesme = int(len(X) * 0.8)
     Xe, ye, Xd, yd = X[:kesme], y[:kesme], X[kesme:], y[kesme:]
 
-    # EN IYI agirliklari sakla.
-    # Dogrulama basarisi 20-40. epoch'ta tepe yapip sonra dusuyor (ezberleme).
-    # Son epoch'un agirliklarini almak, en iyi noktayi kacirmak demek.
+    # Keep the best weights.
+    # Validation accuracy peaks around epoch 20-40 and drops after that
+    # (overfitting). Taking the last epoch's weights misses the best point.
     import copy
     en_iyi_basari = -1.0
     en_iyi_agirlik = None
@@ -141,7 +142,7 @@ def main() -> None:
         for i in range(0, len(sira), args.yigin):
             idx = sira[i : i + args.yigin]
             iyilestirici.zero_grad()
-            # SB3 politikasindan ham aksiyon skorlarini al
+            # raw action scores from the SB3 policy
             ozellik = politika.extract_features(Xe[idx])
             gizli, _ = politika.mlp_extractor(ozellik)
             skor = politika.action_net(gizli)
@@ -149,7 +150,7 @@ def main() -> None:
             kayip.backward()
             iyilestirici.step()
 
-        # Her epoch'ta olc — en iyiyi kacirmamak icin
+        # Measure every epoch so the best one is not missed
         politika.set_training_mode(False)
         with torch.no_grad():
             ozellik = politika.extract_features(Xd)
@@ -157,9 +158,9 @@ def main() -> None:
             skor = politika.action_net(gizli)
             basari = (skor.argmax(1) == yd).float().mean().item()
 
-        # Isinma: ilk epoch'lar kucuk dogrulama kumesinde sansa yuksek skor
-        # alabiliyor ama ag henuz egitilmemis oluyor. En iyiyi ancak makul
-        # bir egitimden sonra aramaya basla.
+        # Warm-up: the first epochs can score high on the small validation set
+        # by luck while the net is still untrained. Only start looking for the
+        # best after a reasonable amount of training.
         isinma = max(10, args.epoch // 5)
         if epoch >= isinma and basari > en_iyi_basari:
             en_iyi_basari = basari
@@ -177,9 +178,9 @@ def main() -> None:
     args.cikti.parent.mkdir(parents=True, exist_ok=True)
     model.save(args.cikti)
     print(f"On-egitilmis PPO modeli kaydedildi -> {args.cikti}")
-    # Komutu GOREVE gore yaz. Sabit yazilmisti ve maden gorevinde yanlis
-    # dosyayi gosteriyordu -- kopyalayip yapistiran kisi ODUN modeliyle
-    # maden egitimi baslatirdi ve bunu fark etmek cok zor olurdu.
+    # Print the command per task. It was hard-coded and pointed at the wrong
+    # file for the maden task -- copy-pasting it started maden training with
+    # the odun model, which is very hard to spot.
     print("")
     print("Simdi:  python train_ppo.py --gorev " + args.gorev +
           " --baslangic ../models/" + args.cikti.name)

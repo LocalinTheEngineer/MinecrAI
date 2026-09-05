@@ -1,17 +1,18 @@
-"""Milestone 4, adim 2: PPO ile pekistirmeli ogrenme.
+"""Milestone 4, step 2: reinforcement learning with PPO.
 
-Bu asamada ajan artik uzmani taklit etmiyor — kendi deneyiminden ogreniyor.
-Her bolumde ne kadar odul topladigina bakip davranisini kendisi ayarliyor.
+At this stage the agent no longer imitates the expert, it learns from its own
+experience: it looks at how much reward it collected each episode and adjusts
+its behaviour itself.
 
-SURE UYARISI: Minecraft'ta her adim ~0.4 saniye. 20.000 adim ~2 saat demek.
-Bu yuzden script bastan "durdur-devam et" mantigiyla yazildi:
-  - her N adimda kontrol noktasi kaydedilir
-  - her bolum CSV'ye yazilir (egitim yarim kalsa bile grafik cizilebilir)
-  - Ctrl+C temiz kapanir, kaldigin yerden devam edebilirsin
+Timing: every step in Minecraft takes ~0.4 seconds, so 20,000 steps is ~2
+hours. The script was written stop-and-resume from the start:
+  - a checkpoint is saved every N steps
+  - every episode goes to CSV (the curve can be plotted from a half-finished run)
+  - Ctrl+C shuts down cleanly and the run can be resumed
 
-Kullanim:
+Usage:
     python train_ppo.py --baslangic models/ppo_pretrained.zip --adim 20000
-    python train_ppo.py --devam                 # son kontrol noktasindan devam
+    python train_ppo.py --devam                 # resume from last checkpoint
 """
 
 from __future__ import annotations
@@ -29,9 +30,9 @@ from minecrai.yollar import yollar
 from minecrai import MinecraftEnv, ortam_kur
 
 KOK = Path(__file__).parent.parent
-# Ust uste kac bos bolumden sonra egitim kendini durdurur.
-# 25 bolum ~ 25 dakika: gercek bir kotu sansi (ormanin kenari) atlatacak
-# kadar uzun, bozuk bir ortamda saatler harcamayacak kadar kisa.
+# How many empty episodes in a row before training stops itself.
+# 25 episodes ~ 25 minutes: long enough to ride out genuine bad luck (edge of
+# the forest), short enough not to burn hours on a broken environment.
 BOS_BOLUM_SINIRI = 25
 
 MODEL_KLASORU = KOK / "models"
@@ -43,39 +44,38 @@ import torch.nn as nn
 
 AG_MIMARISI = dict(pi=[128, 128], vf=[128, 128])
 
-# ENTROPI KATSAYISI — bu gorevdeki en kritik ayar.
+# Entropy coefficient, the most critical setting on this task.
 #
-# SB3'un varsayilani 0.0, yani politikayi cesitli tutan hicbir kuvvet yok.
-# Boyle birakinca politika tek bir aksiyona kilitlendi: ajan yerinde donup
-# durmaya basladi. Olctuk: 85 bolum ust uste TAM 60 adimda, 0 odunla,
-# -0.60 odulle bitti. Adim basina ~47 ms — bu kadar hizli tamamlanan tek
-# aksiyon donmek (bot.look neredeyse anlik; yurumek 560 ms, beklemek 200 ms).
+# SB3 defaults to 0.0, so nothing keeps the policy varied. Left that way the
+# policy locked onto a single action and the agent spun in place. Measured: 85
+# episodes in a row ended at exactly 60 steps, 0 wood, -0.60 reward. ~47 ms
+# per step -- the only action that finishes that fast is turning (bot.look is
+# almost instant; walking is 560 ms, waiting 200 ms).
 #
-# Buna entropi cokusu deniyor: kesif oluyor ve politika bir daha cikamiyor.
-# Kucuk bir entropi bonusu politikayi cesitli tutuyor.
+# This is entropy collapse: exploration stops and the policy never gets out
+# again. A small entropy bonus keeps the policy varied.
 VARSAYILAN_ENTROPI = 0.01
 
-# Ogrenme orani: 3e-4 (SB3 varsayilani) bu gorevde kararsizdi — egitim iyi
-# giderken cokuyor, kisa sure toparlayip tekrar cokuyordu.
+# Learning rate: 3e-4 (the SB3 default) was unstable on this task -- training
+# went well, collapsed, recovered briefly, collapsed again.
 VARSAYILAN_OGRENME_ORANI = 1e-4
 
-# Klip araligi: kucuk deger = daha temkinli guncelleme
+# Clip range: smaller value = more cautious update
 VARSAYILAN_KLIP = 0.15
 
 
 class EntropiAzaltici(BaseCallback):
-    """Entropi katsayisini egitim boyunca kademeli dusurur.
+    """Lowers the entropy coefficient gradually over training.
 
-    NEDEN: entropi kesifi tesvik ediyor. Basta lazim -- politika daha
-    hicbir seyi denemedi. Ama sonuna dogru tersine doner: ajan artik ne
-    yapacagini biliyor, rastgelelik sadece gurultu ekliyor ve odulu
-    dusuruyor.
+    Entropy drives exploration. It is needed at the start -- the policy has
+    not tried anything yet. Towards the end it turns around: the agent knows
+    what to do and the randomness is only noise, costing reward.
 
-    20 bin adimlik kosuda bu fark etmiyordu (sabit 0.01 yeterliydi).
-    80 bin adimda ediyor: ajan 20 binde ogrendigini 60 bin adim boyunca
-    keskinlestirebilmeli. Lineer azaltma en basit ve en okunakli cozum;
-    SB3'un `ent_coef`i her guncellemede yeniden okundugu icin disaridan
-    degistirmek yeterli.
+    On a 20k-step run this made no difference (a fixed 0.01 was enough). On
+    80k it does: whatever the agent learns in the first 20k has to be
+    sharpened over the remaining 60k. Linear decay is the simplest and most
+    readable option, and since SB3 re-reads `ent_coef` on every update,
+    setting it from outside is enough.
     """
 
     def __init__(self, bas: float, son: float, toplam_adim: int):
@@ -90,7 +90,7 @@ class EntropiAzaltici(BaseCallback):
         yeni = self.bas + (self.son - self.bas) * oran
         self.model.ent_coef = yeni
 
-        # 10 binde bir bildir, her adimda degil
+        # report every 10k steps, not every step
         kilometre = self.num_timesteps // 10000
         if kilometre != self.son_yazilan:
             self.son_yazilan = kilometre
@@ -99,10 +99,10 @@ class EntropiAzaltici(BaseCallback):
 
 
 class BolumKaydedici(BaseCallback):
-    """Her bolum bittiginde sonucu CSV'ye yazar ve ekrana basar.
+    """Writes every finished episode to CSV and prints it.
 
-    Neden CSV: egitim saatler suruyor ve yarida kesilebiliyor. Sonuclari
-    sadece bellekte tutsaydik yarim kalan her kosu bosa giderdi.
+    Why CSV: training runs for hours and can be interrupted. Keeping the
+    results only in memory would throw away every run that did not finish.
     """
 
     def __init__(self, kayit_yolu: Path, kontrol_yolu: Path, kontrol_araligi: int):
@@ -148,8 +148,8 @@ class BolumKaydedici(BaseCallback):
                 f"odul {self.bolum_odul:+7.2f} | adim {self.bolum_adim:4d} | "
                 f"odun {odun:2d} | {gecen / 60:.0f} dk"
             )
-            # COKUS TESPITI: ust uste neredeyse ayni dusuk odul, politikanin
-            # tek bir aksiyona kilitlendigini gosterir (entropi cokusu).
+            # Collapse detection: near-identical low rewards in a row mean the
+            # policy has locked onto one action (entropy collapse).
             self.son_oduller.append(round(self.bolum_odul, 2))
             if len(self.son_oduller) > 15:
                 self.son_oduller.pop(0)
@@ -160,15 +160,15 @@ class BolumKaydedici(BaseCallback):
                 print("     Politika tek bir aksiyona kilitlenmis olabilir (entropi")
                 print("     cokusu). Ctrl+C ile durdurup --entropi 0.02 dene.\n")
 
-            # SIGORTA: uzun sure hicbir bolum odun toplayamiyorsa ortam
-            # bozulmustur (bot suya dustu, magarada kaldi, agacsiz bolgeye
-            # isinlandi). Bu bolumler egitime ZARAR veriyor: PPO gurultuden
-            # ogrenmeye calisiyor.
+            # Failsafe: if nothing collects wood for a long stretch the
+            # environment is broken (bot fell in water, stuck in a cave,
+            # teleported somewhere with no trees). Those episodes actively
+            # hurt training: PPO tries to learn from noise.
             #
-            # Bir kez yasandi: bot bogulup oldu, sonra 50+ bolum ust uste
-            # "0 odun, 60 adim, -0.60" ile bitti ve egitim saatlerce devam
-            # etti. Gece calistirmayi guvenli kilan sey bu sigorta: en kotu
-            # ihtimalle egitim erken durur, bozuk veri birikmez.
+            # Happened once: the bot drowned, then 50+ episodes in a row ended
+            # "0 wood, 60 steps, -0.60" and training carried on for hours.
+            # This failsafe is what makes an overnight run safe: worst case
+            # training stops early instead of piling up broken data.
             if odun == 0:
                 self.ust_uste_bos += 1
             else:
@@ -181,7 +181,7 @@ class BolumKaydedici(BaseCallback):
                 print("  agacsiz bir yerde. BOT penceresindeki son satirlara bak.")
                 print("  Model kaydedildi; botu ormana isinlayip --devam ile surdur.")
                 print(f"{'=' * 60}\n")
-                return False  # SB3 egitimi burada durdurur
+                return False  # SB3 stops training here
 
             self.bolum_odul = 0.0
             self.bolum_adim = 0
@@ -213,9 +213,9 @@ def main() -> None:
     ap.add_argument("--url", default="ws://localhost:8765")
     args = ap.parse_args()
 
-    # Yollar göreve göre — maden eğitimi odun modelini EZMESİN.
-    # Modül seviyesindeki sabitleri burada yeniden bağlıyoruz; scriptin
-    # geri kalanı onları kullanmaya devam ediyor.
+    # Paths per task, so maden training does not overwrite the odun model.
+    # The module-level constants are rebound here; the rest of the script goes
+    # on using them.
     global KAYIT, SON_MODEL, KONTROL_NOKTASI
     _y = yollar(args.gorev)
     KAYIT = _y["ppo_kayit"]
@@ -242,8 +242,9 @@ def main() -> None:
             verbose=0, device="cpu",
         )
 
-    # Kaydedilmis modeller kendi hiperparametreleriyle geliyor; uzerine yaz.
-    # On-egitilmis model ent_coef=0.0 ile olusturulmustu — cokusun sebebi bu.
+    # Saved models come back with their own hyperparameters; overwrite them.
+    # The pre-trained model was built with ent_coef=0.0 -- that is what caused
+    # the collapse.
     model.ent_coef = args.entropi
     model.learning_rate = args.ogrenme_orani
     model.lr_schedule = get_schedule_fn(args.ogrenme_orani)

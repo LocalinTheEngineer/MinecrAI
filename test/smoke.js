@@ -2806,6 +2806,352 @@ async function main () {
     }
   })
 
+  // --- named places and "git" -------------------------------------------
+
+  await dene('yerler: kaydet -> bul -> sil calisiyor', () => {
+    const yerler = require('../bot/utils/yerler')
+    const onceki = yerler.liste().map((y) => y.ad)
+
+    const r = yerler.kaydet('Test Evi', { x: 10.7, y: 64.2, z: -300.9 }, 'cem')
+    if (!r.basarili) throw new Error(`kaydedilemedi: ${r.hata}`)
+    if (r.yer.x !== 10 || r.yer.y !== 64 || r.yer.z !== -301) {
+      throw new Error(`koordinat yanlis yuvarlandi: ${JSON.stringify(r.yer)}`)
+    }
+    // Names go through the chat layer, which lowercases; a stored capital
+    // would never be found again.
+    if (r.yer.ad !== 'test evi') throw new Error(`ad normalize edilmedi: ${r.yer.ad}`)
+
+    if (!yerler.bul('TEST EVI')) throw new Error('buyuk harfle bulunamadi')
+    if (!yerler.bul('test ev')) throw new Error('tek eslesen onek bulunamadi')
+    if (yerler.bul('yok boyle bir yer')) throw new Error('olmayan yer bulundu')
+
+    if (!yerler.sil('test evi')) throw new Error('silinemedi')
+    if (yerler.bul('test evi')) throw new Error('silindikten sonra hala bulunuyor')
+
+    const sonraki = yerler.liste().map((y) => y.ad)
+    if (sonraki.join(',') !== onceki.join(',')) {
+      throw new Error('test digerlerini bozdu')
+    }
+  })
+
+  await dene('yerler: ayni ad UZERINE yaziliyor, kopya birikmiyor', () => {
+    // "burasi ev" said in a new house means the new house. Two rows named
+    // "ev" would make `bul` ambiguous forever.
+    const yerler = require('../bot/utils/yerler')
+    yerler.kaydet('kopya testi', { x: 1, y: 2, z: 3 })
+    const r = yerler.kaydet('kopya testi', { x: 9, y: 9, z: 9 })
+
+    if (!r.uzerineYazildi) throw new Error('uzerine yazildigi bildirilmedi')
+    const eslesen = yerler.liste().filter((y) => y.ad === 'kopya testi')
+    if (eslesen.length !== 1) throw new Error(`${eslesen.length} kopya kaldi`)
+    if (eslesen[0].x !== 9) throw new Error('eski koordinat kaldi')
+    yerler.sil('kopya testi')
+  })
+
+  await dene('git: koordinat cozumu EKSI sayilari koruyor', () => {
+    // The chat layer used to strip '-' out of arguments, so "git 100 64 -300"
+    // walked to +300 without a word.
+    const { hedefCoz } = require('../bot/skills/git')
+
+    const uc = hedefCoz('100 64 -300')
+    if (uc.x !== 100 || uc.y !== 64 || uc.z !== -300) {
+      throw new Error(`uc sayi yanlis: ${JSON.stringify(uc)}`)
+    }
+
+    // Two numbers mean x and z; height is left to the pathfinder.
+    const iki = hedefCoz('-40 -300')
+    if (iki.x !== -40 || iki.z !== -300 || iki.y !== null) {
+      throw new Error(`iki sayi yanlis: ${JSON.stringify(iki)}`)
+    }
+
+    if (hedefCoz('').hata !== 'bos') throw new Error('bos girdi kabul edildi')
+    if (hedefCoz('boyle bir yer yok').hata !== 'bilinmiyor') {
+      throw new Error('bilinmeyen ad kabul edildi')
+    }
+  })
+
+  await dene('git: kayitli yer adi koordinata cozuluyor', () => {
+    const yerler = require('../bot/utils/yerler')
+    const { hedefCoz } = require('../bot/skills/git')
+
+    yerler.kaydet('git testi', { x: 5, y: 70, z: -7 })
+    const h = hedefCoz('git testi')
+    if (h.x !== 5 || h.y !== 70 || h.z !== -7) {
+      throw new Error(`yer cozulmedi: ${JSON.stringify(h)}`)
+    }
+    if (h.ad !== 'git testi') throw new Error('ad geri donmedi')
+    yerler.sil('git testi')
+  })
+
+  await dene('sohbet: EKSI koordinat argumanda hayatta kaliyor', () => {
+    const { komutSatiri } = require('../bot/sohbet/araclar')
+    const satir = komutSatiri({ komut: 'git', arguman: '120 64 -300' })
+    if (satir !== 'git 120 64 -300') throw new Error(`cikti: ${satir}`)
+
+    // '/' must still be gone: an argument starting with it reads as a
+    // server command.
+    const temiz = komutSatiri({ komut: 'git', arguman: '/kill 1 2' })
+    if (/\//.test(temiz)) throw new Error(`slash gecti: ${temiz}`)
+  })
+
+  await dene('sohbet: yersil LLM\'e ACILMAMIS', () => {
+    // Same rule as korumasil: the player marked those places by hand and
+    // there is no undo.
+    const { komutSatiri, IZINLI_KOMUTLAR } = require('../bot/sohbet/araclar')
+    if (Object.prototype.hasOwnProperty.call(IZINLI_KOMUTLAR, 'yersil')) {
+      throw new Error('yersil LLM listesinde')
+    }
+    if (komutSatiri({ komut: 'yersil', arguman: 'ev' })) {
+      throw new Error('yersil kabul edildi')
+    }
+  })
+
+  // --- staying alive, fighting, building --------------------------------
+
+  await dene('yasam: EN IYI yemek seciliyor, cop yenmiyor', () => {
+    const { yemekBul } = require('../bot/skills/yasam')
+    const b = sahteBot()
+    b.inventory.items = () => [
+      { name: 'rotten_flesh', count: 10 },
+      { name: 'bread', count: 3 },
+      { name: 'cooked_beef', count: 1 }
+    ]
+    const secim = yemekBul(b)
+    if (!secim || secim.name !== 'cooked_beef') {
+      throw new Error(`secilen: ${secim && secim.name}`)
+    }
+
+    // Rotten flesh gives hunger and takes health; "some food" is worse than
+    // no food here.
+    b.inventory.items = () => [{ name: 'rotten_flesh', count: 64 }]
+    if (yemekBul(b)) throw new Error('curuk et yenebilir sayildi')
+  })
+
+  await dene('yasam: MESGULKEN yemiyor, ama aclik kritikse yiyor', () => {
+    const { uygunMu, ACLIK_ESIGI, ACLIK_KRITIK } = require('../bot/skills/yasam')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+
+    b.food = 20
+    if (uygunMu(b, k)) throw new Error('tokken yemek istedi')
+
+    b.food = ACLIK_ESIGI - 1
+    if (!uygunMu(b, k)) throw new Error('bostayken ac oldugu halde yemedi')
+
+    // A dig in progress gets cancelled by eating: the food goes in the hand.
+    k.baslat()
+    if (uygunMu(b, k)) throw new Error('is sirasinda yemege kalkti')
+
+    b.food = ACLIK_KRITIK
+    if (!uygunMu(b, k)) throw new Error('aclik kritikken bile yemedi')
+    k.bitir()
+  })
+
+  await dene('yasam: yedikten sonra ELDEKI esya geri takiliyor', async () => {
+    // Otherwise the bot keeps "mining" with a loaf of bread and the dig
+    // silently takes forever.
+    const { yemekYe } = require('../bot/skills/yasam')
+    const b = sahteBot()
+    const kazma = { name: 'iron_pickaxe', count: 1 }
+    const ekmek = { name: 'bread', count: 5 }
+
+    b.heldItem = kazma
+    b.inventory.items = () => [kazma, ekmek]
+    const takilanlar = []
+    b.equip = async (esya) => { takilanlar.push(esya.name); b.heldItem = esya }
+    b.consume = async () => {}
+
+    const r = await yemekYe(b)
+    if (!r.basarili) throw new Error(`yiyemedi: ${r.hata}`)
+    if (takilanlar.join(',') !== 'bread,iron_pickaxe') {
+      throw new Error(`el sirasi: ${takilanlar.join(',')}`)
+    }
+  })
+
+  await dene('savas: creeper\'a SALDIRMIYOR, uzaklasiyor', async () => {
+    // Melee range for a creeper is its blast radius; winning that fight
+    // still ends with the bot dead and its tools on the floor.
+    const savasModul = require('../bot/skills/savas')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.entities = {
+      1: { id: 1, name: 'creeper', position: new Vec3(3, 64, 0), isValid: true, height: 1.7 }
+    }
+    let vurdu = false
+    b.attack = () => { vurdu = true }
+    let gidilen = null
+    b.pathfinder.goto = async (hedef) => { gidilen = hedef }
+
+    const r = await savasModul.savas(b, k, 10)
+    if (vurdu) throw new Error('creeper\'a vurdu')
+    if (!r.kacti) throw new Error('uzaklasmadi')
+    if (!gidilen) throw new Error('hicbir yere gitmedi')
+  })
+
+  await dene('savas: EN IYI silah seciliyor (balta da sayiliyor)', () => {
+    const { enIyiSilah } = require('../bot/skills/savas')
+    const b = sahteBot()
+
+    b.inventory.items = () => [
+      { name: 'wooden_sword' }, { name: 'iron_axe' }, { name: 'stone_sword' }
+    ]
+    if (enIyiSilah(b).name !== 'iron_axe') {
+      throw new Error(`secilen: ${enIyiSilah(b).name}`)
+    }
+
+    // Same tier: the sword wins on reach and swing speed.
+    b.inventory.items = () => [{ name: 'iron_axe' }, { name: 'iron_sword' }]
+    if (enIyiSilah(b).name !== 'iron_sword') {
+      throw new Error(`ayni seviyede balta secildi: ${enIyiSilah(b).name}`)
+    }
+
+    b.inventory.items = () => [{ name: 'bread' }, { name: 'iron_pickaxe' }]
+    if (enIyiSilah(b)) throw new Error('kazmayi silah sandi')
+  })
+
+  await dene('savas: dovusurken can izleyicisi gorevi IPTAL ETMIYOR', () => {
+    // savas.js has its own health floor and a retreat to run at it.
+    // Cancelling from outside throws out of that loop before the retreat.
+    const { canIzleyiciBaslat } = require('../bot/skills/yasam')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    k.baslat()
+
+    let dovusuyor = true
+    const bitir = canIzleyiciBaslat(b, k, { muafMi: () => dovusuyor })
+
+    b.health = 4
+    b.emit('health')
+    if (k.iptalIstendi) throw new Error('dovusurken iptal edildi')
+
+    dovusuyor = false
+    b.health = 3
+    b.emit('health')
+    if (!k.iptalIstendi) throw new Error('dovus disinda da iptal etmedi')
+    bitir()
+    k.bitir()
+  })
+
+  await dene('insa: bosluktaki hucre DAYANAKSIZ diye atlaniyor', async () => {
+    // Minecraft has no "place at these coordinates": a block is placed
+    // against an existing one. A cell with nothing around it cannot be built.
+    const { noktayaKoy } = require('../bot/skills/insa')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.inventory.items = () => [{ name: 'cobblestone', count: 64 }]
+    b.blockAt = (v) => ({ name: 'air', boundingBox: 'empty', position: v })
+
+    const r = await noktayaKoy(b, k, new Vec3(1, 64, 0), { name: 'cobblestone' })
+    if (r.basarili) throw new Error('dayanaksiz yere blok koydu')
+    if (r.hata !== 'dayanak_yok') throw new Error(`sebep: ${r.hata}`)
+  })
+
+  await dene('insa: bot KENDI durdugu hucreye blok koymuyor', async () => {
+    const { noktayaKoy } = require('../bot/skills/insa')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.inventory.items = () => [{ name: 'cobblestone', count: 64 }]
+    b.blockAt = (v) => v.y < 64
+      ? { name: 'stone', boundingBox: 'block', position: v }
+      : { name: 'air', boundingBox: 'empty', position: v }
+
+    const ayak = b.entity.position.floored()
+    for (const hucre of [ayak, ayak.offset(0, 1, 0)]) {
+      const r = await noktayaKoy(b, k, hucre, { name: 'cobblestone' })
+      if (r.basarili) throw new Error(`kendini gomdu: ${hucre}`)
+      if (r.hata !== 'ustumde') throw new Error(`sebep: ${r.hata}`)
+    }
+  })
+
+  await dene('insa: DOLU hucreye ikinci blok konmuyor', async () => {
+    const { noktayaKoy } = require('../bot/skills/insa')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.inventory.items = () => [{ name: 'cobblestone', count: 64 }]
+    b.blockAt = (v) => ({ name: 'stone', boundingBox: 'block', position: v })
+
+    const r = await noktayaKoy(b, k, new Vec3(2, 64, 0), { name: 'cobblestone' })
+    if (r.basarili) throw new Error('dolu hucreye kondu')
+    if (r.hata !== 'dolu') throw new Error(`sebep: ${r.hata}`)
+  })
+
+  await dene('insa: UZANMA mesafesi disina blok konmuyor', async () => {
+    // The server rejects a placement past ~4.5 blocks; without the check the
+    // call just silently does nothing.
+    const { noktayaKoy, UZANMA } = require('../bot/skills/insa')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.inventory.items = () => [{ name: 'cobblestone', count: 64 }]
+    b.blockAt = (v) => v.y < 64
+      ? { name: 'stone', boundingBox: 'block', position: v }
+      : { name: 'air', boundingBox: 'empty', position: v }
+
+    const uzak = new Vec3(Math.ceil(UZANMA) + 4, 64, 0)
+    const r = await noktayaKoy(b, k, uzak, { name: 'cobblestone' })
+    if (r.basarili) throw new Error('erisemeyecegi yere koydu')
+    if (r.hata !== 'uzak') throw new Error(`sebep: ${r.hata}`)
+  })
+
+  await dene('insa: platform YAKINDAN UZAGA siralayarak oruyor', async () => {
+    // Order is not cosmetic: each placed block is the support for the next
+    // one out. Middle-outwards fails on the second cell.
+    const insa = require('../bot/skills/insa')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.inventory.items = () => [{ name: 'cobblestone', count: 64 }]
+
+    const konulan = []
+    const konmusKumeler = new Set()
+    b.blockAt = (v) => {
+      const anahtar = `${v.x},${v.y},${v.z}`
+      if (v.y < 63 || konmusKumeler.has(anahtar)) {
+        return { name: 'stone', boundingBox: 'block', position: v }
+      }
+      return { name: 'air', boundingBox: 'empty', position: v }
+    }
+    b.placeBlock = async (referans, yuz) => {
+      const hedef = referans.position.plus(yuz)
+      konmusKumeler.add(`${hedef.x},${hedef.y},${hedef.z}`)
+      konulan.push(hedef)
+    }
+
+    const r = await insa.platform(b, k, 3)
+    if (r.konan !== 9) throw new Error(`${r.konan} blok kondu, 9 bekleniyordu`)
+
+    const mesafeler = konulan.map((v) => v.distanceTo(b.entity.position))
+    for (let i = 1; i < mesafeler.length; i++) {
+      if (mesafeler[i] < mesafeler[i - 1] - 1e-9) {
+        throw new Error(`sira bozuk: ${mesafeler.join(',')}`)
+      }
+    }
+  })
+
+  await dene('insa: blok yoksa SESSIZ basarisiz olmuyor', async () => {
+    const insa = require('../bot/skills/insa')
+    const b = sahteBot()
+    const k = new GorevKontrol()
+    b.inventory.items = () => [{ name: 'bread', count: 5 }]
+
+    const sozler = []
+    b.chat = (m) => sozler.push(m)
+    const r = await insa.platform(b, k, 3)
+    if (r.basarili) throw new Error('bloksuz platform kurdu')
+    if (r.hata !== 'blok_yok') throw new Error(`sebep: ${r.hata}`)
+    if (!sozler.some((m) => /blok/i.test(m))) {
+      throw new Error(`oyuncuya soylenmedi: ${sozler.join(' | ')}`)
+    }
+  })
+
+  await dene('sohbet: korun LLM\'e ACILMAMIS', () => {
+    // Turning on "hit anything nearby" is a call about a world the model
+    // cannot see: pets, villagers and other players are all in range.
+    const { komutSatiri, IZINLI_KOMUTLAR } = require('../bot/sohbet/araclar')
+    if (Object.prototype.hasOwnProperty.call(IZINLI_KOMUTLAR, 'korun')) {
+      throw new Error('korun LLM listesinde')
+    }
+    if (komutSatiri({ komut: 'korun' })) throw new Error('korun kabul edildi')
+  })
+
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)
   process.exit(hata === 0 ? 0 : 1)
 }

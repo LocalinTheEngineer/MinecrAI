@@ -1,9 +1,9 @@
-"""Ogrenme egrisini cizer — README'nin vitrini.
+"""Draws the learning curve — the README showpiece.
 
-train_ppo.py egitim boyunca her bolumu CSV'ye yazdigi icin bu script
-EGITIM DEVAM EDERKEN de calistirilabilir; o ana kadarki egriyi cizer.
+train_ppo.py writes every episode to CSV as it goes, so this can run while
+training is still in progress; it plots the curve up to that point.
 
-Kullanim:
+Usage:
     python plot_ogrenme.py
 """
 
@@ -68,9 +68,9 @@ def main() -> None:
     orta.set_xlabel("egitim adimi"); orta.set_ylabel("bolum basina odun")
     orta.set_title("Toplanan odun"); orta.grid(alpha=0.3)
 
-    # Bolum uzunlugu: ortam zorlasiyorsa (orman tukeniyorsa) BU yukselir.
-    # Odul dusuyor ama bolumler de uzuyorsa sucu politikaya yuklemeden once
-    # ortamin degistigini dusunmek gerekir.
+    # Episode length goes up when the environment gets harder (forest running
+    # out). If reward drops and episodes get longer at the same time, suspect
+    # the environment before blaming the policy.
     sag.plot(adimlar, uzunluklar, alpha=0.25, color="tab:orange")
     yum3 = hareketli_ortalama(uzunluklar, p)
     sag.plot(adimlar[len(adimlar) - len(yum3):], yum3, color="tab:orange", lw=2)
@@ -90,8 +90,8 @@ def main() -> None:
     print(f"Son %20 ortalama odul: {son:+.2f}")
     print(f"Degisim: {son - ilk:+.2f}")
 
-    # Ortam zorlasti mi? Bolum uzunlugu buyuk olcude arttiysa odul dususu
-    # politikanin degil ormanin tukenmesinin sonucu olabilir.
+    # Did the environment get harder? If episode length grew a lot, the reward
+    # drop may be the forest running out rather than the policy.
     u_ilk = np.mean(uzunluklar[: max(1, len(uzunluklar) // 5)])
     u_son = np.mean(uzunluklar[-max(1, len(uzunluklar) // 5):])
     print(f"\nBolum uzunlugu  ilk %20: {u_ilk:.0f} adim  ->  son %20: {u_son:.0f} adim")
