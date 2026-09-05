@@ -7,7 +7,7 @@
 Mineflayer (Node.js) drives the game. A WebSocket bridge exposes it to Python as a
 standard Gymnasium environment, so any RL algorithm can train against real Minecraft.
 
-[![Node](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Gymnasium](https://img.shields.io/badge/Gymnasium-1.0-0081A5)](https://gymnasium.farama.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
@@ -23,6 +23,10 @@ a real Minecraft server.*
 ---
 
 ## At a glance
+
+**Install:** [Windows guide (Türkçe)](docs/install.md) · [Quick start](#quick-start) ·
+[Publishing plan](docs/publishing.md) · [Game profiles](docs/profiles.md).
+MinecrAI is a companion app / external bot, not a Fabric or Forge mod.
 
 Two tasks — chopping wood on the surface, mining ore at y=15 — trained against a
 live Minecraft server, first separately and then as **one network doing both**.
@@ -648,7 +652,22 @@ for the same reason `korumasil` never was.
 
 ## Quick start
 
-**Requirements:** Node.js 18+, Python 3.10+, Java 21 (for the Minecraft server).
+**Requirements:** Node.js 22+, Python 3.10+ for RL/tests, and a Minecraft Java
+server (the current experiments use 1.20.4). See the [Windows installation guide](docs/install.md).
+
+```powershell
+npm run setup                 # npm ci + .venv + Python packages; preserves .env
+# Edit .env to match your running server
+npm test                      # Node + Python smoke tests, no Minecraft needed
+npm run doctor -- --server
+npm start                     # chat-command bot; Ctrl+C to stop
+```
+
+For chat commands only, `npm run setup -- --bot-only` skips Python.
+Windows users can also open `scripts/start-minecrai.cmd`.
+For RL, use `npm start -- bridge` instead: **bridge already creates its own bot;
+do not run bot and bridge together with the same account.** Profiles currently
+validate metadata only; they do not change game behavior.
 
 ### 1. A local Minecraft server
 
@@ -663,7 +682,7 @@ java -Xmx2G -jar server.jar nogui     # fails once and writes eula.txt
 Set `eula=true` in `eula.txt`, then in `server.properties`:
 
 ```properties
-online-mode=false        # let the bot join without a Mojang account
+online-mode=false        # trusted local test server ONLY, paired with MC_AUTH=offline
 difficulty=peaceful      # no mobs interrupting training
 spawn-protection=0       # the bot may break blocks near spawn
 ```
@@ -674,13 +693,9 @@ connect to `localhost` if you want to watch.
 ### 2. Install and run
 
 ```bash
-npm install
-python -m venv .venv && .venv/Scripts/activate     # Windows; use bin/activate on Linux/macOS
-pip install -r python/requirements.txt
-
-cp .env.example .env        # edit if your server is not on localhost:25565
-
-npm run bot                 # Milestone 1
+npm run setup
+# Edit .env if your server is not on localhost:25565
+npm start
 ```
 
 Then type in the in-game chat:
@@ -720,7 +735,7 @@ when the top is out of reach), collect the drops, repeat.*
 
 ```bash
 npm run bridge                        # terminal A
-cd python && python random_agent.py   # terminal B
+.venv/Scripts/python.exe python/random_agent.py  # terminal B, Windows
 ```
 
 Rewards will be negative — this baseline acts randomly and does not learn.
@@ -825,7 +840,13 @@ test/
 
 ## Tests
 
-`test/e2e.js` spins up an in-process Minecraft server (`flying-squid`), builds a
+Run `npm run test:node`, `npm run test:python`, or `npm test` for both.
+These commands automatically prefer `.venv`; `npm test` attempts both suites
+even if Node tests fail, and fails clearly when Python or its packages are missing.
+The Node command also tests setup helpers, profile validation and port checks.
+
+The optional `test/e2e.js` requires `flying-squid` (not installed by setup or
+included in `npm test`). It spins up an in-process Minecraft server, builds a
 flat platform, plants trees and asserts two things — that the bot finds and chops
 a tree, and that a `dur` (stop) request actually aborts an in-progress chop.
 No manual Minecraft client needed.

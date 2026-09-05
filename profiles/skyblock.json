@@ -1,0 +1,12 @@
+{
+  "name": "Skyblock (taslak)",
+  "description": "Skyblock uyarlamasi icin uygulanmayan tasarim ornegi.",
+  "allowed_tasks": ["odun"],
+  "protected_blocks": ["dirt", "grass_block", "chest"],
+  "valuable_blocks": ["oak_log", "cobblestone"],
+  "danger_blocks": ["lava"],
+  "forbidden_actions": ["dig_island_floor"],
+  "reward_hints": ["Adanin sinirli kaynaklarini koru"],
+  "default_task": "odun",
+  "notes": ["Skyblock destegi veya guvenlik garantisi degildir. Profil secimi davranisi degistirmez; mevcut bot ada zeminini kirabilir."]
+}

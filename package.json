@@ -4,9 +4,16 @@
   "description": "Minecraft AI agent: Mineflayer bot + Python (Gymnasium) reinforcement learning environment",
   "main": "bot/index.js",
   "type": "commonjs",
+  "engines": { "node": ">=22" },
   "scripts": {
     "bot": "node bot/index.js",
-    "bridge": "node bot/bridge/server.js"
+    "bridge": "node bot/bridge/server.js",
+    "start": "node scripts/start.js",
+    "setup": "node scripts/setup.js",
+    "doctor": "node scripts/doctor.js",
+    "test:node": "node scripts/test.js node",
+    "test:python": "node scripts/test.js python",
+    "test": "node scripts/test.js all"
   },
   "keywords": ["minecraft", "mineflayer", "reinforcement-learning", "gymnasium", "ai-agent"],
   "author": "LocalinTheEngineer",

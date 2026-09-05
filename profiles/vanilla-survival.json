@@ -1,0 +1,12 @@
+{
+  "name": "Vanilla Survival",
+  "description": "Mevcut vanilla bot/RL sistemi icin gelecekteki profil entegrasyonu tanimi.",
+  "allowed_tasks": ["odun", "maden"],
+  "protected_blocks": ["chest", "furnace"],
+  "valuable_blocks": ["oak_log", "iron_ore", "diamond_ore"],
+  "danger_blocks": ["lava", "fire"],
+  "forbidden_actions": [],
+  "reward_hints": ["Kaynak toplama ve guvenli hareket"],
+  "default_task": "odun",
+  "notes": ["Yalnizca metadata; bu listeler henuz uygulanmaz. Mevcut odul ve aksiyonlar degismez."]
+}

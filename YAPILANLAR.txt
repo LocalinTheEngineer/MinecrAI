@@ -1,0 +1,135 @@
+MinecrAI — Yapılan Çalışmalar
+Tarih: 5 Eylül 2026
+
+AMAÇ
+Projeyi kullanıcı dostu bir companion app / external bot dağıtımına hazırlamak.
+Mevcut Mineflayer + Node.js WebSocket bridge + Python/Gymnasium RL mimarisi
+korundu. Proje Fabric/Forge moduna dönüştürülmedi.
+
+1. KURULUM VE KOMUTLAR
+package.json dosyasına şu komutlar eklendi:
+- npm run setup: Node paketlerini kurar, eksikse .env ve .venv oluşturur,
+  Python paketlerini kurar, çıktı klasörlerini hazırlar.
+- npm run setup -- --bot-only: Python kurulumu yapmadan botu hazırlar.
+- npm start: Tek girişli başlatıcıyı çalıştırır.
+- npm run doctor: Ortamı kontrol eder.
+- npm run test:node: Node smoke ve yeni altyapı testlerini çalıştırır.
+- npm run test:python: Python smoke testini çalıştırır.
+- npm test: Node ve Python kontrollerini birlikte çalıştırır.
+
+Mevcut npm run bot ve npm run bridge komutları korundu.
+Node gereksinimi Mineflayer ile uyumlu olacak şekilde 22+ olarak belirtildi.
+package-lock.json, package.json ile eşitlendi.
+Kurulum mevcut .env, model ve kayıt dosyalarını silmez.
+
+2. PYTHON SEÇİMİ
+Test ve tanılama komutları önce repodaki .venv yorumlayıcısını arar.
+Ardından python, python3 ve Windows py -3 seçeneklerini dener.
+Çalışmayan veya 3.10'dan eski yorumlayıcılar atlanır.
+Python veya gerekli paketler yoksa anlaşılır hata verilir.
+npm test, Node testleri başarısız olsa bile Python kontrolünü dener.
+
+3. DOCTOR
+scripts/doctor.js eklendi. PASS/WARN/FAIL çıktısıyla şunları kontrol eder:
+- Node sürümü ve Node bağımlılıklarının bulunması
+- Python yorumlayıcısı, .venv ve Python paketlerinin yüklenebilmesi
+- .env dosyasının varlığı
+- MC_HOST, MC_PORT, MC_VERSION ve MC_AUTH ayarları
+- Bridge portunun geçerliliği ve kullanılabilirliği
+- models/ ve data/demonstrations/ klasörleri
+- Seçilen profilin okunması ve doğrulanması
+- İsteğe bağlı sohbet anahtarının varlığı; anahtar değeri yazdırılmaz
+
+npm run doctor -- --server ayrıca Minecraft sunucusuna TCP erişimini dener.
+TCP erişimi, Minecraft girişinin veya oyun içi yetkilerin doğrulandığı anlamına
+gelmez. FAIL varsa çıkış kodu 1, yalnızca WARN varsa 0 olur.
+
+4. BAŞLATICILAR
+Eklenen dosyalar:
+- scripts/start.js
+- scripts/start-minecrai.ps1
+- scripts/start-minecrai.cmd
+
+Başlatıcı bot veya bridge modlarından yalnızca birini açar.
+Bridge zaten kendi Minecraft botunu oluşturduğu için aynı hesapla iki girişin
+birlikte açılması önerilmez. Ayrı, arka planda kalan bot süreçleri oluşturulmaz.
+Ctrl+C ile durdurma ve isteğe bağlı sunucu erişim kontrolü bulunur.
+Başlatıcı Minecraft sunucusunu veya Python eğitimini otomatik başlatmaz.
+
+Örnekler:
+npm start
+npm start -- bridge
+npm start -- bot --check-server
+
+5. DOKÜMANTASYON
+docs/install.md:
+- Windows kurulumu ve normal kullanıcı/geliştirici ayrımı
+- Minecraft sunucusu, offline/Microsoft hesap farkları
+- .env ayarları, test ve başlatma komutları
+- Python, bridge, op, sürüm, port ve sohbet sorunları
+
+docs/publishing.md:
+- GitHub Releases için yayın adımları
+- Modrinth ve CurseForge için gerçek modpack hazırlama yaklaşımı
+- Companion app olduğunun açıkça belirtilmesi
+- Paketlenecek ve dışarıda bırakılacak dosyalar
+- Lisans, bağımlılık, izin ve ileride bridge mod geliştirme notları
+
+docs/profiles.md:
+- Profil alanları, doğrulama sözleşmesi ve sonraki entegrasyon adımları
+
+README.md içindeki Quick Start ve test yönergeleri güncellendi.
+
+6. PROFİL ALTYAPISI
+Eklenen dosyalar:
+- profiles/vanilla-survival.json
+- profiles/skyblock.json
+- profiles/loader.js
+
+Profiller görev, blok, yasak aksiyon, ödül ipucu ve açıklama alanlarını içerir.
+Loader JSON yapısını ve varsayılan görevin izinli görevler içinde bulunmasını
+kontrol eder. Dosya yolu yerine sınırlı profil adı kabul eder.
+.env.example dosyasına MINECRAI_PROFILE eklendi.
+
+Profiller henüz bot veya RL davranışına uygulanmaz. Skyblock profili taslaktır;
+ada güvenliği veya çalışan Skyblock desteği anlamına gelmez.
+
+7. YORUMLARIN SADELEŞTİRİLMESİ
+Sonraki isteğin üzerine yeni scriptlerdeki yorum satırları kaldırıldı.
+.env.example açıklamaları kısa, gerekli notlara indirildi.
+Tüm reponun eski yorumları topluca değiştirilmedi.
+
+8. TEST SONUÇLARI
+- npm run test:node: Geçti.
+- npm run test:python: Geçti.
+- npm test: Geçti.
+- npm run doctor: 0 FAIL, çıkış kodu 0.
+- node --test test/setup.test.js: Dört altyapı testi geçti.
+- npm ci --dry-run --offline --ignore-scripts: Geçti.
+- git diff --check: Boşluk hatası bulunmadı.
+
+Yeni altyapı testleri Python seçim sırasını, profil doğrulamasını, port
+kontrollerini ve başlatıcının repo dışından çalıştırıldığında yalnızca seçilen
+girişi açmasını kapsar. Başlatıcı testinde gerçek Minecraft yerine sahte bot
+kullanılır.
+
+Python ilk sandbox denemesinde erişim engeline takıldı. İzinli çalıştırmada
+mevcut .venv içindeki Python 3.14.5 ile Python testleri ve doctor başarılı oldu.
+Kontrol edilen Node sürümü 24.15.0 idi.
+
+9. SINIRLAR VE HENÜZ YAPILMAYANLAR
+- Canlı Minecraft sunucusuna bağlanarak uçtan uca deneme yapılmadı.
+- Temiz makinede sıfırdan tam setup çalıştırılmadı; npm ci dry-run yapıldı.
+- Hazır EXE, dağıtım ZIP'i veya çalışır modpack üretilmedi.
+- GitHub Releases, Modrinth veya CurseForge üzerinde yayın yapılmadı.
+- Python bağımlılıkları tam sürüm kilitlemesine dönüştürülmedi.
+- Profil kuralları oyun davranışına bağlanmadı.
+
+Bot/RL çekirdek kodu ve bridge protokolü değiştirilmedi.
+Kişisel .env veya API anahtarı repoya eklenmedi. Minecraft JAR, Mojang assetleri,
+modeller veya büyük bağımlılıklar dağıtım dosyası olarak eklenmedi.
+
+BAŞLANGIÇ
+Kurulum için docs/install.md, yayın hazırlığı için docs/publishing.md dosyasını
+okuyabilirsin. Bu rapor yukarıdaki çalışmanın ve o sırada alınan test sonuçlarının
+özetidir; sonraki değişiklikler için yeni test çalıştırılması gerekir.
