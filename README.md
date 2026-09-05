@@ -216,6 +216,7 @@ The same effect appeared inside behaviour cloning: evaluating the cloned policy 
 | **5b** | Mining as a *second RL task* on the same environment | ✅ Done |
 | **6** | One agent, both tasks — multi-task RL | ✅ Done |
 | **7** | Natural-language control: an LLM layer over the existing skills | ✅ Done |
+| **8** | Command chaining, named places, staying alive, fighting, building | ✅ Done |
 
 Each milestone stands on its own — the repo is presentable at any point.
 
@@ -592,6 +593,59 @@ silently understood nothing.
 Costs roughly $0.001 per message on Anthropic's cheapest model, or nothing at all
 on Gemini's free tier.
 
+## Milestone 8 — more than one thing at a time
+
+Milestone 7 gave the bot language. Watching it being used exposed the limits of
+what was behind the language, and this milestone is those limits:
+
+**One message, several jobs.** The model understood "chop some wood and then make
+a pickaxe" perfectly well and had no way to say it — the tool schema held a single
+command. It now returns a list of up to four steps, run in order, and `dur` skips
+whatever is left. The skills did not change; only how many of them can be asked for
+in one breath.
+
+**Places have names.** Coordinates are how the game addresses a location and how
+nobody talks. `burasi ev` stores where the player is standing, `git ev` walks back
+to it, and the file survives a restart. A name saved twice overwrites — said in a
+new house, "burasi ev" means the new house.
+
+The bug worth recording here is not in that file. The chat layer strips arguments
+down to letters, digits and spaces before executing them, which is what makes
+untrusted chat safe — and it was also eating the minus sign. `git 100 64 -300`
+reached the router as `git 100 64 300` and the bot walked six hundred blocks the
+wrong way, reporting success. Nothing failed; the sanitiser was doing exactly what
+it was written to do.
+
+**Staying alive is not a command.** Every skill in the repo assumes the bot is
+standing up, and a mining run is twenty minutes long. Two background loops now run
+without being asked: eat before hunger costs anything, and stop the current task
+when health drops. Neither one takes the controls away from a running task — eating
+puts food in the main hand, which cancels a dig, so unless hunger is critical it
+waits for the bot to be idle.
+
+**Fighting, and mostly not fighting.** `savas` attacks the nearest hostile, with a
+health floor it retreats at. Creepers are never engaged: melee range for a creeper
+*is* its blast radius, so winning that fight still ends with the tools on the floor.
+Automatic defence exists but is **off by default** — turning "hit anything nearby"
+on is a decision about a world the code cannot see, one with pets and villagers and
+other players in it.
+
+That last point is why the two systems needed to be told about each other. The
+health watcher cancels the running task; combat has its own floor and a retreat to
+run at it. Cancelling from outside threw out of the combat loop *before* the retreat
+ran, leaving the bot standing at four health next to the thing that put it there.
+Combat now opts out of the watcher explicitly.
+
+**Placing blocks.** `platform`, `duvar`, `kapat`. The geometry is trivial; the
+constraint is not. Minecraft has no "place a block at these coordinates" call — a
+block is placed *against* an existing one, on a named face. So a cell with nothing
+around it cannot be built at all, and building a floor from the middle outwards
+fails on the second cell. The cells are sorted nearest-first, which makes each
+placed block the support for the next one out.
+
+Eight new commands are exposed to the language layer; `korun` and `yersil` are not,
+for the same reason `korumasil` never was.
+
 ## Quick start
 
 **Requirements:** Node.js 18+, Python 3.10+, Java 21 (for the Minecraft server).
@@ -721,11 +775,16 @@ bot/                  Node.js — everything that touches Minecraft
     uret.js               recursive crafting — resolves the recipe tree
     erit.js               smelting (furnace), the craft→smelt bridge
     sutun.js              pillar up / dig down to reach unreachable blocks
+    git.js                walk to a coordinate or a saved place
+    yasam.js              eat, and notice a health drop (both run in the background)
+    savas.js              fight what is close, walk away from what explodes
+    insa.js               place blocks: floor, wall, plug the gap in front
     alet.js, gel.js, takip.js, ver.js
   utils/gorev.js        cancellation, safe pathfinder stop, stuck detection
   utils/kurtar.js       frees the bot when it wedges itself
   utils/yerlestir.js    block placement — clears a spot if none is free
   utils/koruma.js       player-marked no-dig zones
+  utils/yerler.js       named places, saved to disk
   sohbet/
     beyin.js            LLM layer: plain language -> an existing command
     araclar.js          the fixed command enum the model may choose from

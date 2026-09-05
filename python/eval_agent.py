@@ -187,8 +187,12 @@ def main() -> None:
     politikalar.append(("uzman", lambda obs, e: e.uzman_aksiyonu()))
 
     # Count the expert's reasons -- when it does nothing, read why instead of
-    # guessing
-    sebepler: dict[str, int] = {}
+    # guessing.
+    #
+    # `sebepler` is the module-level dict `bolum_calistir` writes into. A local
+    # one here shadowed it, so it stayed empty and the whole reason breakdown
+    # at the end of the run silently never printed.
+    sebepler.clear()
 
     print(f"\n{len(politikalar)} politika, {args.bolum} tur, donusumlu sira\n")
     try:

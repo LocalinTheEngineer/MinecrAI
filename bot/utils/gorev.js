@@ -58,19 +58,28 @@ class GorevKontrol {
 
 /** Bound a promise by both a timeout and cancellation */
 async function sinirli (soz, ms, kontrol) {
-  return Promise.race([
-    soz,
-    new Promise((_, red) => setTimeout(() => red(new Error('zaman_asimi')), ms)),
-    new Promise((_, red) => {
-      const t = setInterval(() => {
-        if (kontrol && kontrol.iptalIstendi) {
-          clearInterval(t)
-          red(new IptalEdildi())
-        }
-      }, 100)
-      soz.finally(() => clearInterval(t)).catch(() => {})
-    })
-  ])
+  // The timer has to be cleared when the promise wins the race. It used to be
+  // left running: with the 4-minute budget `git` uses, node stayed awake for
+  // four minutes after a walk that took ten seconds.
+  let zamanlayici = null
+  let saat = null
+
+  try {
+    return await Promise.race([
+      soz,
+      new Promise((_, red) => {
+        zamanlayici = setTimeout(() => red(new Error('zaman_asimi')), ms)
+      }),
+      new Promise((_, red) => {
+        saat = setInterval(() => {
+          if (kontrol && kontrol.iptalIstendi) red(new IptalEdildi())
+        }, 100)
+      })
+    ])
+  } finally {
+    if (zamanlayici) clearTimeout(zamanlayici)
+    if (saat) clearInterval(saat)
+  }
 }
 
 /**

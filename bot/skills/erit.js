@@ -85,6 +85,12 @@ function yakitBul (bot, gerekenAdet) {
     const yiginlar = bot.inventory.items().filter((i) => desen.test(i.name))
     if (yiginlar.length === 0) continue
     const toplam = yiginlar.reduce((t, i) => t + i.count, 0)
+
+    // `esya` is only read for its item id at the putFuel call, which is why
+    // one arbitrary stack is enough and the total is what counts. mineflayer's
+    // window transfer keeps re-finding the item across the whole inventory
+    // range until the requested count is moved, so a coal pile split over two
+    // stacks is moved as one. Do not "fix" this into a per-stack cap.
     secenekler.push({
       esya: yiginlar[0],
       toplam,

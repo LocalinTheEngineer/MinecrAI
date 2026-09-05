@@ -326,7 +326,6 @@ function botOlustur () {
     // This once read `komut.startsWith('uret ')`, and since `komut` never
     // contains a space that condition was never true and the "uret" command
     // silently did nothing. The arguments are in the rest of `parcalar`.
-    // "kaz demir" / "kaz elmas 5" / "kaz" (default: tas)
     if (komut === 'cik') {
       await gorevCalistir('cik', async () => {
         bot.chat('Yüzeye çıkıyorum...')

@@ -169,10 +169,10 @@ async function baltaYap (bot) {
   }
 
   // --- 5) Axe ---
-  const tahtaAdi = (envanterdeVarMi(bot, /_planks$/) || {}).name || 'oak_planks'
-  const baltaAdi = tahtaAdi.replace('_planks', '') + '_axe'
-  // Vanilla has one name for the wooden axe: wooden_axe
-  const tarif = tarifBul(bot, 'wooden_axe', masa) || tarifBul(bot, baltaAdi, masa)
+  // One name, whatever the wood. Planks carry their tree (oak_planks,
+  // birch_planks) and the axe does not: there is no `oak_axe`, so a fallback
+  // derived from the plank name can never match anything.
+  const tarif = tarifBul(bot, 'wooden_axe', masa)
   if (!tarif) return { basarili: false, mesaj: 'Balta tarifini bulamadım.' }
 
   try {

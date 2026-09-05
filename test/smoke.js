@@ -73,13 +73,35 @@ function sahteBot () {
 }
 
 let hata = 0
+
+// Nothing here should take this long. The number is a ceiling, not a target.
+const TEST_SURE_SINIRI = 20000
+
+/**
+ * Runs one test under a time limit.
+ *
+ * The limit is not about speed. Several tests `await` a skill that loops, and
+ * a loop that never exits used to hang the whole suite: no failure, no output,
+ * just a terminal that sits there. A hang has to be reported as a failure like
+ * anything else.
+ */
 async function dene (ad, fn) {
+  let saat = null
   try {
-    await fn()
+    await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise((_, red) => {
+        saat = setTimeout(
+          () => red(new Error(`${TEST_SURE_SINIRI / 1000} sn icinde bitmedi (dongu?)`)),
+          TEST_SURE_SINIRI)
+      })
+    ])
     console.log(`  PASS  ${ad}`)
   } catch (err) {
     console.log(`  FAIL  ${ad} -> ${err.message}`)
     hata++
+  } finally {
+    if (saat) clearTimeout(saat)
   }
 }
 
@@ -3150,6 +3172,106 @@ async function main () {
       throw new Error('korun LLM listesinde')
     }
     if (komutSatiri({ komut: 'korun' })) throw new Error('korun kabul edildi')
+  })
+
+  // --- fixes for things that failed silently -----------------------------
+
+  await dene('alet: balta adi ODUN TURUNDEN turetilmiyor', () => {
+    // Planks carry their tree (oak_planks, birch_planks); tools do not. There
+    // is no `oak_axe`, so `tahtaAdi.replace('_planks','') + '_axe'` produced a
+    // name that can never match, and the fallback branch was dead code.
+    const mcData = require('minecraft-data')('1.20.4')
+    if (!mcData.itemsByName.wooden_axe) throw new Error('wooden_axe yok?')
+
+    const agaclar = Object.keys(mcData.itemsByName)
+      .filter((ad) => /_planks$/.test(ad))
+      .map((ad) => ad.replace('_planks', ''))
+    if (agaclar.length < 5) throw new Error(`sadece ${agaclar.length} tahta turu okundu`)
+
+    const uydurma = agaclar.filter((a) => mcData.itemsByName[`${a}_axe`])
+    if (uydurma.length > 0) {
+      throw new Error(`beklenmedik esyalar var: ${uydurma.join(', ')}`)
+    }
+
+    // Tools are named by tier. Building one from a wood type is always a bug,
+    // so the source must not do that arithmetic at all.
+    const kaynak = fs.readFileSync(
+      path.join(__dirname, '..', 'bot', 'skills', 'alet.js'), 'utf8')
+    const suphe = /\+\s*'_(axe|pickaxe|sword|shovel|hoe)'/.exec(kaynak)
+    if (suphe) throw new Error(`alet adi birlestirilerek uretiliyor: ${suphe[0]}`)
+  })
+
+  await dene('sinirli() kazanan sozde ZAMANLAYICIYI TEMIZLIYOR', async () => {
+    // It used to leave the timeout running. With the 4-minute budget `git`
+    // uses that keeps node awake for four minutes after a ten-second walk,
+    // and nothing anywhere reports it.
+    const { sinirli } = require('../bot/utils/gorev')
+
+    const acik = new Set()
+    const gercekSet = global.setTimeout
+    const gercekClear = global.clearTimeout
+    global.setTimeout = (fn, ms) => {
+      const t = gercekSet(fn, ms)
+      acik.add(t)
+      return t
+    }
+    global.clearTimeout = (t) => { acik.delete(t); return gercekClear(t) }
+
+    try {
+      await sinirli(Promise.resolve('bitti'), 300000, null)
+    } finally {
+      global.setTimeout = gercekSet
+      global.clearTimeout = gercekClear
+    }
+
+    if (acik.size > 0) throw new Error(`${acik.size} zamanlayici acik kaldi`)
+  })
+
+  await dene('sinirli() ZAMAN ASIMINI hala yakaliyor', async () => {
+    const { sinirli } = require('../bot/utils/gorev')
+    const bitmeyen = new Promise(() => {})
+    let hataMesaji = null
+    try {
+      await sinirli(bitmeyen, 50, null)
+    } catch (err) {
+      hataMesaji = err.message
+    }
+    if (hataMesaji !== 'zaman_asimi') throw new Error(`hata: ${hataMesaji}`)
+  })
+
+  await dene('sinirli() IPTALI hala yakaliyor', async () => {
+    const { sinirli, IptalEdildi } = require('../bot/utils/gorev')
+    const k = new GorevKontrol()
+    k.baslat()
+    const bitmeyen = new Promise(() => {})
+    setTimeout(() => k.durdur(), 150)
+
+    let yakalanan = null
+    try {
+      await sinirli(bitmeyen, 5000, k)
+    } catch (err) {
+      yakalanan = err
+    }
+    if (!(yakalanan instanceof IptalEdildi)) {
+      throw new Error(`hata: ${yakalanan && yakalanan.message}`)
+    }
+    k.bitir()
+  })
+
+  await dene('eval_agent.py: sebepler sozlugu GOLGELENMIYOR', () => {
+    // `bolum_calistir` writes into the module-level dict. A local one in
+    // main() shadowed it, so the reason breakdown at the end of every run
+    // was computed from an empty dict and silently never printed.
+    const kaynak = fs.readFileSync(
+      path.join(__dirname, '..', 'python', 'eval_agent.py'), 'utf8')
+
+    const govde = kaynak.slice(kaynak.indexOf('def main('))
+    if (/^\s+sebepler\s*(:|=)[^=]/m.test(govde)) {
+      throw new Error('main() icinde sebepler yeniden baglaniyor')
+    }
+    if (!/sebepler\.clear\(\)/.test(govde)) {
+      throw new Error('main() sayaci sifirlamiyor')
+    }
   })
 
   console.log(hata === 0 ? '\n=== HEPSI GECTI ===' : `\n=== ${hata} HATA ===`)
