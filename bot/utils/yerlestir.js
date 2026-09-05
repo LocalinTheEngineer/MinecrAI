@@ -5,24 +5,21 @@ const log = require('./log')
 const koruma = require('./koruma')
 
 /**
- * Blok yerleştirme — tezgah, fırın, sandık.
+ * Block placement: crafting table, furnace, chest.
  *
- * PROBLEM
- * Hem `tezgahKoy` hem `firinBul` aynı naif aramayı yapıyordu: yanındaki
- * 6 sabit noktaya bak, birinde zemin dolu + üstü boş ise oraya koy.
- * Tünelde, mağarada, dar bir yarıkta bu altı nokta çoğu zaman tutmuyor
- * ve bot "koyacak yer bulamadım" deyip pes ediyordu — envanterinde iki
- * fırınla birlikte.
+ * Problem: `tezgahKoy` and `firinBul` both ran the same naive search — check
+ * 6 fixed spots next to you, place where the ground is solid and the cell
+ * above is free. In a tunnel, a cave or a narrow gap those six rarely hold,
+ * and the bot gave up with "no room to place it" while carrying two furnaces.
  *
- * ÇÖZÜM
- * İki aşama. Önce daha geniş bir alanda hazır yer ara (5x5x3, en yakından
- * başlayarak). Bulamazsa YER AÇ: yanındaki bir bloğu kır. Bot zaten
- * kazma taşıyan bir madenci; "yer yok" diye pes etmesi saçma.
+ * Fix: two stages. First search a wider area for a ready spot (5x5x3, nearest
+ * first). If there is none, make room by breaking a neighbouring block. The
+ * bot is a miner with a pickaxe; giving up over "no room" makes no sense.
  */
 
 const TEHLIKELI = /lava|water|bedrock/
 
-/** Yerleştirmeye uygun hazır bir nokta var mı? */
+/** Is there a ready spot to place on? */
 function hazirYerBul (bot) {
   const p = bot.entity.position.floored()
   const adaylar = []
@@ -30,7 +27,7 @@ function hazirYerBul (bot) {
   for (let dx = -2; dx <= 2; dx++) {
     for (let dz = -2; dz <= 2; dz++) {
       for (let dy = -1; dy <= 1; dy++) {
-        if (dx === 0 && dz === 0) continue // tam üstümüze/altımıza koyma
+        if (dx === 0 && dz === 0) continue // do not place directly above or below us
         adaylar.push(p.offset(dx, dy, dz))
       }
     }
@@ -53,11 +50,11 @@ function hazirYerBul (bot) {
 }
 
 /**
- * Yanındaki bir bloğu kırarak yer aç.
- * Bot zaten kazma taşıyor; "yer yok" demek yerine yer açması doğal.
+ * Make room by breaking a neighbouring block.
+ * The bot carries a pickaxe anyway; digging beats reporting "no room".
  */
 async function yerAc (bot, kontrol) {
-  const { aletKusan } = require('../skills/alet') // döngüsel require olmasın diye burada
+  const { aletKusan } = require('../skills/alet') // required here to avoid a circular require
   const p = bot.entity.position.floored()
 
   for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -67,8 +64,8 @@ async function yerAc (bot, kontrol) {
     const blok = bot.blockAt(hedef)
     const zemin = bot.blockAt(hedef.offset(0, -1, 0))
     if (!blok || !zemin) continue
-    if (blok.boundingBox !== 'block') continue // zaten boş
-    if (zemin.boundingBox !== 'block') continue // altı boşluk, koyamayız
+    if (blok.boundingBox !== 'block') continue // already free
+    if (zemin.boundingBox !== 'block') continue // nothing underneath, cannot place
     if (TEHLIKELI.test(blok.name) || TEHLIKELI.test(zemin.name)) continue
     if (koruma.korumaliMi(hedef)) continue
     if (!bot.canDigBlock(blok)) continue
@@ -79,14 +76,14 @@ async function yerAc (bot, kontrol) {
       await bot.dig(blok)
       log.bilgi('Yer açtım.')
       return true
-    } catch (err) { /* başka yön dene */ }
+    } catch (err) { /* try another direction */ }
   }
   return false
 }
 
 /**
- * `esyaAdi` bloğunu yere koy ve konan bloğu döndür (koyamazsa null).
- * Yer yoksa kendi açar.
+ * Place the `esyaAdi` block and return the placed block, or null on failure.
+ * Makes room itself when there is none.
  */
 async function blokKoy (bot, esyaAdi, kontrol = null) {
   for (let deneme = 0; deneme < 3; deneme++) {
@@ -102,7 +99,7 @@ async function blokKoy (bot, esyaAdi, kontrol = null) {
         await bot.placeBlock(yer.zemin, new Vec3(0, 1, 0))
         const konan = bot.blockAt(yer.hedef)
         if (konan && konan.name === esyaAdi) return konan
-      } catch (err) { /* aşağıda yer açıp tekrar deneriz */ }
+      } catch (err) { /* the code below makes room and retries */ }
     }
 
     if (!(await yerAc(bot, kontrol))) break

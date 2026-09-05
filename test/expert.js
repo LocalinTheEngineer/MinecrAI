@@ -1,7 +1,7 @@
-// Uzman politika testi: SADECE 5 aksiyonla (pathfinder kisayolu olmadan)
-// bot agaci bulup kesebiliyor mu?
+// Expert policy test: can the bot find and chop a tree with only the 5
+// actions, no pathfinder shortcut?
 //
-// Calistirma: node test/expert.js
+// Run: node test/expert.js
 process.env.MC_VERSION = '1.20.2'
 
 const {
@@ -18,16 +18,16 @@ async function main () {
   const server = await sunucuBaslat(PORT, VERSION)
   const bot = await botBaglat(PORT, VERSION, 'Uzman')
 
-  // Bot yere insin, SONRA sahneyi kur
+  // Let the bot land first, then build the scene
   const merkez = await botuBeklet(bot)
   platformKur(server, VERSION, merkez, { yaricap: 7, yukseklik: 6 })
   await new Promise((r) => setTimeout(r, 1000))
 
-  // Agaclari botun ARKASINA dik ki once donmeyi ogrenmesi gereksin.
-  // Aralarinda mesafe var: birbirine bitisik olursa tek agac sayilirlar.
+  // Plant the trees behind the bot so it has to learn to turn first.
+  // Spaced apart: adjacent trunks get counted as one tree.
   const agac = agacDik(server, VERSION, merkez, -5, -2, 4)
   agacDik(server, VERSION, merkez, 4, -4, 4)
-  // Yaprakli agac: botun yolunu kapatan gercekci engel
+  // Leaves on the trunk: a realistic obstacle in the bot's path
   yaprakSar(server, VERSION, merkez, -5, -2, 4)
   yaprakSar(server, VERSION, merkez, 4, -4, 4)
   const gorunuyor = await sahneyiDogrula(bot, agac)

@@ -1,56 +1,56 @@
 'use strict'
 
 /**
- * UZMAN POLİTİKALAR (expert policies)
+ * Expert policies.
  *
- * Milestone 3'ün temeli. Her adımda "bu gözlemde uzman ne yapardı?"
- * sorusuna cevap veriyor; bu (gözlem, aksiyon) çiftleri taklit ederek
- * öğrenmenin eğitim verisi oluyor.
+ * The base of Milestone 3. Every step it answers "what would the expert do
+ * with this observation?", and those (observation, action) pairs are the
+ * training data for behaviour cloning.
  *
- * TASARIM: UZMAN TEPKİSELDİR, PLANLAMAZ.
+ * Design: the expert is reactive, it does not plan.
  *
- * Bu dosya bir kez A* yol planlayıcısına çevrildi ve geri alındı. Sebep
- * ölçüldü: taklit doğruluğu %88'den %52'ye düştü, eğitim ve doğrulama
- * kaybı BİRLİKTE platoya oturdu. Bu ezberleme imzası değil,
- * ÖĞRENİLEMEZLİK imzası.
+ * This file was once turned into an A* path planner and reverted. The reason
+ * was measured: BC accuracy fell from 88% to 52% and training and validation
+ * loss plateaued together. That is not the signature of overfitting, it is
+ * the signature of unlearnable data.
  *
- * Kural şu: uzman, öğrencinin GÖREMEDİĞİ bilgiye dayanamaz. Ajan 19
- * sayılık bir gözlem görüyor; planlayıcı uzman ise bütün haritayı
- * biliyordu. Aynı gözleme bazen "sol" bazen "sağ" etiketi düşüyordu ve
- * ağ ikisinin ortalamasını öğreniyordu.
+ * The rule: the expert cannot rely on information the student cannot see.
+ * The agent sees a 19-number observation; the planning expert knew the whole
+ * map. The same observation got labelled "left" sometimes and "right" other
+ * times, and the network learned the average of the two.
  *
- * Bu yüzden buradaki her karar, ajanın da gördüğü şeylerden türetiliyor:
- * hedefin yönü, önüm/solum/sağım kapalı mı, menzilimde ne var.
+ * So every decision here is derived from what the agent also sees: direction
+ * of the target, whether front/left/right are blocked, what is in range.
  *
- * İKİ GÖREV, İKİ UZMAN. `odunUzmani` ve `madenUzmani` aynı yardımcıları
- * paylaşıyor; ayrıldıkları yer sadece öncelik listesi.
+ * Two tasks, two experts. `odunUzmani` and `madenUzmani` share the same
+ * helpers; the only difference is the priority list.
  */
 
-// Bu açıdan fazla sapma varsa önce dönmek gerekir.
-// environment.js'teki DONUS_ACISI (22.5°) ile uyumlu olmalı: dönüş adımı
-// toleransın iki katından büyükse hedef hiç tutturulamaz, bot salınır.
+// Off by more than this angle and turning comes first. Must stay in line with
+// DONUS_ACISI (22.5°) in environment.js: if the turn step is larger than twice
+// the tolerance the target is never hit and the bot oscillates.
 const YAW_TOLERANS = 0.22
 
-// Aynı düşmüş eşyanın peşinde en fazla kaç adım koşulur.
+// Max steps spent chasing the same dropped item.
 //
-// ÖLÇÜM: maden görevinde adımların %79'u "yakındaki cevheri alıyorum"du —
-// kırıyor, yürüyor, dönüyor, ama eşya envantere hiç girmiyordu. Yerde
-// duran ama ULAŞILAMAYAN bir eşya (kırdığı deliğin içine düşmüş, duvarın
-// ardında kalmış) uzmanı bölümün tamamı boyunca meşgul ediyordu.
+// Measured: in the mine task 79% of steps were "picking up nearby ore":
+// breaking, walking, turning, with the item never reaching the inventory. One
+// item lying on the ground but unreachable (fallen into the hole it dug, left
+// behind a wall) kept the expert busy for a whole episode.
 //
-// Ağaçlarda aynı sorunu kara listeyle çözmüştük; burada sabır sayacı
-// daha basit, çünkü eşyalar hareket eden varlıklar — konumlarını
-// kara listeye almak işe yaramaz.
+// Trees solved the same problem with a blacklist; a patience counter is
+// simpler here because items are moving entities, so blacklisting their
+// position does not work.
 const ESYA_SABRI = 25
 
-/** Bir hedefe bakmak için gereken yaw (Minecraft konvansiyonu) */
+/** Yaw needed to face a target (Minecraft convention) */
 function hedefYaw (botPos, hedefPos) {
   const dx = hedefPos.x + 0.5 - botPos.x
   const dz = hedefPos.z + 0.5 - botPos.z
   return Math.atan2(-dx, -dz)
 }
 
-/** İki açı arasındaki en kısa farkı -π..π aralığına indirger */
+/** Shortest difference between two angles, wrapped into -pi..pi */
 function aciFarki (a, b) {
   let fark = a - b
   while (fark > Math.PI) fark -= 2 * Math.PI
@@ -58,13 +58,13 @@ function aciFarki (a, b) {
   return fark
 }
 
-/** Bir noktaya doğru tek adım: hizalı değilsek dön, hizalıysak yürü */
+/** One step toward a point: turn when not aligned, walk when aligned */
 function yonel (bot, hedefPos, donSebebi, yuruSebebi) {
   const istenen = hedefYaw(bot.entity.position, hedefPos)
   const fark = aciFarki(istenen, bot.entity.yaw)
 
   if (Math.abs(fark) > YAW_TOLERANS) {
-    // mineflayer'da yaw ARTARSA sola dönülür (aksiyon 2)
+    // in mineflayer, rising yaw means turning left (action 2)
     return fark > 0
       ? { action: 2, sebep: donSebebi + '_sola' }
       : { action: 1, sebep: donSebebi + '_saga' }
@@ -73,82 +73,83 @@ function yonel (bot, hedefPos, donSebebi, yuruSebebi) {
 }
 
 /**
- * Mevcut duruma bakıp uzmanın seçeceği aksiyonu döndürür.
+ * Returns the action the expert would pick for the current state.
  *
- * Öncelik sırası — demo verisinin kalitesini bu belirliyor:
- *   1. Menzilimde kütük varsa kır (en yüksek getirili anlık iş)
- *   2. Yerde odun varsa üstüne git (ödülün asıl kaynağı: 1.0/odun)
- *   3. Ağaca giden YOLU planla, bir sonraki ara noktaya yönel
- *   4. Yol yoksa tepkisel olarak hedefe dön (son çare)
+ * Priority order, which sets the quality of the demo data:
+ *   1. Break a log in range (highest-yield immediate work)
+ *   2. Walk onto wood on the ground (the real reward source: 1.0 per wood)
+ *   3. Plan the path to a tree, head for the next waypoint
+ *   4. No path: reactively turn toward the target (last resort)
  *
  * @returns {{action: number, sebep: string}}
  */
 /**
- * MADEN UZMANI
+ * Mine expert.
  *
- * Odun uzmanıyla aynı iskelet, iki yerde ayrılıyor:
+ * Same skeleton as the wood expert, differing in two places:
  *
- *  - Odunda "hedef yoksa bekle" doğru cevaptı: ormanda ağaç göremiyorsan
- *    dönüp bakman gerekir, kazacak bir şey yok. Madende TERSİ — cevher
- *    zaten taşın içinde saklı, göremiyor olman normal. Doğru cevap
- *    beklemek değil TÜNEL AÇMAK.
- *  - Odunda taş kırmak yasaktı, madende görevin kendisi.
+ *  - For wood, "no target means wait" was right: if you cannot see a tree in
+ *    a forest you turn and look, there is nothing to dig. The mine is the
+ *    opposite, ore is hidden inside stone and not seeing it is normal. The
+ *    right answer there is to dig a tunnel, not wait.
+ *  - Breaking stone is forbidden for wood and is the task itself in the mine.
  *
- * Ajan yine aynı 19 sayılık gözleme bakıp aynı 5 aksiyondan birini
- * seçiyor. Değişen tek şey taklit ettiği örnekler.
+ * The agent still reads the same 19-number observation and picks one of the
+ * same 5 actions. Only the examples it imitates change.
  */
 function madenUzmani (bot, env) {
-  // 1) Yerdeki cevher/külçe — ödülün asıl kaynağı (1.0), kırmak 0.2
+  // 1) Ore or ingot on the ground: the real reward source (1.0), breaking is 0.2
   const yakinEsya = env.yakinEsya(5)
   if (yakinEsya && env.esyaKovalama < ESYA_SABRI) {
     env.esyaKovalama++
     return hedefeYonel(bot, env, yakinEsya.position, 'yakin_cevheri_aliyorum')
   }
 
-  // 2) Menzilimde cevher varsa kır
+  // 2) Break ore in range
   if (env.onundekiKutuk()) {
     return { action: 3, sebep: 'onumde_cevher_var' }
   }
 
-  // 3) Görünürde cevher var ama uzakta: ona dön/yürü
+  // 3) Ore visible but far: turn toward it and walk
   const hedef = env.enYakinKutuk()
   if (hedef) {
-    // DİKEY HEDEFTE YAW ANLAMSIZDIR.
+    // Yaw is meaningless for a vertical target.
     //
-    // `hedefYaw` sadece dx ve dz'ye bakıyor — yükseklik farkı hesaba
-    // girmiyor, çünkü ajanın yukarı-aşağı bakma aksiyonu yok. Cevher
-    // neredeyse tam tepemizdeyse dx ve dz sıfıra yakın: bir blokluk
-    // kıpırdanma açıyı 180 derece çeviriyor. Bot hedefe "dönmeye"
-    // çalışırken sonsuza kadar dönüyor.
+    // `hedefYaw` only looks at dx and dz; height difference does not enter
+    // because the agent has no look-up-or-down action. With ore almost
+    // straight overhead dx and dz are near zero, so a one-block wobble swings
+    // the angle by 180 degrees and the bot spins forever trying to "turn
+    // toward" the target.
     //
-    // Ölçüm bunu söyledi: adımların %76'sı dönüş, %10'u yürüme, ve
-    // bölümlerin 13/15'i sıfır kaynakla bitti. Madende bu durum
-    // ormandan çok daha sık, çünkü cevher damarları her yönde —
-    // tavanda ve tabanda da.
+    // Measured: 76% of steps were turns, 10% walking, and 13 of 15 episodes
+    // ended with zero resources. This happens far more often in a mine than
+    // in a forest because ore veins run in every direction, ceiling and floor
+    // included.
     //
-    // Dikey hedefte doğru davranış dönmek değil: menzildeyse kır
-    // (kırma zaten 3 boyutlu bakıyor), değilse ilerleyip açıyı aç.
+    // The right move for a vertical target is not turning: break it if in
+    // range (breaking already looks in 3D), otherwise move on and open up
+    // the angle.
     const yatay = Math.hypot(
       hedef.position.x + 0.5 - bot.entity.position.x,
       hedef.position.z + 0.5 - bot.entity.position.z
     )
     if (yatay < 2) {
-      // Menzilimizdeyse kır (kırma zaten 3 boyutlu bakıyor)
+      // In range: break it (breaking already looks in 3D)
       if (env.onumuKapatan()) {
         return { action: 3, sebep: 'dikey_hedef_kiriyorum' }
       }
 
-      // KIRAMIYORSAK HEDEFİ BIRAK.
+      // Can't break it: drop the target.
       //
-      // Buraya ilk yazdığım şey "ilerle, açıyı aç"tı ve YENİ BİR DÖNGÜ
-      // açtı: bot uzaklaşıyor, yatay mesafe 2'yi geçiyor, hedefe geri
-      // dönüyor, tekrar yaklaşıyor, tekrar uzaklaşıyor. Net yer
-      // değiştirme sıfır. Ölçümde bölümlerin 13/15'i TAM 60 adımda,
-      // TAM -0.60 ödülle bitti — yerinde sayma kesme eşiği.
+      // The first version here was "move on, open up the angle", and that
+      // opened a new loop: the bot walks away, horizontal distance passes 2,
+      // it turns back to the target, closes in, walks away again. Net
+      // displacement zero. Measured, 13 of 15 episodes ended at exactly 60
+      // steps with exactly -0.60 reward, the no-progress cutoff.
       //
-      // Doğru davranış dolanmak değil VAZGEÇMEK: aksiyon uzayımızda
-      // yukarı gitmek yok, bu hedef bize göre değil. Kara listeye yaz,
-      // bir sonrakine bak.
+      // The right move is giving up, not going around: up is not in the
+      // action space, so this target is not for us. Blacklist it and look at
+      // the next one.
       env.hedefiBirak()
       const yeni = env.enYakinKutuk()
       if (yeni) return hedefeYonel(bot, env, yeni.position, 'cevhere')
@@ -158,17 +159,18 @@ function madenUzmani (bot, env) {
     return hedefeYonel(bot, env, hedef.position, 'cevhere')
   }
 
-  // 4) Biraz uzaktaki düşmüş eşyalar
+  // 4) Dropped items a bit further out
   const esya = env.yakinEsya()
   if (esya) {
     return hedefeYonel(bot, env, esya.position, 'uzak_cevheri_aliyorum')
   }
 
-  // 5) Cevher göremiyorum — TÜNEL AÇ.
+  // 5) No ore in sight: dig a tunnel.
   //
-  // Odun uzmanı burada 'bekle' diyordu ve madende bu ölümcül olurdu:
-  // ajan hiç ödül görmeden 500 adım bekler, taklit verisinin tamamı
-  // "bekle" olurdu. Cevher taşın ardında; önünü kır ve ilerle.
+  // The wood expert says 'wait' here, which would be fatal in a mine: the
+  // agent waits 500 steps without seeing any reward and the whole imitation
+  // dataset becomes "wait". Ore is behind stone; break what is in front and
+  // move on.
   if (env.onumuKapatan()) {
     return { action: 3, sebep: 'tunel_aciyorum' }
   }
@@ -176,38 +178,38 @@ function madenUzmani (bot, env) {
 }
 
 function odunUzmani (bot, env) {
-  // 1) YAKINDA DÜŞMÜŞ ODUN VARSA ÖNCE ONU AL.
+  // 1) Pick up dropped wood nearby first.
   //
-  // Bu sıra bilerek en başta. Önceden "menzilde kütük varsa kır" kuralı
-  // birinciydi; sık bir ormanda bir kütüğü kırınca hemen menzile bir
-  // başkası giriyor, sıra hiç toplamaya gelmiyordu. Bot kırıp kırıp
-  // yürüyor, odunlar yerde birikiyordu.
+  // This is deliberately the first rule. "Break a log in range" used to come
+  // first, and in a dense forest breaking one log immediately puts another in
+  // range, so collecting never got a turn: the bot kept breaking and walking
+  // while wood piled up on the ground.
   //
-  // Ödül zaten bunu söylüyordu: odun toplamak 1.0, kütük kırmak 0.2.
-  // Toplamak beş kat değerli, o yüzden önce gelmeli.
+  // The reward already said as much: collecting wood is 1.0, breaking a log
+  // 0.2. Collecting is worth five times as much, so it goes first.
   const yakinEsya = env.yakinEsya(5)
   if (yakinEsya && env.esyaKovalama < ESYA_SABRI) {
     env.esyaKovalama++
     return hedefeYonel(bot, env, yakinEsya.position, 'yakin_odunu_aliyorum')
   }
 
-  // 2) Menzilimde kırılabilir kütük varsa kır
+  // 2) Break a breakable log in range
   if (env.onundekiKutuk()) {
     return { action: 3, sebep: 'onumde_kutuk_var' }
   }
 
-  // 2b) Yolumu kapatan yaprak vb. varsa aç
+  // 2b) Clear leaves and such blocking the way
   if (env.onumuKapatan()) {
     return { action: 3, sebep: 'yolumu_aciyorum' }
   }
 
-  // 3) Biraz uzaktaki düşmüş odunlar
+  // 3) Dropped wood a bit further out
   const esya = env.yakinEsya()
   if (esya) {
     return hedefeYonel(bot, env, esya.position, 'uzak_odunu_aliyorum')
   }
 
-  // 4) Ağaç yoksa yapacak bir şey de yok
+  // 4) No tree, nothing to do
   const hedef = env.enYakinKutuk()
   if (!hedef) {
     return { action: 4, sebep: 'AGAC_BULAMIYORUM' }
@@ -217,27 +219,28 @@ function odunUzmani (bot, env) {
 }
 
 /**
- * Hedefe yönel; önüm kapalıysa AÇIK OLAN tarafa dön.
+ * Head for the target; if the front is blocked, turn to whichever side is open.
  *
- * Kaçınma yönü eskiden rastgele seçiliyordu. Rastgele bir karar tanımı
- * gereği hiçbir gözlemden öğrenilemez — ağ aynı girdiye bazen "sol" bazen
- * "sağ" etiketi görüp ikisinin ortalamasını öğreniyordu. Doğrulama başarısı
- * %88'den %52'ye bu yüzden düştü.
+ * The avoidance direction used to be picked at random. A random decision is by
+ * definition not learnable from any observation: the network saw the same
+ * input labelled "left" sometimes and "right" other times and learned the
+ * average. That is what dropped validation accuracy from 88% to 52%.
  *
- * Artık yön, ajanın da gördüğü bilgiden türetiliyor: solum/sağım kapalı mı.
+ * The direction now comes from what the agent also sees: is my left or my
+ * right blocked.
  */
 function hedefeYonel (bot, env, hedefPos, etiket) {
-  // KAÇINMA MODU: dolaşmaya karar verdiysek BİRKAÇ ADIM YÜRÜ.
+  // Avoidance mode: once we decide to go around, walk a few steps that way.
   //
-  // Bu olmadan uzman iki adımlık bir döngüye giriyordu:
-  //   hizalan → önüm kapalı → sola dolaş (döndüm, artık hizalı değilim)
-  //   → hedefe geri dön → önüm kapalı → sola dolaş → ...
+  // Without it the expert fell into a two-step loop:
+  //   align -> front blocked -> go around left (now turned, no longer aligned)
+  //   -> turn back to target -> front blocked -> go around left -> ...
   //
-  // Ölçüm bunu net gösterdi: bölümlerin %43'ü "hedefe dönüyorum",
-  // %31'i "engelden dolaşıyorum", ve YÜRÜME sadece %3. Bot yerinde
-  // dönüp duruyordu ve hiçbir bölümde tek bir kaynak toplayamadı.
+  // The measurement was clear: 43% of steps were "turning to target", 31%
+  // "going around an obstacle" and only 3% walking. The bot spun in place and
+  // never collected a single resource in any episode.
   //
-  // Dolaşmaya karar vermek, o yöne GİTMEYİ de göze almak demek.
+  // Deciding to go around means committing to actually move that way.
   if (env.kacinmaAdimi > 0) {
     env.kacinmaAdimi--
     if (!env.onumdeEngelVar()) {
@@ -249,37 +252,36 @@ function hedefeYonel (bot, env, hedefPos, etiket) {
   const fark = aciFarki(istenen, bot.entity.yaw)
   const hizali = Math.abs(fark) <= YAW_TOLERANS
 
-  // Hizalıyız ve önümüz açıksa: yürü
+  // Aligned with a clear front: walk
   if (hizali && !env.onumdeEngelVar()) {
     return { action: 0, sebep: etiket + '_yuruyorum' }
   }
 
   if (hizali) {
-    // ÖNCE KIRMAYI DENE, SONRA DOLAŞMAYI.
+    // Try breaking before going around.
     //
-    // Eskiden bu kontrol yoktu ve sıra hiç kırmaya gelmiyordu: uzmanın
-    // öncelik listesinde "yolumu açan bloğu kır" maddesi VAR, ama daha
-    // yukarıdaki "yakındaki eşyayı al" maddesi önce eşleşip buraya
-    // dallanıyordu. Yani yaprağın ardındaki odunu görüp sonsuza kadar
-    // etrafından dolaşmaya çalışıyordu.
+    // This check did not exist and breaking never got a turn: the expert's
+    // priority list does have "break the block in my way", but the earlier
+    // "pick up the nearby item" entry matched first and branched here. So the
+    // bot saw wood behind a leaf block and tried to walk around it forever.
     //
-    // Madende bu daha da kritik: cevhere giden yol TANIMI GEREĞİ taşın
-    // içinden geçiyor. Kırmadan varılamaz.
+    // Even more critical in the mine: the path to ore goes through stone by
+    // definition. You cannot get there without breaking.
     if (env.onumuKapatan()) {
       return { action: 3, sebep: etiket + '_engeli_kiriyorum' }
     }
 
-    // Kıramıyoruz (kaya, oyuncunun evi, koruma bölgesi): dolaş.
-    // Kaçınma sayacını kur ki dönüp hemen geri dönmeyelim.
+    // Can't break it (rock, a player's house, a protected area): go around.
+    // Set the avoidance counter so we don't turn and immediately turn back.
     env.kacinmaAdimi = 3
 
-    // ENGELİN ADINI GEREKÇEYE YAZ.
+    // Put the obstacle's name in the reason.
     //
-    // Bu dal bir kez maden görevinin tamamını yedi: uzman 4 bölümde hiç
-    // kırma yapmadı çünkü `tuff` ve `calcite` "kırılamaz" sayılıyordu.
-    // Gerekçe sadece "engel_soldan_dolasiyorum" dediği için sebebi
-    // bulmak iki tur sürdü. Artık `gorev_kontrol.py` dağılımında
-    // "kiramadigim_tuff" diye görünüyor.
+    // This branch once ate a whole mine run: the expert broke nothing in 4
+    // episodes because `tuff` and `calcite` counted as unbreakable. The reason
+    // only said "engel_soldan_dolasiyorum", so finding the cause took two
+    // rounds. It now shows up as "kiramadigim_tuff" in the `gorev_kontrol.py`
+    // distribution.
     const engel = env.onumdekiEngel()
     const ad = engel ? `_kiramadigim_${engel.name}` : ''
 
@@ -288,24 +290,24 @@ function hedefeYonel (bot, env, hedefPos, etiket) {
     if (sol && !sag) return { action: 1, sebep: etiket + ad + '_sagdan_dolasiyorum' }
     if (sag && !sol) return { action: 2, sebep: etiket + ad + '_soldan_dolasiyorum' }
 
-    // İkisi de aynıysa hedefe daha yakın olan yöne dön (deterministik)
+    // Both sides the same: turn the way that is closer to the target (deterministic)
     return fark >= 0
       ? { action: 2, sebep: etiket + ad + '_soldan_dolasiyorum' }
       : { action: 1, sebep: etiket + ad + '_sagdan_dolasiyorum' }
   }
 
-  // Hizalı değiliz: hedefe dön
+  // Not aligned: turn toward the target
   return fark > 0
     ? { action: 2, sebep: etiket + '_donuyorum_sola' }
     : { action: 1, sebep: etiket + '_donuyorum_saga' }
 }
 
 /**
- * Uzmanı göreve göre seç.
+ * Pick the expert for the current task.
  *
- * Ortam hangi görevdeyse onun uzmanı konuşuyor. İki uzman aynı yardımcı
- * fonksiyonları (`hedefeYonel`, açı hesapları) paylaşıyor — ayrıldıkları
- * tek yer öncelik listesi.
+ * Whichever task the environment is running, that task's expert speaks. Both
+ * experts share the same helpers (`hedefeYonel`, the angle math); the only
+ * difference is the priority list.
  */
 function uzmanAksiyonu (bot, env) {
   return env.gorev && env.gorev.ad === 'maden'

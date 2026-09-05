@@ -3,20 +3,18 @@
 const log = require('../utils/log')
 
 /**
- * SKILL: Erit (fırın)
+ * SKILL: smelting (furnace)
  *
- * Tezgah ile fırın arasındaki fark tarif tablosunda değil, ZAMANDA.
- * Tezgahta üretim anlık; fırında her eşya 10 saniye pişiyor ve yakıt
- * tüketiyor. minecraft-data'nın tarif tablosu da sadece TEZGAH tariflerini
- * içeriyor — eritme tarifleri orada yok. O yüzden küçük bir tablo
- * elde tutuyoruz.
+ * A furnace differs from a crafting table in time, not in the recipe table.
+ * Crafting is instant; smelting takes 10 seconds per item and burns fuel.
+ * The minecraft-data recipe table only covers crafting recipes, smelting is
+ * not in there, so a small table is kept here by hand.
  *
- * Bu dosyanın varlık sebebi: demir kazma yapmak için demir külçesi lazım,
- * külçe tezgahta üretilemiyor, sadece eritilerek elde ediliyor. Fırın
- * olmadan taş kazmanın ötesine geçilemiyor.
+ * Why this file exists: an iron pickaxe needs iron ingots, ingots cannot be
+ * crafted, only smelted. Without a furnace there is no going past stone.
  */
 
-// girdi -> çıktı. minecraft-data'da olmadığı için elle.
+// input -> output. By hand because minecraft-data does not carry it.
 const ERITME = {
   raw_iron: 'iron_ingot',
   raw_gold: 'gold_ingot',
@@ -35,8 +33,8 @@ const ERITME = {
   spruce_log: 'charcoal'
 }
 
-// Yakıtlar ve kaç eşya pişirdikleri. Kömür en verimlisi.
-// Odun listede var çünkü botun elinde her zaman odun oluyor.
+// Fuels and how many items each one smelts. Coal is the most efficient.
+// Wood is on the list because the bot always has some.
 const YAKITLAR = [
   { desen: /^coal$|^charcoal$/, adet: 8 },
   { desen: /^coal_block$/, adet: 80 },
@@ -45,12 +43,12 @@ const YAKITLAR = [
   { desen: /^stick$/, adet: 0.5 }
 ]
 
-/** Bu eşya eritilerek neye dönüşür? */
+/** What does this item smelt into? */
 function eritmeSonucu (ad) {
   return ERITME[ad] || null
 }
 
-/** `hedefAd`ı üretmek için hangi ham maddeyi eritmek gerekir? */
+/** Which raw item has to be smelted to get `hedefAd`? */
 function eritmeGirdisi (hedefAd) {
   for (const [girdi, cikti] of Object.entries(ERITME)) {
     if (cikti === hedefAd) return girdi
@@ -113,11 +111,11 @@ function yakitBul (bot, gerekenAdet) {
 }
 
 /**
- * Yakında fırın var mı, yoksa envanterdekini yere koy.
+ * Find a furnace nearby, or place one from the inventory.
  *
- * `blast_furnace` da listede: cevher eritmede normal fırınla aynı işi
- * görüyor (üstelik iki kat hızlı). Botun envanterinde bir tane vardı ama
- * kod onu tanımadığı için görmezden geliyordu.
+ * `blast_furnace` is on the list too: for ores it does the same job as a
+ * normal furnace, twice as fast. The bot had one in its inventory and the
+ * code ignored it because it did not know the name.
  */
 const FIRINLAR = ['furnace', 'blast_furnace']
 
@@ -141,8 +139,8 @@ async function firinBul (bot, kontrol = null) {
 }
 
 /**
- * `adet` tane `hedefAd` eritir.
- * Girdi ve yakıtın envanterde OLDUĞU varsayılır — tedarik `uret`in işi.
+ * Smelts `adet` of `hedefAd`.
+ * Input and fuel are assumed to be in the inventory; supply is `uret`'s job.
  */
 async function erit (bot, kontrol, hedefAd, adet = 1) {
   const girdiAd = eritmeGirdisi(hedefAd)
@@ -183,8 +181,8 @@ async function erit (bot, kontrol, hedefAd, adet = 1) {
     return { basarili: false, mesaj: `Fırını dolduramadım: ${err.message}` }
   }
 
-  // Pişmesini bekle. Her eşya ~10 saniye; iptal edilebilir olması şart,
-  // yoksa "dur" komutu 10 dakika beklemek zorunda kalır.
+  // Wait for the smelt. ~10 seconds per item, and it has to stay cancellable
+  // or the "dur" command would wait 10 minutes.
   log.bilgi(`${pisecek}x ${girdiAd} eritiliyor (~${pisecek * 10} sn)...`)
   let alinan = 0
   const bitis = Date.now() + pisecek * 12000 + 8000
@@ -199,7 +197,7 @@ async function erit (bot, kontrol, hedefAd, adet = 1) {
           if (!cikti) break
           alinan += cikti.count
         }
-      } catch (err) { /* henüz hazır değil */ }
+      } catch (err) { /* not ready yet */ }
     }
   } finally {
     try { f.close() } catch (err) {}

@@ -1,7 +1,7 @@
-"""Node tarafindaki Mineflayer botuna baglanan WebSocket istemcisi.
+"""WebSocket client that connects to the Mineflayer bot on the Node side.
 
-Bu dosya Minecraft hakkinda hicbir sey bilmez; sadece JSON gonderir/alir.
-Protokol: bot/bridge/protocol.md
+This file knows nothing about Minecraft; it only sends and receives JSON.
+Protocol: bot/bridge/protocol.md
 """
 
 from __future__ import annotations
@@ -14,17 +14,17 @@ from websocket import WebSocket, create_connection
 
 
 class BridgeConnectionError(RuntimeError):
-    """Kopruye baglanilamadiginda atilir."""
+    """Raised when the bridge cannot be reached."""
 
 
 class BridgeClient:
-    """Node koprusuyle konusan ince bir istemci."""
+    """Thin client that talks to the Node bridge."""
 
     def __init__(
         self,
         url: str = "ws://localhost:8765",
-        # Maden gorevinde reset merdiven kaziyor: tek cagri dakikalara
-        # cikabiliyor. 60 sn yetmedi ve egitim soket zaman asimiyla dustu.
+        # In the mine task reset digs a staircase, so one call can take
+        # minutes. 60s was not enough and training died on a socket timeout.
         timeout: float = 180.0,
         retries: int = 20,
         retry_delay: float = 1.5,
@@ -67,9 +67,9 @@ class BridgeClient:
         istek: Dict[str, Any] = {"cmd": "reset"}
         if gorev:
             istek["gorev"] = gorev
-        # Gozlem genisligini HER reset'te bildiriyoruz. Cok gorevli egitimde
-        # gorev bolumden bolume degisiyor ve genislik sabit kalmak zorunda;
-        # tek sefer soylemek, arada baglanti kopunca sessizce kayardi.
+        # Observation width is sent on every reset. In multi-task training the
+        # task changes from episode to episode while the width must stay fixed;
+        # sending it once would drift silently after a dropped connection.
         if genis_gozlem is not None:
             istek["genisGozlem"] = bool(genis_gozlem)
         return self._cagir(istek)

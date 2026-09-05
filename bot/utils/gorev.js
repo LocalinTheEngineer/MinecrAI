@@ -1,14 +1,14 @@
 'use strict'
 
 /**
- * Görev iptal mekanizması.
+ * Task cancellation.
  *
- * Problem: bot ağaç keserken "dur" yazdığımızda, kesme döngüsü kendi hâlinde
- * dönmeye devam ediyordu — kimse ona "bırak" demiyordu.
+ * Problem: typing "dur" while the bot was chopping did nothing to the chopping
+ * loop, it kept spinning because nothing told it to stop.
  *
- * Çözüm: uzun süren her işe bu nesneyi veriyoruz. İş, her adımın başında
- * `kontrol.kontrolEt()` çağırıyor; iptal bayrağı kalkmışsa bu çağrı hata
- * fırlatıp döngüyü kırıyor.
+ * Fix: every long-running job gets this object. The job calls
+ * `kontrol.kontrolEt()` at the start of each step; if the cancel flag is up,
+ * that call throws and breaks the loop.
  */
 
 class IptalEdildi extends Error {
@@ -24,29 +24,29 @@ class GorevKontrol {
     this.calisiyor = false
   }
 
-  /** Yeni bir görev başlarken çağrılır */
+  /** Called when a new task starts */
   baslat () {
     this.iptalIstendi = false
     this.calisiyor = true
   }
 
-  /** Görev bittiğinde çağrılır */
+  /** Called when the task ends */
   bitir () {
     this.calisiyor = false
     this.iptalIstendi = false
   }
 
-  /** "dur" komutu bunu çağırır */
+  /** The "dur" command calls this */
   durdur () {
     this.iptalIstendi = true
   }
 
-  /** Uzun işlerin içinden düzenli olarak çağrılır — iptal varsa döngüyü kırar */
+  /** Called regularly from inside long jobs; breaks the loop on cancel */
   kontrolEt () {
     if (this.iptalIstendi) throw new IptalEdildi()
   }
 
-  /** İptal edilebilir bekleme */
+  /** Cancellable wait */
   async bekle (ms, adim = 100) {
     const bitis = Date.now() + ms
     while (Date.now() < bitis) {
@@ -56,7 +56,7 @@ class GorevKontrol {
   }
 }
 
-/** Bir sözü hem zaman aşımıyla hem iptalle sınırla */
+/** Bound a promise by both a timeout and cancellation */
 async function sinirli (soz, ms, kontrol) {
   return Promise.race([
     soz,
@@ -74,52 +74,48 @@ async function sinirli (soz, ms, kontrol) {
 }
 
 /**
- * pathfinder.stop() GÜVENLİ HÂLİ.
+ * Safe form of pathfinder.stop().
  *
- * mineflayer-pathfinder'da `stop()` yolu hemen kesmiyor, sadece `stopPathing`
- * diye kalıcı bir MANDAL kaldırıyor. Mandal ancak bir sonraki `resetPath`
- * çağrısında tüketiliyor — ve `goto()` işe tam olarak `setGoal -> resetPath`
- * ile başlıyor.
+ * In mineflayer-pathfinder `stop()` does not cut the path right away, it only
+ * raises a sticky `stopPathing` latch. The latch is consumed by the next
+ * `resetPath` call — and `goto()` starts with exactly `setGoal -> resetPath`.
  *
- * Sonuç: bir yerde `stop()` çağırıp mandalı bırakırsan, BİR SONRAKİ `goto()`
- * daha yol hesabına başlamadan "Path was stopped before it could be completed"
- * diye reddediliyor. Hata mesajı sanki arazi sorunuymuş gibi görünüyor ama
- * sebebi tamamen bizim önceki çağrımız.
+ * So a `stop()` that leaves the latch up makes the next `goto()` fail with
+ * "Path was stopped before it could be completed" before it even computes a
+ * path. The message looks like a terrain problem; the cause is the earlier
+ * call.
  *
- * Bu yüzden her `stop()` sonrası `setGoal(null)` ile mandalı tüketiyoruz.
+ * Hence `setGoal(null)` after every `stop()` to consume the latch.
  */
 function pathfinderDurdur (bot) {
   try {
     bot.pathfinder.stop()
-    bot.pathfinder.setGoal(null) // mandalı tüket, yoksa sonraki goto ölür
-  } catch (err) { /* pathfinder yüklü değilse önemsiz */ }
+    bot.pathfinder.setGoal(null) // consume the latch, or the next goto dies
+  } catch (err) { /* harmless if pathfinder is not loaded */ }
 }
 
 /**
- * Yeni bir `goto()` öncesi çağrılır: başka bir yerde bırakılmış mandal varsa
- * temizler. Savunma amaçlı — mandalın kaynağını her zaman bilemiyoruz.
+ * Called before a new `goto()`: clears a latch left behind somewhere else.
+ * Defensive, because where a latch came from is not always knowable.
  */
 function pathfinderHazirla (bot) {
   try {
     bot.pathfinder.setGoal(null)
-  } catch (err) { /* önemsiz */ }
+  } catch (err) { /* harmless */ }
 }
 
 /**
- * Pathfinder ile git — TAKILMA TESPİTİYLE.
+ * Pathfinder goto with stuck detection.
  *
- * PROBLEM
- * Bot bir çıkıntının kenarında "koşuyor ama ilerlemiyor" durumuna
- * giriyordu. Pathfinder bir yol bulmuş, tuşlara basıyor, ama bot
- * fiziksel olarak takılı. Sadece süre sınırı koymak yetmiyor: 15
- * saniyelik zaman aşımını beklemek hem uzun, hem de bunu "yol
- * bulunamadı" gibi gösteriyor — oysa yol var, bot sıkışmış.
+ * Problem: on the edge of a ledge the bot ends up running without moving.
+ * Pathfinder found a path and is pressing keys, but the bot is physically
+ * jammed. A timeout alone is not enough: waiting out the 15-second timeout is
+ * slow and reports it as "no path found", when there is a path and the bot is
+ * just stuck.
  *
- * ÇÖZÜM
- * Konumu izle. Belli bir süre boyunca hiç ilerlemiyorsa bu bir
- * takılmadır; beklemeye devam etmenin anlamı yok. Hemen durdur,
- * tuşları bırak, çağıran tarafa "takıldım" de — o da başka bir
- * hedefe geçebilsin.
+ * Fix: watch the position. No progress for a while means stuck, and waiting
+ * longer buys nothing. Stop, release the keys, and tell the caller "takildim"
+ * so it can move on to another target.
  *
  * @returns {Promise<{ok:boolean, sebep?:string}>}
  */
@@ -144,7 +140,7 @@ async function pathfinderGit (bot, hedef, kontrol, {
         } else if (Date.now() - sonIlerleme > durgunlukMs) {
           reject(new Error('takildim'))
         }
-      } catch (err) { /* bot yok olduysa zaman aşımı devralır */ }
+      } catch (err) { /* if the bot is gone the timeout takes over */ }
     }, 500)
   })
 
@@ -163,15 +159,15 @@ async function pathfinderGit (bot, hedef, kontrol, {
 
     const takildi = err.message === 'takildim'
 
-    // TESPİT TEK BAŞINA YARIM ÇÖZÜM.
+    // Detection alone is half a fix.
     //
-    // Takıldığımızı anlamak botu kurtarmıyor: aynı dar yarıkta duruyor,
-    // sadece artık bunu biliyor. Çağıran taraf başka bir hedefe geçiyor,
-    // pathfinder yine yol bulamıyor, döngü baştan başlıyor. Ekran
-    // görüntülerinde tekrar tekrar gördüğümüz buydu.
+    // Knowing it is stuck does not free the bot: it stands in the same narrow
+    // gap, only now it knows. The caller moves to another target, pathfinder
+    // still finds no path, and the loop restarts. That is what the screenshots
+    // kept showing.
     //
-    // Önce kurtul, sonra BİR KEZ daha dene. `kurtarmayiDene: false` ile
-    // çağrıldığı için tekrar özyinelemeye girmiyor.
+    // So: get free first, then retry once. The retry passes
+    // `kurtarmayiDene: false`, so it cannot recurse again.
     if (takildi && kurtarmayiDene) {
       const { kurtar } = require('./kurtar')
       const kurtuldu = await kurtar(bot, kontrol)

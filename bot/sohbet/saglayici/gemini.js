@@ -40,7 +40,7 @@ const interactions = {
     model: istek.model,
     system_instruction: istek.sistem,
     store: false,
-    // DUSUNMEYI KIS.
+    // Cap the thinking budget.
     //
     // A successful reply came back with `total_thought_tokens: 400` — four
     // hundred tokens of reasoning to map one sentence onto a 13-item enum.

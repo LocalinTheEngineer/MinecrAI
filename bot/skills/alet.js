@@ -1,22 +1,20 @@
 'use strict'
 
 /**
- * SKILL: Alet seçimi, kuşanma ve craft'lama.
+ * SKILL: tool selection, equipping and crafting.
  *
- * Neden önemli: bot ağacı ELİYLE kesince kütük başına ~3-4 saniye harcıyor.
- * Balta ile bu ~0.4 saniyeye iniyor. Yani bölümler ~8 kat kısalıyor ve aynı
- * sürede 8 kat fazla eğitim verisi topluyoruz. Bu bir "ekstra özellik" değil,
- * doğrudan eğitim hızlandırıcı.
+ * Chopping by hand costs ~3-4 seconds per log; with an axe it drops to ~0.4s.
+ * Episodes get ~8x shorter, so the same wall clock produces 8x more training
+ * data. This is a training-speed lever, not a nice-to-have.
  *
- * Tasarım notu: kuşanma ajanın ÖĞRENMESİ GEREKEN bir aksiyon değil, otomatik
- * yapılıyor — tıpkı dikey nişan gibi. Her Minecraft oyuncusunun refleks olarak
- * yaptığı, içinde öğrenilecek bir karar barındırmayan iş. Ajanın öğreneceği
- * şey navigasyon ve ne zaman kıracağı olarak kalıyor.
+ * Equipping is automatic, not an action the agent has to learn — same as
+ * vertical aim. Every Minecraft player does it by reflex and there is no
+ * decision in it. What the agent learns stays navigation and when to break.
  */
 
 const log = require('../utils/log')
 
-// İyiden kötüye — envanterde birden fazla varsa en iyisi seçilsin
+// Best to worst, so the best one wins when the inventory holds several
 const MALZEME_SIRASI = ['netherite', 'diamond', 'iron', 'stone', 'golden', 'wooden']
 
 function malzemePuani (isim) {
@@ -24,38 +22,37 @@ function malzemePuani (isim) {
   return i === -1 ? 99 : i
 }
 
-/** Bu blok için hangi alet tipi uygun? */
+/** Which tool type fits this block? */
 function aletTipi (blok) {
   if (!blok) return null
 
-  // BİRİNCİL KAYNAK: OYUNUN KENDİ VERİSİ.
+  // Primary source is the game's own data.
   //
-  // Burası önce elle yazılmış bir regex listesiydi ve 1.20.4'te 439 bloğu
-  // kaçırıyordu. Kaçırılanlar arasında `tuff`, `calcite`, `smooth_basalt`,
-  // `amethyst_block`, `dripstone_block` vardı — yani y=15 mağaralarında
-  // her yerde bulunan bloklar.
+  // This was a hand-written regex list and it missed 439 blocks in 1.20.4,
+  // among them `tuff`, `calcite`, `smooth_basalt`, `amethyst_block` and
+  // `dripstone_block` — blocks that are everywhere in y=15 caves.
   //
-  // Sonucu ölçümde gördük: maden görevinde uzman 4 bölümde HİÇ kırma
-  // yapmadı, adımların %56'sı "önümde katı blok var ama kıracak aletim
-  // yok" dalına düştü ve bot sonsuza kadar etrafından dolaşmaya çalıştı.
-  // 0 kaynak, 4/4 bölüm yerinde sayma kesmesiyle bitti.
+  // Measured effect: in the mining task the expert broke nothing across 4
+  // episodes, 56% of its steps fell into the "solid block ahead but no tool
+  // for it" branch and the bot tried to walk around it forever. 0 resources,
+  // 4/4 episodes ended on the no-progress cutoff.
   //
-  // `minecraft-data` her blok için `material` veriyor: 'mineable/pickaxe',
-  // 'mineable/shovel', 'mineable/axe'. Elle liste tutmanın anlamı yok —
-  // sürüm değişince liste sessizce eskiyor, bu da tam olarak öyle bir hata.
+  // `minecraft-data` carries `material` per block: 'mineable/pickaxe',
+  // 'mineable/shovel', 'mineable/axe'. A hand-kept list goes stale silently
+  // on a version bump, which is exactly the failure above.
   const m = /^mineable\/(pickaxe|axe|shovel)$/.exec(blok.material || '')
   if (m) return '_' + m[1]
 
-  // YEDEK: `material` alanı olmayan sahte blok nesneleri.
-  // Kod bazı yerlerde `{ name: 'iron_ore' }` gibi elle nesne kuruyor
-  // (ör. environment.js'te "kazmam var mı" kontrolü) ve testler de öyle.
+  // Fallback for fake block objects with no `material` field. Some code
+  // builds them by hand, e.g. `{ name: 'iron_ore' }` for the "do I have a
+  // pickaxe" check in environment.js, and so do the tests.
   if (/_log$|_stem$|_wood$|planks$|_door$|crafting_table|chest/.test(blok.name)) return '_axe'
   if (/stone|ore$|deepslate|granite|diorite|andesite|cobble|obsidian/.test(blok.name)) return '_pickaxe'
   if (/dirt|grass_block|sand|gravel|clay|podzol|mycelium|soul_/.test(blok.name)) return '_shovel'
   return null
 }
 
-/** Envanterdeki en iyi uygun aleti bul (yoksa null) */
+/** Best matching tool in the inventory, or null */
 function uygunAlet (bot, blok) {
   const tip = aletTipi(blok)
   if (!tip) return null
@@ -68,15 +65,15 @@ function uygunAlet (bot, blok) {
 }
 
 /**
- * Bloğa uygun aleti eline al. Zaten doğru alet elindeyse hiçbir şey yapmaz.
- * @returns {Promise<boolean>} kuşanma yapıldı mı
+ * Equip the tool that fits the block. No-op if it is already in hand.
+ * @returns {Promise<boolean>} whether anything was equipped
  */
 async function aletKusan (bot, blok) {
   const alet = uygunAlet(bot, blok)
   if (!alet) return false
 
   const eldeki = bot.heldItem
-  if (eldeki && eldeki.type === alet.type) return false // zaten elimde
+  if (eldeki && eldeki.type === alet.type) return false // already in hand
 
   try {
     await bot.equip(alet, 'hand')
@@ -102,10 +99,10 @@ function tarifBul (bot, esyaAdi, masa = null) {
 }
 
 /**
- * Sıfırdan tahta balta yapar: kütük -> tahta -> çubuk -> tezgah -> balta.
+ * Makes a wooden axe from scratch: log -> planks -> stick -> table -> axe.
  *
- * Adım adım ilerler ve her adımda zaten yapılmış olanı atlar, yani yarıda
- * kalıp tekrar çağrılırsa kaldığı yerden devam eder.
+ * Each step skips what is already done, so a call after a half-finished run
+ * continues from where it stopped.
  */
 async function baltaYap (bot) {
   const mcData = require('minecraft-data')(bot.version)
@@ -114,26 +111,26 @@ async function baltaYap (bot) {
     return { basarili: true, mesaj: 'Zaten baltam var.' }
   }
 
-  // --- 1) Tahta (planks) ---
+  // --- 1) Planks ---
   let tahta = envanterdeVarMi(bot, /_planks$/)
   if (!tahta || tahta.count < 5) {
     const kutuk = envanterdeVarMi(bot, /_log$|_stem$/)
     if (!kutuk) return { basarili: false, mesaj: 'Odunum yok, önce ağaç kesmem lazım.' }
 
-    // Kütüğün karşılığı olan tahta: oak_log -> oak_planks
+    // Planks that match the log type: oak_log -> oak_planks
     const tahtaAdi = kutuk.name.replace(/_log$|_stem$/, '_planks')
     const tarif = tarifBul(bot, tahtaAdi)
     if (!tarif) return { basarili: false, mesaj: `${tahtaAdi} tarifini bulamadım.` }
 
     try {
-      await bot.craft(tarif, 2, null) // 2 kütük -> 8 tahta
+      await bot.craft(tarif, 2, null) // 2 logs -> 8 planks
     } catch (err) {
       return { basarili: false, mesaj: `Tahta yapamadım: ${err.message}` }
     }
     tahta = envanterdeVarMi(bot, /_planks$/)
   }
 
-  // --- 2) Çubuk (stick) ---
+  // --- 2) Stick ---
   if (!envanterdeVarMi(bot, /^stick$/)) {
     const tarif = tarifBul(bot, 'stick')
     if (!tarif) return { basarili: false, mesaj: 'Çubuk tarifini bulamadım.' }
@@ -144,8 +141,8 @@ async function baltaYap (bot) {
     }
   }
 
-  // --- 3) Tezgah (crafting table) ---
-  // Balta 3x3 tarif; envanterin 2x2 gridi yetmiyor, tezgah şart.
+  // --- 3) Crafting table ---
+  // The axe is a 3x3 recipe; the 2x2 inventory grid is not enough.
   if (!envanterdeVarMi(bot, /^crafting_table$/)) {
     const tarif = tarifBul(bot, 'crafting_table')
     if (!tarif) return { basarili: false, mesaj: 'Tezgah tarifini bulamadım.' }
@@ -156,7 +153,7 @@ async function baltaYap (bot) {
     }
   }
 
-  // --- 4) Tezgahı yere koy ---
+  // --- 4) Place the table ---
   let masa = bot.findBlock({
     matching: mcData.blocksByName.crafting_table.id, maxDistance: 4
   })
@@ -171,10 +168,10 @@ async function baltaYap (bot) {
     })
   }
 
-  // --- 5) Balta ---
+  // --- 5) Axe ---
   const tahtaAdi = (envanterdeVarMi(bot, /_planks$/) || {}).name || 'oak_planks'
   const baltaAdi = tahtaAdi.replace('_planks', '') + '_axe'
-  // Vanilla'da tahta baltanın adı tek: wooden_axe
+  // Vanilla has one name for the wooden axe: wooden_axe
   const tarif = tarifBul(bot, 'wooden_axe', masa) || tarifBul(bot, baltaAdi, masa)
   if (!tarif) return { basarili: false, mesaj: 'Balta tarifini bulamadım.' }
 
@@ -188,12 +185,11 @@ async function baltaYap (bot) {
 }
 
 /**
- * Tezgahı yere koyar.
+ * Places the crafting table.
  *
- * Eskiden burada yanındaki 6 sabit noktaya bakan naif bir arama vardı ve
- * dar bir yerde "koyacak yer bulamadım" deyip pes ediyordu. Artık ortak
- * yerleştirici kullanılıyor: geniş arama + gerekirse bir bloğu kırıp
- * yer açma. Aynı kod fırın için de çalışıyor.
+ * This used to be a naive search over 6 fixed neighbouring spots that gave up
+ * with "no room" in tight places. It now uses the shared placer: wider search
+ * plus breaking a block to make room. The furnace runs on the same code.
  */
 async function tezgahKoy (bot, kontrol = null) {
   const { blokKoy } = require('../utils/yerlestir')

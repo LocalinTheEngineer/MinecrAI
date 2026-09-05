@@ -4,20 +4,18 @@ const log = require('./log')
 const koruma = require('./koruma')
 
 /**
- * SIKIŞMADAN KURTULMA
+ * Getting unstuck.
  *
- * Bir önceki adımda takılmayı TESPİT etmeyi ekledim: bot 4 saniye
- * kıpırdamazsa "takıldım" diyor. Ama tespit tek başına yarım çözüm —
- * bot hâlâ sıkışmış olduğu yerde duruyor, sadece artık bunu biliyor.
- * Çağıran taraf başka bir hedefe geçiyor, pathfinder aynı dar yarıkta
- * yine yol bulamıyor, döngü baştan başlıyor.
+ * Stuck detection came first: 4 seconds without movement and the bot reports
+ * "takildim". Detection alone is half a fix — the bot still stands where it
+ * jammed, only now it knows. The caller moves to another target, pathfinder
+ * still finds no path through the same narrow gap, and the loop restarts.
  *
- * Eksik olan parça buydu: botu FİİLEN kurtarmak.
+ * This is the missing half: actually freeing the bot.
  *
- * Bot kendi kazdığı 1 blok genişliğindeki bir kuyuya sıkışıyor. Bir
- * oyuncu bu durumda ne yapar? Etrafına bakar, açık bir yön varsa
- * zıplayarak oraya geçer; yoksa kazmasını çıkarıp kendine yol açar.
- * Aynısını yapıyoruz.
+ * The bot gets stuck in a 1-block-wide shaft it dug itself. What does a player
+ * do there? Look around, jump across if a side is open, otherwise pull out a
+ * pickaxe and cut a way out. Same here.
  */
 
 const TEHLIKELI = /lava|bedrock/
@@ -27,7 +25,7 @@ function bekle (ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Bu yönde ayak ve baş hizası boş mu? */
+/** Are the foot and head cells free in this direction? */
 function acikMi (bot, p, dx, dz) {
   const ayak = bot.blockAt(p.offset(dx, 0, dz))
   const bas = bot.blockAt(p.offset(dx, 1, dz))
@@ -35,7 +33,7 @@ function acikMi (bot, p, dx, dz) {
   return ayak.boundingBox !== 'block' && bas.boundingBox !== 'block'
 }
 
-/** Bir bloğu kırmayı dene (güvenliyse) */
+/** Try to break a block, if it is safe */
 async function kirmayiDene (bot, konum) {
   const { aletKusan } = require('../skills/alet')
   const b = bot.blockAt(konum)
@@ -55,8 +53,8 @@ async function kirmayiDene (bot, konum) {
 }
 
 /**
- * Botu sıkıştığı yerden kurtarmayı dene.
- * @returns {Promise<boolean>} konum değiştiyse true
+ * Try to free the bot from where it is stuck.
+ * @returns {Promise<boolean>} true if the position changed
  */
 async function kurtar (bot, kontrol = null) {
   const baslangic = bot.entity.position.clone()
@@ -68,8 +66,8 @@ async function kurtar (bot, kontrol = null) {
   const p = bot.entity.position.floored()
   const acikYonler = YONLER.filter(([dx, dz]) => acikMi(bot, p, dx, dz))
 
-  // 1) Açık bir yön varsa zıplayarak oraya geç.
-  //    Sıkışmaların çoğu blok kenarına takılma; küçük bir zıplama yetiyor.
+  // 1) If a direction is open, jump across into it.
+  //    Most jams are a snag on a block edge; a small jump clears it.
   if (acikYonler.length > 0) {
     const [dx, dz] = acikYonler[0]
     try {
@@ -92,8 +90,8 @@ async function kurtar (bot, kontrol = null) {
 
   if (kontrol) kontrol.kontrolEt()
 
-  // 2) Her yön kapalı: kendimize yol kaz.
-  //    Bot zaten kazma taşıyor; dar bir kuyuda beklemesinin anlamı yok.
+  // 2) Every direction closed: dig a way out.
+  //    The bot carries a pickaxe anyway; waiting in a narrow shaft is pointless.
   for (const [dx, dz] of YONLER) {
     const ayakKondu = await kirmayiDene(bot, p.offset(dx, 0, dz))
     const basKondu = await kirmayiDene(bot, p.offset(dx, 1, dz))
@@ -104,8 +102,8 @@ async function kurtar (bot, kontrol = null) {
     if (kontrol) kontrol.kontrolEt()
   }
 
-  // 3) Son çare: yukarı kaz. Kendi kazdığımız kuyunun dibindeysek
-  //    çıkış yukarıdadır.
+  // 3) Last resort: dig up. At the bottom of a self-dug shaft the way out is
+  //    above.
   if (await kirmayiDene(bot, p.offset(0, 2, 0))) {
     log.bilgi('Sıkıştım, yukarı doğru yol açtım.')
     return true

@@ -1,12 +1,12 @@
-"""Gorev basina dosya yollari.
+"""Per-task file paths.
 
-NEDEN VAR: iki gorev (odun / maden) ayni scriptleri kullaniyor ama
-ayri modeller ve ayri veriler uretiyor. Yollari her scriptte tek tek
-kurmak, bir gun birinin digerinin modelini ezmesiyle biterdi -- ve o
-hatayi fark etmek saatler alirdi (yanlis model sessizce yuklenir).
+Both tasks (wood / mine) run the same scripts but produce separate models and
+separate data. Building the paths inline in each script would eventually let
+one task overwrite the other's model, and that failure is silent: the wrong
+model simply loads.
 
-Odun gorevi MEVCUT dosya adlarini koruyor (geriye donuk uyum);
-maden gorevi '_maden' ekiyle ayriliyor.
+The wood task keeps the existing file names for backwards compatibility; the
+mine task is separated by a '_maden' suffix.
 """
 
 from __future__ import annotations

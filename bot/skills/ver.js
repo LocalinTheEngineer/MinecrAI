@@ -3,13 +3,13 @@
 const log = require('../utils/log')
 
 /**
- * SKILL: Envanterdeki bir eşyayı oyuncuya at.
+ * SKILL: toss an inventory item to a player.
  *
- * Eşya adı tam eşleşmek zorunda değil — "odun" yazınca `oak_log` da bulunur.
- * Kullanıcı `stripped_dark_oak_log` yazmak zorunda kalmamalı.
+ * The name does not have to match exactly — "odun" also finds `oak_log`.
+ * Nobody should have to type `stripped_dark_oak_log`.
  */
 
-// Türkçe kısaltmalar: kullanıcı İngilizce blok adı ezberlemesin
+// Turkish shorthands, so the user does not have to memorise block names
 const TAKMA_ADLAR = {
   odun: '_log',
   kütük: '_log',
@@ -31,7 +31,7 @@ function esyaBul (bot, arama) {
   const anahtar = TAKMA_ADLAR[arama] || arama
   const esyalar = bot.inventory.items()
 
-  // Önce tam eşleşme, sonra içerenler
+  // Exact match first, then substring matches
   return esyalar.find((i) => i.name === anahtar) ||
          esyalar.find((i) => i.name.includes(anahtar.replace(/^_/, ''))) ||
          null
@@ -54,7 +54,7 @@ async function ver (bot, oyuncuAdi, arama, adet = null) {
 
   const oyuncu = bot.players[oyuncuAdi]
   if (oyuncu && oyuncu.entity) {
-    // Ona doğru bakıp atalım ki eşya ayağının dibine düşsün
+    // Face them first so the item lands at their feet
     try { await bot.lookAt(oyuncu.entity.position.offset(0, 1, 0), true) } catch (err) {}
   }
 

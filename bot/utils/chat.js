@@ -1,24 +1,23 @@
 'use strict'
 
 /**
- * Renkli chat çıktısı.
+ * Coloured chat output.
  *
- * Minecraft'ta normal chat mesajlarına renk konamaz — sunucu oyuncu
- * mesajlarındaki § kodlarını siler. Renk için `/tellraw` komutu gerekiyor ve
- * o da op yetkisi istiyor.
+ * Plain chat messages cannot carry colour — the server strips § codes out of
+ * player messages. Colour needs the `/tellraw` command, and that needs op.
  *
- * Bu yüzden: tellraw denenir, bot op değilse otomatik olarak düz metne düşer.
- * Kullanıcı hiçbir şey görmemekten iyidir.
+ * So: try tellraw, and fall back to plain text automatically when the bot is
+ * not op. Better than the user seeing nothing.
  *
- * Botu op yapmak için sunucu konsoluna:  op MinecrAI
+ * To op the bot, in the server console:  op MinecrAI
  */
 
 const log = require('./log')
 
-// Chat'ten gönderilen komutlar 256 karakterle sınırlı
+// Commands sent through chat are capped at 256 characters
 const KOMUT_SINIRI = 250
 
-// null = henüz bilmiyoruz, true = tellraw çalışıyor, false = düz metne düş
+// null = not known yet, true = tellraw works, false = fall back to plain text
 let renkliDestek = null
 
 function komutHatasiMi (metin) {
@@ -30,8 +29,8 @@ function komutHatasiMi (metin) {
 }
 
 /**
- * tellraw destekleniyor mu diye bir kez dener.
- * Sunucu hata mesajı dönerse bir daha denemeyiz.
+ * Tries once whether tellraw is supported.
+ * If the server answers with an error, it is not tried again.
  */
 function destekDinle (bot) {
   return new Promise((cozumle) => {
@@ -51,25 +50,25 @@ function destekDinle (bot) {
       if (karar) return
       karar = true
       bot.removeListener('message', dinleyici)
-      cozumle(true) // hata gelmediyse çalışıyor sayıyoruz
+      cozumle(true) // no error came back, so treat it as working
     }, 800)
   })
 }
 
-/** JSON metin bileşenlerini tellraw ile gönder */
+/** Send JSON text components through tellraw */
 function tellraw (bot, bilesenler) {
   bot.chat(`/tellraw @a ${JSON.stringify(['', ...bilesenler])}`)
 }
 
 /**
- * Satırları renkli göndermeyi dener, olmazsa düz metne döner.
+ * Tries to send the lines in colour, falls back to plain text.
  * @param {Array<{ad: string, aciklama: string}>} satirlar
  */
 async function renkliListe (bot, baslik, satirlar, {
   baslikRenk = 'gold', adRenk = 'aqua', aciklamaRenk = 'gray',
   mesajArasiMs = 800
 } = {}) {
-  // İlk kullanımda tellraw destekleniyor mu öğren
+  // On first use, find out whether tellraw is supported
   if (renkliDestek === null) {
     tellraw(bot, [{ text: baslik, color: baslikRenk, bold: true }])
     renkliDestek = await destekDinle(bot)
@@ -83,7 +82,7 @@ async function renkliListe (bot, baslik, satirlar, {
 
   if (!renkliDestek) return duzListe(bot, baslik, satirlar, mesajArasiMs)
 
-  // Satırları 250 karakterlik tellraw komutlarına sığdır
+  // Pack the lines into 250-character tellraw commands
   let grup = []
   const gruplar = []
 
@@ -113,7 +112,7 @@ async function renkliListe (bot, baslik, satirlar, {
   return gruplar.length + 1
 }
 
-/** Renk yoksa: az sayıda düz mesaj (spam filtresine takılmamak için) */
+/** No colour: a few plain messages, few enough to dodge the spam filter */
 async function duzListe (bot, baslik, satirlar, mesajArasiMs = 900) {
   const SINIR = 240
   const parcalar = []

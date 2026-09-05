@@ -1,30 +1,28 @@
 'use strict'
 
 /**
- * LLM'e verilecek ARAÇ TANIMI.
+ * Tool definition handed to the LLM.
  *
- * TASARIMIN EN ÖNEMLİ KARARI BURADA: model serbest metin ya da kod
- * üretmiyor, SABİT BİR LİSTEDEN komut seçiyor. Çalıştıran yine
- * `bot/index.js` içindeki mevcut yönlendirici — yani sohbet katmanı
- * botun yapabileceklerini genişletmiyor, sadece nasıl istendiğini
- * genişletiyor.
+ * The model does not produce free text or code, it picks a command from a
+ * fixed list. Execution still goes through the existing router in
+ * `bot/index.js`, so the chat layer widens how the bot is asked for things,
+ * not what it can do.
  *
- * Neden böyle: oyun içi chat GÜVENİLMEZ girdi. Tek kişilik yerel
- * sunucuda tehdit küçük ama tasarım ilkesi aynı — başka bir oyuncu
- * bota ne yazarsa yazsın, olabilecek en kötü şey bu listedeki meşru
- * bir komutun çalışmasıdır. Model "şu dosyayı sil" diyemez, çünkü
- * öyle bir seçenek yok.
+ * In-game chat is untrusted input. On a single-player local server the threat
+ * is small, but the worst anything a player types can cause is a legitimate
+ * command from this list running. The model cannot say "delete that file"
+ * because no such option exists.
  *
- * Listede OLMAYANLAR da bilinçli:
- *   koru / korumalar / korumasil — koruma bölgeleri oyuncunun kendi
- *   kararı olmalı. `korumasil` yıkıcı: bir yanlış anlama bütün koruma
- *   bölgelerini siler ve geri alınamaz.
+ * What is left out is deliberate too:
+ *   koru / korumalar / korumasil — protection zones are the player's own
+ *   call, and `korumasil` is destructive: one misunderstanding wipes every
+ *   zone and there is no undo.
  */
 
-// Modelin seçebileceği komutlar. Anahtar = komut, değer = ne işe yaradığı.
-// En fazla kaç iş arka arkaya istenebilir. Sınır var çünkü model uzun bir
-// liste uydurursa bot dakikalarca meşgul kalır; "dur" her zaman çalışıyor
-// ama oyuncunun beklemek zorunda kalması da bir maliyet.
+// Commands the model can pick from. Key = command, value = what it does.
+// How many jobs can be queued in one go. Capped because a model that invents
+// a long list keeps the bot busy for minutes; "dur" always works, but making
+// the player wait is a cost too.
 const MAKS_ADIM = 4
 
 const IZINLI_KOMUTLAR = {
@@ -44,11 +42,11 @@ const IZINLI_KOMUTLAR = {
 }
 
 /**
- * Araç tanımı — SAĞLAYICIDAN BAĞIMSIZ.
+ * Provider-independent tool definition.
  *
- * Her sağlayıcı bunu kendi API'sinin şekline çeviriyor
- * (Anthropic `input_schema`, Gemini `parameters`). Şemanın kendisi
- * ikisinde de JSON Schema, o yüzden tek yerde duruyor.
+ * Each provider reshapes it for its own API (Anthropic `input_schema`,
+ * Gemini `parameters`). The schema itself is JSON Schema in both, so it
+ * lives in one place.
  */
 function aracTanimi () {
   const satirlar = Object.entries(IZINLI_KOMUTLAR)
@@ -96,11 +94,11 @@ function aracTanimi () {
 }
 
 /**
- * Tek bir adımı çalıştırılabilir komut satırına çevirir.
+ * Turns one step into a runnable command line.
  *
- * DOĞRULAMA BURADA, model çıktısına güvenmiyoruz: bilinmeyen komut
- * reddediliyor ve argümandan komut satırını bozabilecek karakterler
- * atılıyor. Model bugün uslu, yarın sürüm değişince olmayabilir.
+ * Validation happens here; model output is not trusted. Unknown commands are
+ * rejected and characters that could break the command line are stripped from
+ * the argument. The model behaves today, maybe not after a version bump.
  */
 function komutSatiri (girdi) {
   if (!girdi || typeof girdi.komut !== 'string') return null
@@ -108,8 +106,8 @@ function komutSatiri (girdi) {
   if (!Object.prototype.hasOwnProperty.call(IZINLI_KOMUTLAR, komut)) return null
 
   let arguman = typeof girdi.arguman === 'string' ? girdi.arguman : ''
-  // Sadece harf, rakam, boşluk ve Türkçe karakter. Yeni satır ve '/' yok:
-  // '/' ile başlayan bir şey sunucu komutu olarak yorumlanabilir.
+  // Letters, digits, spaces and Turkish characters only. No newlines and no
+  // '/': something starting with '/' can be read as a server command.
   arguman = arguman.toLowerCase().replace(/[^a-z0-9çğıöşü\s]/g, ' ')
     .replace(/\s+/g, ' ').trim().slice(0, 40)
 
@@ -117,19 +115,19 @@ function komutSatiri (girdi) {
 }
 
 /**
- * Modelin döndürdüğü adım listesini komut satırlarına çevirir.
+ * Turns the model's step list into command lines.
  *
- * Neden liste: bot tek komut alabildiği sürece "önce odun kes sonra kazma
- * yap" gibi sıradan bir istek çalışmıyordu — model niyeti anlıyor ama
- * ifade edemiyordu. Beceriler değişmedi, sadece kaç tanesinin arka arkaya
- * istenebileceği değişti.
+ * A list rather than a single command because "chop wood then make a pickaxe"
+ * did not work while the bot took one command at a time: the model got the
+ * intent but could not express it. The skills did not change, only how many
+ * of them can be asked for in a row.
  *
- * TEKİL BİÇİM DE KABUL EDİLİYOR: model bazen `adimlar` yerine doğrudan
- * `{komut, arguman}` döndürüyor. Şema listeyi zorunlu kılıyor ama modelin
- * şemaya uyacağına güvenip cevabı çöpe atmak gereksiz katılık.
+ * The singular shape is accepted as well, since the model sometimes returns
+ * `{komut, arguman}` instead of `adimlar`. The schema requires the list, but
+ * throwing away a usable answer over that is needless strictness.
  *
- * Geçersiz adımlar atılıyor, geçerliler kalıyor: üç adımın ikisi tanınıyorsa
- * o ikisini yapmak hiçbirini yapmamaktan iyi.
+ * Invalid steps are dropped and valid ones kept: if two of three steps are
+ * recognised, doing those two beats doing nothing.
  */
 function komutSatirlari (girdi) {
   if (!girdi) return []

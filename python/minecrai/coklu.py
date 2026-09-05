@@ -1,28 +1,26 @@
-"""Cok gorevli ortam (Milestone 6): TEK ajan, iki gorev.
+"""Multi-task environment (Milestone 6): one agent, two tasks.
 
-FIKIR: `MinecraftEnv` zaten hangi gorevi oynadigini her `reset()`te Node'a
-bildiriyor. Cok gorevli egitim bunun uzerine tek bir sey ekliyor -- gorevi
-BOLUMDEN BOLUME degistirmek -- ve iki kural dayatiyor:
+`MinecraftEnv` already tells Node which task it is playing on every `reset()`.
+Multi-task training adds one thing on top of that, switching the task from
+episode to episode, and that imposes two rules:
 
-  1. Gozlem genisligi ortak olmali. Odun gorevi varsayilan olarak 16 sayi
-     gonderiyor (Milestone 4'un modelleri oyle bekliyor); burada `genis
-     gozlem` acilarak ikisi de 20'ye cikiyor.
+  1. Observation width must be shared. The wood task sends 16 numbers by
+     default (Milestone 4's models expect that); here `genis gozlem` is turned
+     on so both go up to 20.
 
-  2. Ag hangi gorevde oldugunu BILMELI. Bu, uzerinde durmaya deger:
-     ayni gozlemde ("onumde tas var") odun gorevinin dogru cevabi
-     "dolas", maden gorevinin dogru cevabi "kir". Gorev bilgisi olmadan
-     bu iki etiket ayni girdiye dusuyor ve ag ikisinin ortalamasini
-     ogreniyor -- yani hicbirini.
+  2. The net must know which task it is in. On the same observation ("there is
+     stone in front of me") the right answer for wood is "walk around it" and
+     for mine "break it". Without the task bit both labels land on the same
+     input and the net learns their average, which is neither.
 
-     Milestone 5b'de tam olarak bunun bir baska bicimini yasadik: donmus
-     gozlem yuzunden bolumun butun ornekleri ayni girdiye farkli etiket
-     tasiyordu ve ag `ln(4)`te takildi. Sebep farkli, ariza ayni:
-     AYIRT EDICI BILGI GOZLEMDE YOKSA OGRENME YOK.
+     Milestone 5b was another form of this: a frozen observation gave every
+     sample of an episode the same input with different labels and the net got
+     stuck at `ln(4)`. Different cause, same failure: no learning when the
+     distinguishing information is missing from the observation.
 
-GOREV SIRASI DONUSUMLU, rastgele degil. Rastgele secim kisa kosularda
-dengesiz dagilim uretiyor (30 bolumde 19/11 gibi) ve "hangi gorevde daha
-iyi" karsilastirmasini bozuyor. Donusumlu sira her gorevi esit sayida
-oynatiyor.
+Task order is round-robin, not random. Random picking gives an unbalanced
+split over short runs (19/11 across 30 episodes) and ruins the "which task is
+it better at" comparison. Round-robin plays each task the same number of times.
 """
 
 from __future__ import annotations
@@ -43,10 +41,10 @@ from .env import (
 
 
 class CokluGorevEnv(gym.Env):
-    """Iki gorevi donusumlu oynatan tek bir Gym ortami.
+    """One Gym environment that plays both tasks round-robin.
 
-    Disaridan bakinca sirandan bir `gym.Env`: `collect_demos.py`,
-    `train_ppo.py` ve `eval_agent.py` hicbir ozel durum bilmeden calisiyor.
+    From outside it is an ordinary `gym.Env`: `collect_demos.py`,
+    `train_ppo.py` and `eval_agent.py` work without knowing any special case.
     """
 
     metadata = {"render_modes": ["human"], "render_fps": 2}
@@ -58,12 +56,12 @@ class CokluGorevEnv(gym.Env):
     ) -> None:
         super().__init__()
         self.gorevler = list(gorevler or COKLU_GOREVLER)
-        self.gorev = "hepsi"          # yollar.py ve raporlama icin
+        self.gorev = "hepsi"          # for yollar.py and reporting
         self._sira = -1
 
-        # Tek bir alt ortam; gorevi bolum basinda degistiriyoruz.
-        # Node tarafi gorev degisimini `gorevDegistir()` ile ele aliyor
-        # (arama yaricapi, kilitli hedef ve kara liste dahil).
+        # A single sub-environment; the task changes at episode start. Node
+        # handles the switch in `gorevDegistir()` (search radius, locked target
+        # and blacklist included).
         self.alt = MinecraftEnv(url=url, gorev=self.gorevler[0], genis_gozlem=True)
 
         self.action_space = spaces.Discrete(len(AKSIYONLAR))

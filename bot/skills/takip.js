@@ -5,15 +5,15 @@ const log = require('../utils/log')
 const { pathfinderDurdur } = require('../utils/gorev')
 
 /**
- * SKILL: Oyuncuyu sürekli takip et.
+ * SKILL: keep following a player.
  *
- * `gel`den farkı: `gel` tek seferlik, hedefe varınca biter. Takip ise
- * bırakana kadar sürer, sen yürüdükçe peşinden gelir.
+ * Different from `gel`: `gel` runs once and ends on arrival. Following runs
+ * until you drop it and keeps up as you walk.
  *
- * Teknik not: burada `goto()` DEĞİL `setGoal(hedef, true)` kullanılıyor.
- * `GoalFollow` sürekli güncellenen bir hedef; `goto()` ile kullanılırsa yol
- * her güncellemede sıfırlanıp hata verir. İkinci parametre (dynamic=true)
- * pathfinder'a "bu hedef hareket edecek" demek.
+ * This uses `setGoal(hedef, true)`, not `goto()`. `GoalFollow` is a
+ * continuously updated goal; through `goto()` the path resets on every update
+ * and errors out. The second argument (dynamic=true) tells pathfinder the goal
+ * will move.
  */
 
 let takipEdilen = null

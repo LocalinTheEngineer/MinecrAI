@@ -1,12 +1,12 @@
-// HIZLI KONTROL — Minecraft gerekmez, ~1 saniye surer.
+// Smoke test. No Minecraft needed, takes about a second.
 //
-// Neden var: `node -e "require(...)"` sadece SOZDIZIMI hatasi yakalar.
-// "bot is not defined" gibi calisma zamani hatalari ancak kod calistiginda
-// ortaya cikiyor ve biz bunu ilk kez veri toplarken fark ettik — yani
-// kullanici 40 turluk isi baslattiktan sonra.
+// `node -e "require(...)"` only catches syntax errors. Runtime errors like
+// "bot is not defined" only appear when the code runs, and the first one
+// appeared during data collection -- after the user had already started a
+// 40-episode job.
 //
-// Bu dosya sahte bir bot nesnesiyle butun kritik yollari bir kez calistirir.
-// Kod degistirdikten sonra:  node test/smoke.js
+// Runs every critical path once against a fake bot object.
+// After changing code:  node test/smoke.js
 'use strict'
 
 const fs = require('fs')
@@ -34,7 +34,7 @@ function sahteBot () {
     findBlock: () => null,
     blockAtCursor: () => null,
     canDigBlock: () => false,
-    // Varsayilan: gorus hatti acik. Duvar arkasi testi bunu override eder.
+    // Default: line of sight is clear. The through-wall test overrides this.
     canSeeBlock: () => true,
     recipesFor: () => [],
     recipesAll: () => [],
@@ -60,7 +60,7 @@ function sahteBot () {
     stopDigging () {},
     clearControlStates () {},
     setControlState () {},
-    // Olay dinleyicileri — environment 'death' olayina abone oluyor
+    // Event listeners: the environment subscribes to 'death'
     _dinleyiciler: {},
     on (olay, fn) { (this._dinleyiciler[olay] ||= []).push(fn) },
     once (olay, fn) { this.on(olay, fn) },
@@ -130,18 +130,18 @@ async function main () {
   })
 
   await dene('yerinde sayan bolum TRUNCATE oluyor (yaprakta sikisma)', async () => {
-    // Egitim kaydindaki gercek olay: 455 adim, 0 odun, -4.53 odul.
-    // Ajan bir agacin tepesinde yapraklara gomulmus.
+    // From a real training log: 455 steps, 0 wood, -4.53 reward. The agent
+    // was buried in leaves at the top of a tree.
     //
-    // KRITIK AYRINTI: bot HIC KIMILDAMIYOR degil, SUREKLI BIRAZ
-    // KIMILDIYOR. `durgunlukSayaci` "hedefe yaklasma" degisimine bakiyor
-    // ve en ufak kipirdanmada sifirlaniyor -- bu yuzden 455 adim boyunca
-    // hic dolmadi. Bu testte sahte bot da oyle yapiyor: her adimda
-    // yarim blok saga sola oynuyor ama BIR YERE GITMIYOR.
+    // The detail that matters: the bot is not frozen, it keeps twitching.
+    // `durgunlukSayaci` watches the change in distance to the target and
+    // resets on the smallest movement, so it never filled up over 455 steps.
+    // The fake bot here does the same: half a block left and right every
+    // step, going nowhere.
     const b3 = sahteBot()
     b3.entity.position = new Vec3(0, 64, 0)
 
-    // Ulasilamayan bir agac: hedef var, yaklasma hesaplanıyor
+    // Unreachable tree: a target exists, so approach still gets computed
     b3.findBlocks = () => [new Vec3(10, 64, 10)]
     b3.blockAt = (p) => {
       const kutuk = (p.x === 10 && p.z === 10 && Math.floor(p.y) >= 64 && Math.floor(p.y) <= 66)
@@ -156,7 +156,7 @@ async function main () {
     const e3 = new MinecraftEnvironment(b3, { zamanCarpani: 0 })
     await e3.reset()
 
-    // Her adimda yarim blok kipirdan -- ama net yer degistirme yok
+    // Twitch half a block each step, with no net displacement
     let salinim = 0
     b3.look = async () => {
       salinim++
@@ -165,7 +165,7 @@ async function main () {
 
     let sonuc = null
     for (let i = 0; i < 200; i++) {
-      sonuc = await e3.step(1) // saga don: bot kipirdaniyor ama gitmiyor
+      sonuc = await e3.step(1) // turn right: the bot twitches but does not move
       if (sonuc.truncated || sonuc.terminated) break
     }
     if (!sonuc.truncated) throw new Error('200 adim yerinde saydi, bolum bitmedi')
@@ -173,10 +173,11 @@ async function main () {
   })
 
   await dene('suyunIcindeMi() suyu taniyor', async () => {
-    // Gercek olay: bot bogularak oldu, sonra 50+ bolum ust uste
-    // "0 odun, 60 adim, -0.60" ile bitti. Ajanin aksiyon uzayinda yuzme
-    // yok; suya dusunce yapabilecegi bir sey kalmiyor. Ogrenemeyecegi
-    // bir durumda ceza yemesi ogrenme degil GURULTU -- ortam duzeltmeli.
+    // Real run: the bot drowned, then 50+ episodes in a row ended with
+    // "0 wood, 60 steps, -0.60". Swimming is not in the action space, so
+    // once it falls in water there is nothing it can do. Punishing it for a
+    // state it cannot learn out of is noise, not learning; the environment
+    // has to fix it.
     const b4 = sahteBot()
     const e4 = new MinecraftEnvironment(b4, { zamanCarpani: 0 })
 
@@ -207,45 +208,45 @@ async function main () {
   })
 
   await dene('acikHavadaMi() BUYUK magarada yanilmiyor', async () => {
-    // Gercek olay: bot bir madene dustu ve cikamadi. Eski kontrol sadece
-    // 5 blok yukari bakiyordu; tavan 20 blok yukarida oldugu icin
-    // "ustum acik" dedi ve kurtarma HIC tetiklenmedi -- oysa bot yerin
-    // 40 blok altindaydi. Dogru soru "yakinimda tavan var mi" degil,
-    // "yukarisi SONUNA KADAR acik mi".
+    // Real run: the bot fell into a cave and could not get out. The old
+    // check looked only 5 blocks up; with the ceiling 20 blocks up it
+    // reported open sky and rescue never fired, 40 blocks underground.
+    // The question is not "is there a ceiling near me" but "is it open all
+    // the way up".
     const b5 = sahteBot()
     const e5 = new MinecraftEnvironment(b5, { zamanCarpani: 0 })
     b5.entity.position = new Vec3(0, 20, 0)
 
-    // BUYUK magara: 20 blok bosluk, sonra tavan
+    // Big cave: 20 blocks of air, then a ceiling
     b5.blockAt = (p) => {
       const y = Math.floor(p.y)
-      const dolu = y >= 42 // tavan cok yukarida
+      const dolu = y >= 42 // ceiling far above
       return { name: dolu ? 'stone' : 'air', boundingBox: dolu ? 'block' : 'empty', position: p }
     }
     if (e5.acikHavadaMi()) throw new Error('magarada gokyuzu gordu')
 
-    // Gercek yuzey: yukarisi sonuna kadar bos
+    // Real surface: open all the way up
     b5.blockAt = (p) => ({ name: 'air', boundingBox: 'empty', position: p })
     if (!e5.acikHavadaMi()) throw new Error('acik havada tavan gordu')
   })
 
   await dene('CAPRAZDAKI yapragi goruyor ve kirabiliyor', async () => {
-    // Oyunda gorulen: ajanin onunde sol ve sag caprazda yaprak var,
-    // tam ortasi bos. Sensor "onum acik" diyordu, ajan ileri basiyordu,
-    // oyun onu gecirmiyordu. Sebep: hem engel sensoru hem "onumu kapatan
-    // blok" TEK BIR NOKTAYA bakiyordu -- tam ileri, tam ortadan. Oysa
-    // oyuncu kutusu 0.6 blok genis.
+    // Seen in game: leaves on the front-left and front-right diagonals,
+    // dead centre clear. The sensor said the path was clear, the agent
+    // pushed forward, the game would not let it through. Both the obstacle
+    // sensor and "block in front of me" sampled a single point, straight
+    // ahead through the centre, while the player hitbox is 0.6 blocks wide.
     const b6 = sahteBot()
     const e6 = new MinecraftEnvironment(b6, { zamanCarpani: 0 })
-    // Bot blogun ORTASINDA DEGIL, kenarinda: x=0.9 => govde kutusu
-    // (0.6..1.2) iki blok sutununa birden yayiliyor. Minecraft'ta
-    // olagan durum bu; ajan nadiren tam ortada duruyor.
+    // Bot stands at the edge of a block, not its centre: x=0.9 puts the
+    // hitbox (0.6..1.2) across two block columns. That is the normal case
+    // in Minecraft; the agent is rarely dead centre.
     b6.entity.position = new Vec3(0.9, 64, 0.5)
-    b6.entity.yaw = 0 // ileri = -z
+    b6.entity.yaw = 0 // forward = -z
     b6.canDigBlock = () => true
 
-    // Yaprak SADECE x=1 sutununda. Tam ileri isini (x=0) BOS goruyor,
-    // ama govde x=1 sutununa tastigi icin gecemiyoruz.
+    // Leaves only in the x=1 column. The straight-ahead ray (x=0) sees air,
+    // but the hitbox spills into x=1 so the bot cannot pass.
     b6.blockAt = (p) => {
       const x = Math.floor(p.x); const y = Math.floor(p.y); const z = Math.floor(p.z)
       const yaprak = (y === 64 || y === 65) && z === -1 && x === 1
@@ -263,8 +264,8 @@ async function main () {
   })
 
   await dene('KAFASININ USTUNDEKI yapragi kirabiliyor', async () => {
-    // "Zipliyor zipliyor ama nafile": kafasinin ustunde yaprak varsa
-    // ziplayamiyor. Yukarisi da engeldir.
+    // Jumping over and over with nothing to show for it: leaves right above
+    // the head block the jump. Overhead counts as an obstacle too.
     const b6 = sahteBot()
     const e6 = new MinecraftEnvironment(b6, { zamanCarpani: 0 })
     b6.entity.position = new Vec3(0.5, 64, 0.5)
@@ -282,10 +283,10 @@ async function main () {
   })
 
   await dene('step() suda ZIPLAYARAK yuzuyor (bogulmuyor)', async () => {
-    // Bolum BASINDA sudan cikariyorduk ama bolum ORTASINDA suya girerse
-    // orada oluyordu -- ve gercekten oldu, npm run bridge calisirken.
-    // Ajanin aksiyon uzayinda yuzme yok; onun etkileyemedigi bir olumu
-    // ortam engellemeli.
+    // Water escape only ran at episode start, so falling in mid-episode
+    // still drowned the bot -- which happened during npm run bridge.
+    // Swimming is not in the action space, so the environment has to
+    // prevent a death the agent cannot act on.
     const b7 = sahteBot()
     const e7 = new MinecraftEnvironment(b7, { zamanCarpani: 0 })
     b7.blockAt = () => ({ name: 'water', boundingBox: 'empty', position: new Vec3(0, 0, 0) })
@@ -293,7 +294,7 @@ async function main () {
     const basilan = []
     b7.setControlState = (ad, deger) => { if (deger) basilan.push(ad) }
 
-    await e7.step(4) // "bekle" aksiyonu: ajan hicbir sey yapmiyor
+    await e7.step(4) // "wait" action: the agent does nothing
     if (!basilan.includes('jump')) throw new Error('suda yuzmeyi denemedi')
   })
 
@@ -331,8 +332,8 @@ async function main () {
   })
 
   await dene('maden gorevi bolum basinda KAZMA veriyor', async () => {
-    // Yanlis kazmayla cevher kirmak onu YOK EDIYOR. Ajanin ogrenmesi
-    // gereken sey "cevheri bul ve kir"; alet tedariki ayri bir problem.
+    // Breaking ore with the wrong pickaxe destroys it. What the agent has
+    // to learn is "find ore and break it"; tooling is a separate problem.
     const b9 = sahteBot()
     const komutlar = []
     b9.chat = (m) => komutlar.push(m)
@@ -352,15 +353,15 @@ async function main () {
     if (komutlar.some((m) => /iron_pickaxe/.test(m))) {
       throw new Error('odun gorevinde kazma verildi')
     }
-    // Odun gorevi envanteri temizler, maden temizlemez
+    // The wood task clears the inventory, mining does not
     if (!komutlar.some((m) => /clear .*minecraft:logs/.test(m))) {
       throw new Error('odun gorevi envanteri temizlemedi')
     }
   })
 
   await dene('maden gorevi YUZEYE CIKMAYA calismiyor', async () => {
-    // Kurulumlar birbirinin tersi: odun yukari, maden asagi. Maden
-    // goreviyle yuzeye isinlanmak bolumu bozar.
+    // The two setups run opposite ways: wood goes up, mining goes down.
+    // Teleporting to the surface on the mining task ruins the episode.
     const b9 = sahteBot()
     const komutlar = []
     b9.chat = (m) => komutlar.push(m)
@@ -372,15 +373,15 @@ async function main () {
   })
 
   await dene('maden uzmani cevher gormeyince TUNEL ACIYOR (beklemiyor)', () => {
-    // Odun uzmani "hedef yoksa bekle" diyordu ve orada dogruydu: ormanda
-    // agac goremiyorsan kazacak bir sey yok. Madende TERSI -- cevher zaten
-    // tasin icinde sakli, gorememek NORMAL. 'bekle' deseydi taklit
-    // verisinin tamami "bekle" olurdu ve ajan hicbir sey ogrenemezdi.
+    // The wood expert waits when it has no target, and that is right in a
+    // forest: no visible tree means nothing to chop. Mining is the reverse
+    // -- ore is buried in stone, so seeing none is normal. Waiting would
+    // make the whole imitation dataset "wait" and teach the agent nothing.
     const uzman = require('../bot/bridge/expert')
     const b10 = sahteBot()
     const e10 = new MinecraftEnvironment(b10, { zamanCarpani: 0, gorev: 'maden' })
 
-    // Hicbir cevher, hicbir esya yok; her yer tas
+    // No ore, no items, stone everywhere
     b10.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
     b10.canDigBlock = () => true
     b10.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
@@ -407,28 +408,28 @@ async function main () {
     const tas = { name: 'stone', boundingBox: 'block' }
     const yaprak = { name: 'oak_leaves', boundingBox: 'block' }
 
-    // Odun: tasi kirma (elle tas kazmak dakikalar surer, gorevle ilgisi yok)
+    // Wood: leave stone alone (mining it by hand takes minutes and is off-task)
     if (g.GOREVLER.odun.engelKirilabilirMi(b10, tas)) throw new Error('odun gorevinde tas kirilabilir sayildi')
     if (!g.GOREVLER.odun.engelKirilabilirMi(b10, yaprak)) throw new Error('yapragi kiramadi')
 
-    // Maden: tasi kirmak GOREVIN KENDISI
+    // Mining: breaking stone is the task itself
     if (!g.GOREVLER.maden.engelKirilabilirMi(b10, tas)) throw new Error('madende tas kirilamaz sayildi')
     const lav = { name: 'lava', boundingBox: 'block' }
     if (g.GOREVLER.maden.engelKirilabilirMi(b10, lav)) throw new Error('lavi kirilabilir saydi')
   })
 
   await dene('uzman engeli KIRIYOR, sonsuza kadar dolasmiyor', () => {
-    // Olculen hata: bolumlerin %43'u "hedefe donuyorum", %31'i "engelden
-    // dolasiyorum", YURUME sadece %3. Iki adimlik dongu:
-    //   hizalan -> onum kapali -> sola dolas (artik hizali degilim)
-    //   -> hedefe geri don -> onum kapali -> sola dolas -> ...
-    // Iki bolumde de tek bir kaynak toplanamadi.
+    // Measured: 43% of steps were "turning to target", 31% "going around an
+    // obstacle", only 3% walking. A two-step loop:
+    //   align -> blocked ahead -> sidestep left (no longer aligned)
+    //   -> turn back to target -> blocked ahead -> sidestep left -> ...
+    // Neither episode collected a single resource.
     const uzman = require('../bot/bridge/expert')
     const b11 = sahteBot()
     const e11 = new MinecraftEnvironment(b11, { zamanCarpani: 0, gorev: 'maden' })
     b11.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
     b11.canDigBlock = () => true
-    // Her yer tas: hizali olsak da onumuz kapali
+    // Stone everywhere: aligned or not, the way ahead is blocked
     b11.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
 
     const karar = uzman.hedefeYonel(b11, e11, new Vec3(0, 64, -5), 'test')
@@ -441,30 +442,31 @@ async function main () {
     const uzman = require('../bot/bridge/expert')
     const b11 = sahteBot()
     const e11 = new MinecraftEnvironment(b11, { zamanCarpani: 0 })
-    // Kirilamayan engel (odun gorevinde tas kirilamaz) -> dolasmali
+    // Unbreakable obstacle (stone is off-limits on the wood task) -> must go around
     b11.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
 
     const ilk = uzman.hedefeYonel(b11, e11, new Vec3(0, 64, -5), 'test')
     if (!/dolasiyorum/.test(ilk.sebep)) throw new Error(`dolasmadi: ${ilk.sebep}`)
     if (e11.kacinmaAdimi <= 0) throw new Error('kacinma sayaci kurulmadi')
 
-    // Onu acilinca kacinma modunda YURUMELI, hedefe geri donmemeli
+    // Once the way clears it should walk in avoid mode, not turn back to the target
     b11.blockAt = () => ({ name: 'air', boundingBox: 'empty', position: new Vec3(0, 0, 0) })
     const ikinci = uzman.hedefeYonel(b11, e11, new Vec3(0, 64, -5), 'test')
     if (ikinci.action !== 0) throw new Error(`kacinirken yurumedi: ${ikinci.sebep}`)
   })
 
   await dene('maden kurulumu YUZEYDE cevher gorse bile iniyor', async () => {
-    // Gercek hata: "zaten cevher goruyorsam inmeye gerek yok" yazmistim.
-    // Yuzeyde de cevher gorunuyor (ucurum yuzundeki komur, magara agzindaki
-    // demir). Bot 30 blok otedeki ulasilamaz cevhere kilitlenip yuzeyde
-    // donup duruyordu: %63 "cevhere donuyorum", %10 yurume, HIC kirma yok.
+    // Real bug: the code said there was no need to descend if ore was
+    // already visible. Ore is visible on the surface too (coal in a cliff
+    // face, iron at a cave mouth). The bot locked onto unreachable ore 30
+    // blocks away and spun on the surface: 63% "turning to ore", 10%
+    // walking, no breaking at all.
     const b12 = sahteBot()
-    b12.entity.position = new Vec3(0, 70, 0) // YUZEYDE
+    b12.entity.position = new Vec3(0, 70, 0) // on the surface
     b12.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
-    // Yakinda cevher GORUNUYOR
+    // Ore is visible nearby
     b12.findBlocks = () => [new Vec3(5, 70, 5)]
-    // Gercekci dunya: y<70 TAS (kazilacak), ustu hava, bir yerde cevher
+    // Realistic world: y<70 is stone, air above, one ore block somewhere
     b12.blockAt = (p) => {
       const x = Math.floor(p.x); const y = Math.floor(p.y); const z = Math.floor(p.z)
       if (x === 5 && z === 5 && y === 70) {
@@ -481,8 +483,8 @@ async function main () {
 
     const e12 = new MinecraftEnvironment(b12, { zamanCarpani: 0, gorev: 'maden' })
     let inmeyiDenedi = false
-    // seviyeyeIn cagrilirsa bunu yakalayalim: kaz.js'i sarmalamak yerine
-    // log'a bakmak yerine, bot.dig cagrilarini sayiyoruz (merdiven kazar)
+    // Detect the descent without wrapping kaz.js or scraping logs: count
+    // bot.dig calls, since seviyeyeIn digs a staircase.
     b12.canDigBlock = () => true
     b12.dig = async () => { inmeyiDenedi = true }
 
@@ -493,9 +495,9 @@ async function main () {
   })
 
   await dene('MADEN gorevinde de sudan cikiyor (bogulma gorevden bagimsiz)', async () => {
-    // Gercek olay: bot maden gorevinde bogularak oldu. `sudanCik` yuzey
-    // kurulumunun ICINDEYDI, yani kurtarma sadece odun gorevinde
-    // calisiyordu. Yeraltinda su cebine girmek cok olagan.
+    // Real run: the bot drowned on the mining task. `sudanCik` lived inside
+    // the surface setup, so the rescue only ran on the wood task. Hitting a
+    // water pocket underground is routine.
     const b13 = sahteBot()
     let sudayim = true
     b13.blockAt = () => ({
@@ -513,16 +515,16 @@ async function main () {
   })
 
   await dene('kazma verilemezse GURULTULU hata (sessiz basarisizlik yok)', async () => {
-    // `/give` op yetkisi ister ve sessizce basarisiz olur. Kazmasiz bot
-    // cevheri kiriyor ama HICBIR SEY DUSMUYOR: olcumde %63 "onumde cevher
-    // var" ve 0 kaynak gorduk. Sessiz basarisizlik en pahali hata turu.
+    // `/give` needs op and fails silently. Without a pickaxe the bot breaks
+    // ore and nothing drops: measured 63% "ore in front of me" and 0
+    // resources. Silent failure is the most expensive kind.
     const log = require('../bot/utils/log')
     const orjinal = log.hata
     const hatalar = []
     log.hata = (...a) => hatalar.push(a.join(' '))
     try {
       const b13 = sahteBot()
-      b13.inventory = { items: () => [] } // /give calismiyor: hep bos
+      b13.inventory = { items: () => [] } // /give does not work: always empty
       const e13 = new MinecraftEnvironment(b13, { zamanCarpani: 0, gorev: 'maden' })
       await e13.yeraltiKurulumu()
     } finally {
@@ -534,9 +536,9 @@ async function main () {
   })
 
   await dene('maden reset() inisi SINIRLIYOR (soket zaman asimi olmasin)', async () => {
-    // Gercek hata: y=70'ten y=15'e inmek ~55 basamak x 3 blok = dakikalar.
-    // Python soketi 60 sn'de zaman asimina ugradi ve egitim dustu.
-    // Reset dakikalarca bloke olmamali; inis bolumlere yayilmali.
+    // Real bug: y=70 down to y=15 is ~55 steps x 3 blocks, which takes
+    // minutes. The Python socket timed out at 60s and training died.
+    // Reset must not block for minutes; the descent spreads over episodes.
     const b14 = sahteBot()
     b14.entity.position = new Vec3(0, 70, 0)
     b14.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
@@ -552,22 +554,22 @@ async function main () {
     const e14 = new MinecraftEnvironment(b14, { zamanCarpani: 0, gorev: 'maden' })
     await e14.yeraltiKurulumu()
 
-    // 12 basamak x 3 blok = 36. Sinir yoksa 55 basamak x 3 = 165 olurdu.
+    // 12 steps x 3 blocks = 36. Without the cap it would be 55 x 3 = 165.
     if (kazilan > 60) throw new Error(`${kazilan} blok kazdi — inis sinirlanmamis`)
   })
 
   await dene('uzman ULASILAMAYAN esyayi sonsuza kadar kovalamiyor', async () => {
-    // Olcum: maden gorevinde adimlarin %79'u "yakindaki cevheri
-    // aliyorum"du -- kiriyor, yuruyor, donuyor, ama esya envantere hic
-    // girmiyordu. Kirdigi deligin icine dusmus, ulasilamayan bir esya
-    // uzmani bolumun TAMAMI boyunca mesgul ediyordu.
+    // Measured: 79% of mining-task steps were "picking up nearby ore" --
+    // breaking, walking, turning, with nothing ever reaching the inventory.
+    // One unreachable item, dropped into the hole it had just dug, kept the
+    // expert busy for the whole episode.
     const uzman = require('../bot/bridge/expert')
     const b15 = sahteBot()
     const e15 = new MinecraftEnvironment(b15, { zamanCarpani: 0, gorev: 'maden' })
     b15.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
     b15.canDigBlock = () => true
     b15.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
-    // ULASILAMAYAN esya: hep orada, hic toplanmiyor
+    // Unreachable item: always there, never collected
     b15.entities = {
       1: { name: 'item', isValid: true, position: new Vec3(2, 64, 2) }
     }
@@ -582,8 +584,8 @@ async function main () {
   })
 
   await dene('TAS kazmayla elmas hedef sayilmiyor (yok etmesin)', () => {
-    // uygunAlet "elinde kazma var mi" der, "bu cevher icin YETER MI"
-    // demez. Tas kazmayla elmasa vurmak elmasi YOK EDIYOR.
+    // uygunAlet answers "do I hold a pickaxe", not "is it good enough for
+    // this ore". Hitting diamond with a stone pickaxe destroys the ore.
     const g = require('../bot/bridge/gorevler')
     const b16 = sahteBot()
     b16.inventory = { items: () => [{ name: 'stone_pickaxe', maxDurability: 131, durabilityUsed: 0 }] }
@@ -599,7 +601,7 @@ async function main () {
   await dene('KIRILMIS kazma hedef birakmiyor', () => {
     const g = require('../bot/bridge/gorevler')
     const b16 = sahteBot()
-    // Dayanikligi bitmis kazma
+    // Pickaxe with no durability left
     b16.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 250 }] }
     if (g.GOREVLER.maden.dogalMi(b16, { name: 'iron_ore' })) {
       throw new Error('kirilmis kazmayla cevheri hedef saydi')
@@ -607,30 +609,30 @@ async function main () {
   })
 
   await dene('step() kazma kirilinca YENISINI istiyor', async () => {
-    // Demir kazma 250 vurus, bolum 500 adim: kirilmasi istisna degil,
-    // BEKLENEN durum. Kirildiktan sonra her vurus bir cevheri yok eder.
+    // An iron pickaxe is 250 hits and an episode is 500 steps, so breaking
+    // it is expected, not an edge case. After that every hit destroys ore.
     const b16 = sahteBot()
     const komutlar = []
     b16.chat = (m) => komutlar.push(m)
     b16.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 250 }] }
     const e16 = new MinecraftEnvironment(b16, { zamanCarpani: 0, gorev: 'maden' })
-    await e16.step(3) // kirma aksiyonu
+    await e16.step(3) // break action
     if (!komutlar.some((m) => /give .*iron_pickaxe/.test(m))) {
       throw new Error(`kirilmis kazma icin yenisi istenmedi: ${komutlar.join(' | ')}`)
     }
   })
 
   await dene('maden tukenince TAZE BOLGEYE isinlaniyor', async () => {
-    // 40 bolumluk demo toplamada ilk 18 bolum iyiydi (8, 6, 22, 12
-    // cevher), sonra 19-35 arasi neredeyse tamamen SIFIR. Bot bolgenin
-    // cevherini bitirmisti. Odun gorevinde bunu spreadplayers ile
-    // cozmustuk ama o komut oyuncuyu YUZEYE koyuyor -- madende ise yaramaz.
+    // In a 40-episode demo run the first 18 episodes were fine (8, 6, 22, 12
+    // ore), then 19-35 were almost all zero: the bot had stripped the area.
+    // The wood task solves this with spreadplayers, but that puts the player
+    // on the surface, which is useless underground.
     const b17 = sahteBot()
-    b17.entity.position = new Vec3(0, 15, 0) // zaten derinlikte
+    b17.entity.position = new Vec3(0, 15, 0) // already at depth
     b17.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 0, type: 1 }] }
     const komutlar = []
     b17.chat = (m) => komutlar.push(m)
-    b17.findBlocks = () => [] // HIC CEVHER YOK: bolge tukenmis
+    b17.findBlocks = () => [] // no ore at all: the area is stripped
 
     const e17 = new MinecraftEnvironment(b17, { zamanCarpani: 0, gorev: 'maden' })
     await e17.yeraltiKurulumu()
@@ -638,7 +640,7 @@ async function main () {
     if (!komutlar.some((m) => /^\/tp /.test(m))) {
       throw new Error(`taze bolgeye isinlanmadi: ${komutlar.join(' | ')}`)
     }
-    // Isinlanmadan ONCE cep acilmali, yoksa bot tasin icinde bogulur
+    // The pocket has to be carved before the teleport, or the bot suffocates in stone
     const fillIndex = komutlar.findIndex((m) => /^\/fill /.test(m))
     const tpIndex = komutlar.findIndex((m) => /^\/tp /.test(m))
     if (fillIndex < 0) throw new Error('cep acilmadi — bot tasin icine isinlanir')
@@ -646,10 +648,10 @@ async function main () {
   })
 
   await dene('DIKEY hedefte donmuyor (yaw anlamsiz)', () => {
-    // Olcum: adimlarin %76'si donus, %10 yurume, 13/15 bolum SIFIR.
-    // Sebep: hedefYaw sadece dx,dz'ye bakiyor. Cevher neredeyse tam
-    // tepemizdeyse dx ve dz sifira yakin -- bir bloktan kucuk bir
-    // kipirdanma aciyi 180 derece ceviriyor ve bot sonsuza kadar donuyor.
+    // Measured: 76% of steps were turning, 10% walking, 13 of 15 episodes
+    // scored zero. hedefYaw only looks at dx,dz. With the ore almost
+    // straight overhead both are near zero, so a sub-block twitch flips the
+    // angle by 180 degrees and the bot spins forever.
     const uzman = require('../bot/bridge/expert')
     const b18 = sahteBot()
     b18.entity.position = new Vec3(0.5, 15, 0.5)
@@ -657,10 +659,10 @@ async function main () {
     b18.canDigBlock = () => true
     b18.registry = { blocksByName: { iron_ore: { id: 1 } } }
 
-    // Cevher NEREDEYSE tepede: yatay uzaklik 1.4 blok, 4 blok yukarida.
-    // Tam tepede degil -- oyle olsaydi aci sifir cikar ve test hicbir sey
-    // kanitlamazdi. Asil tehlikeli durum bu: aci hesaplanabiliyor ama
-    // ANLAMSIZ, cunku bir blokluk kipirdanma onu 180 derece ceviriyor.
+    // Ore almost overhead: 1.4 blocks horizontally, 4 blocks up. Not exactly
+    // overhead -- that gives an angle of zero and proves nothing. This is the
+    // dangerous case: the angle is computable but meaningless, because a
+    // one-block twitch flips it by 180 degrees.
     b18.findBlocks = () => [new Vec3(1, 19, 1)]
     b18.blockAt = (p) => {
       const x = Math.floor(p.x); const y = Math.floor(p.y); const z = Math.floor(p.z)
@@ -678,24 +680,24 @@ async function main () {
   })
 
   await dene('maden ULASILABILIR hedefi seciyor (dikey pahali)', () => {
-    // Kus ucusu mesafe madende YANLIS olcu. Ajanin aksiyonlari yatay:
-    // ileri, saga, sola. Yukari cikmak icin altina blok koymak ya da
-    // tavani kirip ziplamak gerekiyor -- ikisi de aksiyon uzayinda yok.
-    // 8 blok TAM YUKARIDAKI cevher, 12 blok otedeki acik tunelin
-    // ucundakinden "daha yakin" sayiliyordu.
+    // Straight-line distance is the wrong measure underground. The agent's
+    // actions are horizontal: forward, right, left. Going up needs pillaring
+    // or breaking the ceiling and jumping, neither of which is in the action
+    // space. Ore 8 blocks straight up counted as closer than ore 12 blocks
+    // away at the end of an open tunnel.
     const g = require('../bot/bridge/gorevler')
     const b19 = sahteBot()
     b19.entity.position = new Vec3(0, 15, 0)
 
-    const yukarida = new Vec3(0, 23, 0)   // 8 blok yukari
-    const ileride = new Vec3(12, 15, 0)   // 12 blok ileri, ayni seviye
+    const yukarida = new Vec3(0, 23, 0)   // 8 blocks up
+    const ileride = new Vec3(12, 15, 0)   // 12 blocks ahead, same level
 
     const m = g.GOREVLER.maden.hedefMaliyeti
     if (!(m(b19, ileride) < m(b19, yukarida))) {
       throw new Error(`ileri ${m(b19, ileride).toFixed(1)} vs yukari ${m(b19, yukarida).toFixed(1)} — dikey ucuz kaldi`)
     }
 
-    // Odun gorevinde kus ucusu mesafe DOGRU olcu, degismemeli
+    // On the wood task straight-line distance is the right measure; leave it alone
     const o = g.GOREVLER.odun.hedefMaliyeti
     if (!(o(b19, yukarida) < o(b19, ileride))) {
       throw new Error('odun gorevinin olcusu degismis')
@@ -703,10 +705,11 @@ async function main () {
   })
 
   await dene('madende bolum basinda pathfinder TUNEL KAZMIYOR', async () => {
-    // baslangicaTasi() pathfinder ile hedefe yaklasiyor ve pathfinder
-    // canDig:true -- yani tasin icinden TUNEL KAZARAK gidiyor. Ormanda
-    // masum (acik arazide yurumek gorev degil), madende GOREVIN KENDISI.
-    // Ortam ajan adina tuneli kazip onu cevherin dibine birakirdi.
+    // baslangicaTasi() walks to the target with the pathfinder, and the
+    // pathfinder runs canDig:true, so it tunnels through stone. Harmless in
+    // a forest (walking open ground is not the task), but underground that
+    // is the task: the environment would dig the tunnel for the agent and
+    // drop it next to the ore.
     const g = require('../bot/bridge/gorevler')
     if (g.GOREVLER.maden.baslangictaYurut !== false) {
       throw new Error('maden gorevinde baslangic yurutmesi acik')
@@ -715,7 +718,7 @@ async function main () {
       throw new Error('odun gorevinde baslangic yurutmesi kapanmis')
     }
 
-    // Ortam bayragi gercekten okuyor mu?
+    // Check that the environment actually reads the flag
     const b19 = sahteBot()
     b19.entity.position = new Vec3(0, 15, 0)
     b19.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 0, type: 1 }] }
@@ -727,10 +730,10 @@ async function main () {
   })
 
   await dene('maden gorevi envanteri TAMAMEN bosaltiyor', async () => {
-    // Gercek olay: madende temizleme etiketi yoktu, envanter bolumden
-    // bolume doldu. 36 slot dolunca `/give iron_pickaxe` sunucu tarafinda
-    // BASARILI oluyor ("Gave 1 [Iron Pickaxe]") ama esya envantere
-    // giremiyor. Kazmasiz bot cevheri yok ediyor.
+    // Real run: the mining task had no clear step and the inventory filled
+    // up across episodes. With all 36 slots full, `/give iron_pickaxe`
+    // succeeds server-side ("Gave 1 [Iron Pickaxe]") but the item never
+    // arrives. A bot without a pickaxe destroys ore.
     const b20 = sahteBot()
     const komutlar = []
     b20.chat = (m) => komutlar.push(m)
@@ -740,7 +743,7 @@ async function main () {
     const temizle = komutlar.findIndex((m) => /^\/clear \S+$/.test(m))
     if (temizle < 0) throw new Error(`envanter temizlenmedi: ${komutlar.join(' | ')}`)
 
-    // SIRA KRITIK: temizlik kazmadan ONCE olmali, yoksa verilen kazma silinir
+    // Order matters: clear before the give, or the new pickaxe is deleted
     const kazma = komutlar.findIndex((m) => /give .*iron_pickaxe/.test(m))
     if (kazma >= 0 && temizle > kazma) {
       throw new Error('once kazma verildi sonra envanter silindi — kazma yok olur')
@@ -801,13 +804,13 @@ async function main () {
   })
 
   await dene('uret() - tarif agacini cozuyor (gercek tarif tablosu)', async () => {
-    // Bu test Minecraft'siz calisiyor ama GERCEK tarif tablosunu kullaniyor.
-    // 3 kutuk + 3 tas verip "tas kazma" istiyoruz; kodun kendi basina
-    // tahta -> cubuk -> tezgah -> kazma zincirini kurmasi gerekiyor.
+    // Runs without Minecraft but against the real recipe table. Given 3 logs
+    // and 3 cobblestone and asked for a stone pickaxe, the code has to build
+    // the planks -> stick -> table -> pickaxe chain on its own.
     const mcData = require('minecraft-data')('1.20.4')
     const Recipe = require('prismarine-recipe')('1.20.4').Recipe
 
-    const env = { oak_log: 3, cobblestone: 3 } // masa YOK - kendi yapmali
+    const env = { oak_log: 3, cobblestone: 3 } // no crafting table - it has to make one
     let masaYerde = false
     const yerlesen = {}
     let sonEquip = null
@@ -817,13 +820,13 @@ async function main () {
         items: () => Object.entries(env).filter(([, c]) => c > 0)
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
-      // Baslangicta ORTALIKTA MASA YOK. Bot once masayi uretip yere
-      // koymak zorunda. Bu satir onceden her zaman masa donduruyordu,
-      // o yuzden "masam yokken 3x3 tarifi goremiyorum" bugu testte
-      // hic gorunmedi -- sahte dunya gercekten daha kolaydi.
+      // No table in the world at the start; the bot has to craft one and
+      // place it. This used to always return a table, so the "cannot see
+      // 3x3 recipes without a table" bug never showed up here -- the fake
+      // world was easier than the real one.
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
-      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      // Remembers placed blocks: blokKoy() verifies its own placement with
+      // blockAt. If the fake world forgets, it thinks the place failed.
       blockAt: (p) => {
         const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
         if (yerlesen[anahtar]) {
@@ -844,10 +847,10 @@ async function main () {
           env[sonEquip] = (env[sonEquip] || 1) - 1
         }
       },
-      // mineflayer'in DAVRANISINI taklit ediyoruz, sadece imzasini degil:
-      // masa verilmezse 3x3 tarifleri eliyor. Bu satir onceden sadece
-      // Recipe.find(...) idi; test gecti ama oyunda calismadi, cunku sahte
-      // bot gercek botun yapmadigi bir seyi yapiyordu (her tarifi doner).
+      // Mimics mineflayer's behaviour, not just its signature: without a
+      // table it filters out 3x3 recipes. This used to be a bare
+      // Recipe.find(...); the test passed but the game did not, because the
+      // fake bot returned every recipe and the real one never does.
       recipesAll: (id, meta, masa) => Recipe.find(id, null)
         .filter((r) => !r.requiresTable || masa),
       craft: async (tarif, kere) => {
@@ -897,8 +900,8 @@ async function main () {
   })
 
   await dene('govdeninDibi() - govdenin altina yuruyor', () => {
-    // y=64..67 arasi kutuk, y=63 toprak. Ortadaki kutukten baslayip
-    // 64'e inmeli — "agacin ortasini kesip gitme" bugunun testi.
+    // Logs at y=64..67, dirt at y=63. Starting from the middle log it should
+    // walk down to 64. Regression test for cutting the middle out and leaving.
     const b = sahteBot()
     b.blockAt = (p) => {
       const y = Math.floor(p.y)
@@ -913,12 +916,12 @@ async function main () {
   })
 
   await dene('uret() SIFIRDAN demir kazma (kes > kaz > erit > uret)', async () => {
-    // Ucu uca zincir testi. Envanter TAMAMEN bos basliyor:
-    //   demir kazma <- 3 kulce + 2 cubuk
-    //     kulce   <- tezgahta YOK -> firin <- ham demir <- kaz
-    //     cubuk   <- tahta <- kutuk <- kes
-    //     firin   <- 8 tas <- kaz
-    // Bot bu agaci kendi kurmali; hicbir adim elle yazilmadi.
+    // End-to-end chain test, starting from a completely empty inventory:
+    //   iron pickaxe <- 3 ingots + 2 sticks
+    //     ingot   <- not craftable at a table -> furnace <- raw iron <- mine
+    //     stick   <- planks <- log <- chop
+    //     furnace <- 8 cobblestone <- mine
+    // The bot builds this tree itself; no step is hardcoded.
     const mcData = require('minecraft-data')('1.20.4')
     const Recipe = require('prismarine-recipe')('1.20.4').Recipe
 
@@ -937,8 +940,8 @@ async function main () {
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
-      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      // Remembers placed blocks: blokKoy() verifies its own placement with
+      // blockAt. If the fake world forgets, it thinks the place failed.
       blockAt: (p) => {
         const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
         if (yerlesen[anahtar]) {
@@ -997,10 +1000,11 @@ async function main () {
   })
 
   await dene('uret() ormanda NE VARSA ona uyuyor (agac turu tahmin etmiyor)', async () => {
-    // Gercek hata: bot "spruce_log toplanamiyor" dedi. Cubugun ~12 tarifi
-    // var (her agac turu icin bir tahta). Envanter bosken hepsi ayni puani
-    // aliyor, bot rastgele ladini secip israr ediyordu -- ormanda mese vardi.
-    // Iki tur: 1) tedarikciyi tetikle, 2) eline GECENLE yeniden puanla.
+    // Real bug: the bot reported it could not collect spruce_log. Sticks
+    // have ~12 recipes, one per wood type. With an empty inventory they all
+    // score the same, so it picked spruce at random and kept at it while the
+    // forest was oak. Two rounds: trigger the supplier, then rescore with
+    // whatever actually arrived.
     const mcData = require('minecraft-data')('1.20.4')
     const Recipe = require('prismarine-recipe')('1.20.4').Recipe
 
@@ -1016,8 +1020,8 @@ async function main () {
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
-      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      // Remembers placed blocks: blokKoy() verifies its own placement with
+      // blockAt. If the fake world forgets, it thinks the place failed.
       blockAt: (p) => {
         const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
         if (yerlesen[anahtar]) {
@@ -1044,7 +1048,7 @@ async function main () {
       }
     }
 
-    // ORMANDA SADECE MESE VAR: ne istenirse istensin mese geliyor
+    // The forest is oak only: whatever is asked for, oak comes back
     const tedarikci = async (bot, kontrol, ad, adet) => {
       if (/_log$/.test(ad)) { env.oak_log = (env.oak_log || 0) + 8; return true }
       if (ad === 'cobblestone' || ad === 'stone') { env.cobblestone = (env.cobblestone || 0) + 16; return true }
@@ -1058,10 +1062,10 @@ async function main () {
   })
 
   await dene('tedarikci AYNI kaynagi iki kez toplamiyor (sonsuz agac kesme)', async () => {
-    // Gercek hata: tek bir "uret tas kazma" komutu 4 agac kesti ve hala
-    // bitmemisti. Cubugun ~12 tarifi var (her agac turu icin bir tahta);
-    // uret sirayla hepsini deniyor, her biri icin tedarikciden o TURDEN
-    // kutuk istiyordu -> her istekte yeni agac kesiliyordu.
+    // Real bug: one "uret tas kazma" command chopped 4 trees and still was
+    // not done. Sticks have ~12 recipes, one per wood type; uret tried them
+    // in order and asked the supplier for that specific log each time, so
+    // every attempt felled another tree.
     const mcData = require('minecraft-data')('1.20.4')
     const Recipe = require('prismarine-recipe')('1.20.4').Recipe
 
@@ -1080,8 +1084,8 @@ async function main () {
           .map(([name, count], i) => ({ name, count, type: mcData.itemsByName[name].id, slot: i }))
       },
       findBlock: () => (masaYerde ? { name: 'crafting_table', position: new Vec3(1, 64, 0) } : null),
-      // Konan bloklari HATIRLIYOR: blokKoy() koydugu blogu blockAt ile
-      // dogruluyor. Sahte dunya unutursa "koyamadim" sanip pes ediyor.
+      // Remembers placed blocks: blokKoy() verifies its own placement with
+      // blockAt. If the fake world forgets, it thinks the place failed.
       blockAt: (p) => {
         const anahtar = `${p.x},${Math.floor(p.y)},${p.z}`
         if (yerlesen[anahtar]) {
@@ -1108,17 +1112,16 @@ async function main () {
       }
     }
 
-    // Gercek tedarikciYap()'in mantigini kullaniyoruz ama sayac koyuyoruz
+    // Same logic as the real tedarikciYap(), with counters added
     const sinif = (ad) => (/_log$/.test(ad) ? 'odun' : (ad === 'cobblestone' || ad === 'stone' ? 'tas' : null))
     const verilen = new Set()
     const tedarikci = async (bot, kontrol, ad, adet) => {
       const s2 = sinif(ad)
       if (!s2 || verilen.has(s2)) return false
-      // ORMANDA KIRAZ VAR, MESE YOK.
-      // Kiraz bilerek secildi: tarif listesinde ARKALARDA. Ilk denenen
-      // tarif mese oluyor; tek turlu bir cozum meseye takilip kalirdi.
-      // Botun "elime kiraz gecti, tarifleri yeniden puanlayayim" demesi
-      // gerekiyor. Mese verseydik test hicbir sey kanitlamazdi.
+      // The forest has cherry and no oak. Cherry is deliberate: it sits near
+      // the end of the recipe list while the first recipe tried is oak, so a
+      // single-round solution would stall on oak. The bot has to rescore the
+      // recipes once cherry is in hand. Handing it oak would prove nothing.
       if (s2 === 'odun') { kesilenAgac++; env.cherry_log = (env.cherry_log || 0) + 8 } else { kazilanTas++; env.cobblestone = (env.cobblestone || 0) + 16 }
       verilen.add(s2)
       return true
@@ -1192,12 +1195,12 @@ async function main () {
         { name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 50 }
       ]
     }
-    // 'iron' isteyince tahta kazma sayilmamali
+    // Asking for 'iron' must not count the wooden pickaxe
     const g = kazModul.kazmaGucu(b, 'iron')
     if (g.adet !== 1 || g.toplam !== 200) {
       throw new Error(`iron icin adet=${g.adet} toplam=${g.toplam}, beklenen 1/200`)
     }
-    // 'wooden' isteyince ikisi de sayilmali
+    // Asking for 'wooden' counts both
     const g2 = kazModul.kazmaGucu(b, 'wooden')
     if (g2.adet !== 2 || g2.toplam !== 259) {
       throw new Error(`wooden icin adet=${g2.adet} toplam=${g2.toplam}, beklenen 2/259`)
@@ -1205,8 +1208,8 @@ async function main () {
   })
 
   await dene('seviyeyeIn() - kazma yoksa KAZMADAN duruyor', async () => {
-    // Kritik: kazmasiz inmeye baslarsa cevheri yok ederek ilerler.
-    // Hic basamak kirmadan 'kazma_bitti' ile donmeli.
+    // Starting the descent without a pickaxe destroys ore on the way down.
+    // It has to return 'kazma_bitti' without breaking a single step.
     const r = await kazModul.seviyeyeIn(bot, 15, k, { seviye: 'stone' })
     if (r.ok) throw new Error('kazmasiz indigini iddia etti')
     if (r.basamak !== 0) throw new Error(`${r.basamak} basamak kirmis, 0 olmaliydi`)
@@ -1214,23 +1217,23 @@ async function main () {
   })
 
   await dene('elmas kazma varken demir kazma YAPMIYOR', () => {
-    // Gercek sikayet: "elinde elmas kazma olmasina ragmen gidip demir
-    // kazma yapmakta". Sebep, stok kontrolunun "3 kazmam var mi?" diye
-    // SAYMASI. Bir elmas kazma 1561 vurus -- uc tas kazmanin (393) dort
-    // kati. Sayarak bakinca "1 tane, az"; vurusla bakinca fazlasiyla
-    // yeterli. Olcu birimi adet degil VURUS olmali.
+    // Real complaint: "it has a diamond pickaxe and still goes off to make
+    // an iron one". The stock check counted pickaxes. One diamond pickaxe is
+    // 1561 hits, four times three stone pickaxes (393). By count it looks
+    // short, by hits it is more than enough. The unit has to be hits, not
+    // pieces.
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
     b.inventory = { items: () => [{ name: 'diamond_pickaxe', maxDurability: 1561, durabilityUsed: 0 }] }
 
-    // "kaz elmas 10": y=64'ten y=-58'e inis + 10 blok kazma
+    // "kaz elmas 10": descend from y=64 to y=-58, then dig 10 blocks
     const gerekli = kazModul.gerekenVurus(b, -58, 10)
     const elde = kazModul.kazmaGucu(b, 'iron').toplam
 
     if (elde < gerekli) {
       throw new Error(`elmas kazma (${elde} vurus) ${gerekli} vurusluk ise yetmiyor sayildi`)
     }
-    // Adet olcusu kullanilsaydi 1 < 3 cikip bosuna kazma yapardi
+    // With a count-based check 1 < 3 would send it off to craft another pickaxe
     if (kazModul.kazmaGucu(b, 'iron').adet >= 3) {
       throw new Error('test anlamsiz: zaten 3 kazma var')
     }
@@ -1239,19 +1242,19 @@ async function main () {
   await dene('gerekenVurus() derinlikle buyuyor', () => {
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
-    const sig = kazModul.gerekenVurus(b, 50, 5) // 14 blok
-    const derin = kazModul.gerekenVurus(b, -58, 5) // 122 blok
+    const sig = kazModul.gerekenVurus(b, 50, 5) // 14 blocks
+    const derin = kazModul.gerekenVurus(b, -58, 5) // 122 blocks
     if (!(derin > sig * 3)) {
       throw new Error(`derin ${derin} vs sig ${sig} — derinlik hesaba katilmamis`)
     }
   })
 
   await dene('uret() tahtayi SOYULMUS kutukten yapmaya kalkmiyor', () => {
-    // Gercek hata: bot "demir kazma yapamadim, eksik olan
-    // stripped_birch_log" dedi. Tahtanin 4 tarifi var; soyulmus kutuk
-    // dogada YOK (baltayla soyulur), ama tarif gecerli oldugu icin
-    // seciliyordu. Puanlama artik "elde var mi"ya degil "nasil elde
-    // edilir"e bakiyor.
+    // Real bug: the bot said it could not make an iron pickaxe, missing
+    // stripped_birch_log. Planks have 4 recipes; stripped logs do not occur
+    // naturally (an axe strips them), but the recipe is valid so it got
+    // picked. Scoring now asks how an ingredient is obtained, not just
+    // whether it is in hand.
     const mcData = require('minecraft-data')('1.20.4')
     const b = sahteBot()
     const Recipe = require('prismarine-recipe')('1.20.4').Recipe
@@ -1288,41 +1291,41 @@ async function main () {
   })
 
   await dene('yakitBul() - yakit YETMEDIGINDE bunu SOYLUYOR', () => {
-    // Oyunda gorulen: bot demiri kazdi, firini yerlestirdi, yeterince
-    // yakit koymadi, bekledi ve "yapamadim" dedi.
+    // Seen in game: the bot mined the iron, placed the furnace, loaded too
+    // little fuel, waited, and reported failure.
     //
-    // Sebep: eski yakitBul yeterli ve yetersiz durumda AYNI seyi
-    // donduruyordu, yani cagiran ayirt edemiyordu. uret.js'teki
-    // "yakit yoksa komur getir" kontrolu bu yuzden hic calismadi --
-    // botun envanterinde neredeyse her zaman tahta var.
+    // The old yakitBul returned the same thing whether the fuel was enough
+    // or not, so the caller could not tell them apart. That is why the "no
+    // fuel, go get coal" check in uret.js never fired -- there is almost
+    // always wood in the inventory.
     const b = sahteBot()
     b.inventory = { items: () => [{ name: 'oak_planks', count: 2 }] }
 
-    // 2 tahta = 3 esya. 20 esya isteniyor: YETMEZ ve bunu soylemeli.
+    // 2 planks smelt 3 items. Asking for 20 is not enough, and it has to say so.
     const az = eritModul.yakitBul(b, 20)
     if (!az) throw new Error('yakit var ama null dondu')
     if (az.yeterli) throw new Error('2 tahta ile 20 esya eritilebilir dedi')
     if (az.pisebilecek >= 20) throw new Error(`pisebilecek ${az.pisebilecek}, 20den az olmali`)
 
-    // 3 esya isteniyor: YETER
+    // 3 items: enough
     const yeter = eritModul.yakitBul(b, 3)
     if (!yeter.yeterli) throw new Error('2 tahta 3 esyaya yetmez dedi')
   })
 
   await dene('yakitBul() - AYNI turun butun yiginlarini sayiyor', () => {
-    // `find` her turden tek yigin goruyordu: iki yigina bolunmus komurun
-    // yarisi gorunmuyordu ve bot "yakitim yetmez" diye erken pes ediyordu.
+    // `find` only saw one stack per type, so half of a coal pile split over
+    // two stacks was invisible and the bot gave up early on fuel.
     const b = sahteBot()
     b.inventory = { items: () => [{ name: 'coal', count: 2 }, { name: 'coal', count: 3 }] }
 
-    // 5 komur = 40 esya. Tek yigin sayilsaydi 2 komur = 16 esya olurdu.
+    // 5 coal smelts 40 items. Counting one stack would give 2 coal = 16.
     const y = eritModul.yakitBul(b, 40)
     if (!y.yeterli) throw new Error('5 komuru 40 esyaya yetmez saydi (yiginlar toplanmiyor)')
   })
 
   await dene('yakitBul() - tek basina bitirebilen turu seciyor', () => {
-    // Komur listede once ama 1 komur (8 esya) 30 esyayi bitiremez.
-    // Bitirebilen tur varsa o secilmeli, "listede once" oldugu icin degil.
+    // Coal comes first in the list but 1 coal (8 items) cannot finish 30.
+    // If a type can finish the job, pick that one, not the first listed.
     const b = sahteBot()
     b.inventory = {
       items: () => [{ name: 'coal', count: 1 }, { name: 'coal_block', count: 1 }]
@@ -1331,7 +1334,7 @@ async function main () {
     if (y.esya.name !== 'coal_block') throw new Error(`secilen ${y.esya.name}, bitiremiyor`)
     if (!y.yeterli) throw new Error('bitirebilen tur varken yetersiz dedi')
 
-    // Ama kucuk isde komur BLOGU israf: komur secilmeli
+    // On a small job a coal block is waste: pick plain coal
     const kucuk = eritModul.yakitBul(b, 5)
     if (kucuk.esya.name !== 'coal') throw new Error('kucuk is icin blok harcadi')
   })
@@ -1343,9 +1346,9 @@ async function main () {
   })
 
   await dene('uret() zinciri firina atliyor (demir kulce tezgahta yok)', async () => {
-    // Demir kulce TEZGAHTA uretilemiyor. Eskiden burada "uretilemiyor"
-    // deyip duruyorduk; artik eritmeyi denemesi, o da olmayinca ham
-    // maddeyi ISTEMESI lazim.
+    // An iron ingot cannot be crafted at a table. This used to stop at
+    // "cannot craft"; now it has to try smelting, and failing that, ask for
+    // the raw material.
     const r = await uretModul.uret(bot, k, 'iron_ingot', 1)
     if (r.basarili) throw new Error('yoktan kulce urettigini iddia etti')
     if (!/raw_iron|iron/.test(r.mesaj)) {
@@ -1354,16 +1357,16 @@ async function main () {
   })
 
   await dene('enYakinDogalAgac() kara listedeki agaci ATLIYOR', () => {
-    // Gercek hata: bot ulasilamayan bir kutugu (1429,71,-48) BES KEZ
-    // ust uste secti, her denemede ~20 saniye harcadi. Kara liste yoktu.
+    // Real bug: the bot picked the same unreachable log (1429,71,-48) five
+    // times in a row, ~20 seconds each. There was no blacklist.
     const chop = require('../bot/skills/chopTree')
     const b = sahteBot()
-    // y=64..66 arasi tek bir mese govdesi
+    // A single oak trunk at y=64..66
     b.blockAt = (p) => {
       const y = Math.floor(p.y)
       const kutuk = (p.x === 10 && p.z === 10 && y >= 64 && y <= 66)
-      // Yapraklar USTTE olmali: dogalAgacMi yapragi dy 0..6 araliginda
-      // ariyor, yani kutugun ustunde.
+      // Leaves have to sit on top: dogalAgacMi looks for them at dy 0..6
+      // above the log.
       return {
         name: kutuk ? 'oak_log' : (y >= 67 && y <= 68 ? 'oak_leaves' : 'air'),
         boundingBox: kutuk ? 'block' : 'empty',
@@ -1375,19 +1378,19 @@ async function main () {
     const bulunan = chop.enYakinDogalAgac(b, 32)
     if (!bulunan) throw new Error('agaci hic bulamadi')
 
-    // Ayni agacin DIBINI kara listeye al -> artik bulmamali
+    // Blacklist the base of that same tree; it must not be found again
     const kara = new Set(['10,64,10'])
     const ikinci = chop.enYakinDogalAgac(b, 32, kara)
     if (ikinci) throw new Error(`kara listeye ragmen secti: ${ikinci.position}`)
   })
 
   await dene('damarTopla() damarin TAMAMINI buluyor', () => {
-    // Gercek sikayet: "bir 2 tane kazdi, geride 3-4 tane birakti,
-    // yenisine gitti". Kod her turda "en yakin cevheri" secip kiriyordu;
-    // bir blok kirilinca en yakin aday bazen BASKA damarin kenari
-    // oluyordu. Artik damar tek parca olarak toplaniyor.
+    // Real complaint: "it mined 2, left 3-4 behind, and went off to the next
+    // one". The code picked the nearest ore each round; once a block was
+    // broken the nearest candidate was sometimes the edge of another vein.
+    // Veins are now collected whole.
     const b = sahteBot()
-    // (0,10,0)-(0,10,2) ve (1,10,0) => 4 blokluk bir damar
+    // (0,10,0)-(0,10,2) plus (1,10,0) => a 4-block vein
     const damarNoktalari = new Set(['0,10,0', '0,10,1', '0,10,2', '1,10,0'])
     b.blockAt = (p) => ({
       name: damarNoktalari.has(`${p.x},${p.y},${p.z}`) ? 'iron_ore' : 'stone',
@@ -1403,7 +1406,7 @@ async function main () {
 
   await dene('damarTopla() komsu OLMAYAN cevhere atlamiyor', () => {
     const b = sahteBot()
-    // Iki ayri damar: biri (0,10,0), digeri 5 blok otede
+    // Two separate veins: one at (0,10,0), the other 5 blocks away
     const noktalar = new Set(['0,10,0', '0,10,1', '5,10,5', '5,10,6'])
     b.blockAt = (p) => ({
       name: noktalar.has(`${p.x},${p.y},${p.z}`) ? 'iron_ore' : 'stone',
@@ -1415,12 +1418,12 @@ async function main () {
   })
 
   await dene('birAdimIlerle() YATAY gidiyor (bedrocka inmiyor)', async () => {
-    // Gercek hata: cevher bulamayinca "biraz ilerle, tekrar bak"
-    // deniyordu ama ilerlemek icin birBasamakIn cagriliyordu -- o da her
-    // seferinde BIR KAT ASAGI iniyor. Bot boyle bedrocka kadar indi.
+    // Real bug: with no ore in sight the plan was to move a bit and look
+    // again, but moving called birBasamakIn, which drops a level every time.
+    // The bot rode that down to bedrock.
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
-    b.entity.yaw = 0 // ileri = -z
+    b.entity.yaw = 0 // forward = -z
     let hedef = null
     b.pathfinder = {
       ...b.pathfinder,
@@ -1435,10 +1438,10 @@ async function main () {
   })
 
   await dene('sutundanIn() kazmayi KUSANIP kaziyor (elle degil)', async () => {
-    // Gercek sikayet: "yuzeye cikma isini kazmasi olmasina ragmen
-    // eliyle yapmakta". Tasi elle kirmak ~5 kat yavas, cevher olursa
-    // hicbir sey de dusmuyor. chopTree ve kaz aleti kusaniyordu,
-    // sutun.js atlanmisti.
+    // Real complaint: "it digs its way to the surface by hand even though it
+    // has a pickaxe". Breaking stone by hand is ~5x slower, and on ore
+    // nothing drops at all. chopTree and kaz equipped the tool; sutun.js was
+    // missed.
     const b = sahteBot()
     b.entity.position = new Vec3(0, 70, 0)
     b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
@@ -1460,10 +1463,10 @@ async function main () {
   })
 
   await dene('kaz() ulasilamayan cevherde SONSUZ DONGUYE girmiyor', async () => {
-    // Gercek sikayet: bot ulasabildigi bir elmasi kiramayip donguye
-    // girdi; kullanici gidip elmasi elle kirarak dongüyu bozdu.
-    // Sahte dunya: elmas HER ZAMAN orada (kirilmiyor), pathfinder hep
-    // basarili. Sigorta olmasa bu test sonsuza kadar calisirdi.
+    // Real complaint: the bot could not break a diamond it could reach and
+    // spun in a loop; the user broke the diamond by hand to stop it.
+    // Fake world: the diamond is always there (never breaks) and the
+    // pathfinder always succeeds. Without the guard this test would hang.
     const b = sahteBot()
     b.entity.position = new Vec3(0, -58, 0)
     b.inventory = { items: () => [{ name: 'diamond_pickaxe', maxDurability: 1561, durabilityUsed: 0, type: 1 }] }
@@ -1474,9 +1477,9 @@ async function main () {
       boundingBox: 'block',
       position: new Vec3(p.x, Math.floor(p.y), p.z)
     })
-    b.canDigBlock = () => false // ASLA kirilmiyor
+    b.canDigBlock = () => false // never breakable
 
-    // Beklemeleri sifirla: sigortayi olcuyoruz, gercek sureleri degil
+    // Zero out the waits: the guard is what is measured, not real timings
     const hizli = { kontrolEt () {}, bekle: async () => {} }
     const bitis = Date.now() + 8000
     const r = await kazModul.kaz(b, hizli, 'elmas', 10)
@@ -1485,10 +1488,10 @@ async function main () {
   })
 
   await dene('guvenliMi() su icin cevher/merdiven ayrimi yapiyor', () => {
-    // Su, NEREYE GITTIGINE gore tehlikeli:
-    //  - uzaktan CEVHERE vuruyorsak yanindaki su onemsiz (biraz sel)
-    //  - MERDIVEN kaziyorsak o bosluga KENDIMIZ girecegiz -> bogulma
-    // Eskiden su mutlak engeldi ve ulasilabilir elmaslar reddediliyordu.
+    // Water is dangerous depending on where the bot ends up:
+    //  - hitting ore from a distance: adjacent water is harmless, just a spill
+    //  - digging a staircase: the bot enters that space itself -> drowning
+    // Water used to be an absolute blocker and reachable diamonds got rejected.
     const b = sahteBot()
     b.blockAt = (p) => ({
       name: (p.x === 1 && p.y === 0 && p.z === 0) ? 'water' : 'deepslate',
@@ -1501,7 +1504,7 @@ async function main () {
       throw new Error('merdiven icin suyu guvenli saydi — bogulur')
     }
 
-    // Lav her iki durumda da engel
+    // Lava blocks in both cases
     b.blockAt = (p) => ({
       name: (p.x === 1 && p.y === 0 && p.z === 0) ? 'lava' : 'deepslate',
       boundingBox: 'block',
@@ -1511,9 +1514,9 @@ async function main () {
   })
 
   await dene('tehlikedeMi() can azalinca ve lavda uyariyor', () => {
-    // Gercek olay: bot lav golune girdi ve OLDU. Kod kirdigi bloklari
-    // guvenlik acisindan denetliyordu ama BOTUN KENDI durumunu hic
-    // sormuyordu. Lav saniyede ~4 can goturuyor.
+    // Real run: the bot walked into a lava pool and died. The code checked
+    // the blocks it was breaking but never the bot's own state. Lava takes
+    // about 4 health per second.
     const b = sahteBot()
     b.blockAt = () => ({ name: 'stone', boundingBox: 'block', position: new Vec3(0, 0, 0) })
 
@@ -1531,7 +1534,7 @@ async function main () {
   await dene('ondeLavVarMi() tunel yonunde lav goruyor', () => {
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
-    // 3 blok ileride (-z yonu) lav
+    // Lava 3 blocks ahead (-z)
     b.blockAt = (p) => ({
       name: (p.z === -3) ? 'lava' : 'stone',
       boundingBox: 'block',
@@ -1548,15 +1551,16 @@ async function main () {
   const yerlestir = require('../bot/utils/yerlestir')
 
   await dene('blokKoy() dar yerde YER ACIYOR (pes etmiyor)', async () => {
-    // Gercek sikayet: "envanterinde 2 firin var ama koyacak yer yok
-    // diyor -- kirsin bi yeri koysun iste". Eski kod yanindaki 6 sabit
-    // noktaya bakip pes ediyordu. Bot zaten kazma tasiyan bir madenci.
+    // Real complaint: "it has 2 furnaces in the inventory but says there is
+    // nowhere to put one -- just break a block and place it". The old code
+    // checked 6 fixed neighbouring spots and gave up. The bot is a miner
+    // carrying a pickaxe.
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
     b.inventory = { items: () => [{ name: 'furnace', count: 2, type: 1 }] }
     b.canDigBlock = () => true
 
-    // HER YER DOLU: hicbir hazir nokta yok
+    // Everything is solid: no ready spot anywhere
     const kirilan = new Set()
     const konan = {}
     let sonEquip = null
@@ -1589,16 +1593,16 @@ async function main () {
   })
 
   await dene('pathfinderGit() TAKILMAYI yakaliyor (sonsuza kadar beklemiyor)', async () => {
-    // Gercek olay: bot bir cikintinin kenarinda "kosuyor ama
-    // ilerlemiyor" durumuna girdi. Pathfinder yol bulmus, tuslara
-    // basiyor, ama bot fiziksel olarak takili. Sadece sure siniri
-    // yetmiyordu: 15 saniyeyi beklemek hem uzun, hem de bunu "yol yok"
-    // gibi gosteriyor -- oysa yol var, bot sikismis.
+    // Real run: the bot got stuck on the edge of a ledge, running without
+    // moving. The pathfinder had a path and was holding the keys down, but
+    // the bot was physically wedged. A timeout alone was not enough: waiting
+    // 15 seconds is long and reports it as "no path", when the path exists
+    // and the bot is just stuck.
     const gorev = require('../bot/utils/gorev')
     const b = sahteBot()
     let tuslarTemizlendi = false
     b.clearControlStates = () => { tuslarTemizlendi = true }
-    // goto hic bitmiyor, bot hic kimildamiyor: klasik takilma
+    // goto never resolves and the bot never moves: the classic stuck case
     b.pathfinder = { ...b.pathfinder, goto: () => new Promise(() => {}) }
 
     const t = Date.now()
@@ -1617,14 +1621,14 @@ async function main () {
   await dene('kurtar() acik yon varsa ziplayarak cikiyor', async () => {
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
-    // +x yonu acik, digerleri kapali
+    // +x is open, every other direction is blocked
     b.blockAt = (p) => {
       const acik = (p.x >= 1)
       return { name: acik ? 'air' : 'stone', boundingBox: acik ? 'empty' : 'block', position: p }
     }
     const basildi = []
     b.setControlState = (ad, deger) => { if (deger) basildi.push(ad) }
-    // Ziplayinca gercekten yer degistirsin
+    // Jumping actually moves the bot
     b.lookAt = async () => { b.entity.position = new Vec3(1.5, 64, 0) }
 
     const r = await kurtarModul.kurtar(b, k)
@@ -1633,8 +1637,8 @@ async function main () {
   })
 
   await dene('kurtar() her yon kapaliysa KENDINE YOL KAZIYOR', async () => {
-    // Gercek durum: bot kendi kazdigi 1 blokluk kuyuda sikismis.
-    // Ziplayacak yer yok; kazmasi var, yol acmali.
+    // Real case: the bot is stuck in a 1-block hole it dug itself. There is
+    // nowhere to jump to; it has a pickaxe and has to dig its way out.
     const b = sahteBot()
     b.entity.position = new Vec3(0, 64, 0)
     b.blockAt = (p) => ({ name: 'stone', boundingBox: 'block', position: p })
@@ -1660,19 +1664,19 @@ async function main () {
   })
 
   await dene('tedarikci BASARISIZ denemeyi de hatirliyor (48 kez agac aramiyor)', async () => {
-    // Gercek log: aynı saniyede 48 kez "64 blok icinde dogal agac
-    // bulamadim". Sebep: sadece BASARILI toplamalar not ediliyordu.
-    // Bot yeraltindayken agac bulamiyor, not dusulmuyor, ve uret bir
-    // sonraki agac turu icin tekrar soruyordu (~11 tur x tekrar).
+    // Real log: 48 times in the same second, "no natural tree within 64
+    // blocks". Only successful collections were recorded. Underground the
+    // bot finds no tree, nothing gets recorded, and uret asks again for the
+    // next wood type (~11 types x retries).
     const skills = require('../bot/skills')
     let cagri = 0
 
-    // Gercek tedarikciYap()'i kullaniyoruz ama chopTrees'i sayacakla
-    // degistiremiyoruz; bunun yerine AYNI SINIFTAN cok kez isteyip
-    // ikinciden sonra false donmesini bekliyoruz.
+    // Uses the real tedarikciYap(); chopTrees cannot be swapped for a
+    // counter, so instead ask for the same class several times and expect
+    // false from the second call on.
     const tedarikci = skills.tedarikciYap()
     const b = sahteBot()
-    b.findBlocks = () => { cagri++; return [] } // hic agac yok
+    b.findBlocks = () => { cagri++; return [] } // no trees at all
 
     const r1 = await tedarikci(b, k, 'oak_log', 1)
     const r2 = await tedarikci(b, k, 'birch_log', 1)
@@ -1683,13 +1687,13 @@ async function main () {
   })
 
   await dene('kaz() YIPRANMIS kazmayla calismaya devam ediyor', async () => {
-    // Gercek ekran goruntusu: elinde demir kazma, ONUNDE elmas, ama
-    // "0 elmas kirdim, sonra kazmam bitti" deyip yukari dondu.
-    // Sebep: 20 vuruşluk esigin altina dusunce "bitti" sayiliyordu.
-    // 15 vurusluk bir kazmayla birkac elmas rahat kirilir.
+    // Real screenshot: iron pickaxe in hand, diamond right in front, and the
+    // bot said "broke 0 diamonds, then my pickaxe ran out" and went back up.
+    // Anything under the 20-hit threshold counted as spent, but 15 hits is
+    // plenty for a few diamonds.
     const b = sahteBot()
     b.entity.position = new Vec3(0, -58, 0)
-    // 15 vurus kalmis demir kazma: esigin (20) ALTINDA ama BITMIS DEGIL
+    // Iron pickaxe with 15 hits left: below the threshold (20) but not spent
     b.inventory = { items: () => [{ name: 'iron_pickaxe', maxDurability: 250, durabilityUsed: 235, type: 1 }] }
     b.registry = { blocksByName: { diamond_ore: { id: 1 }, deepslate_diamond_ore: { id: 2 } } }
     b.canDigBlock = () => true
@@ -1716,20 +1720,20 @@ async function main () {
 
   console.log('\nKomut yonlendirme')
   await dene('KOMUTLAR listesindeki her komut gercekten yonlendiriliyor', () => {
-    // NEDEN BU TEST VAR:
-    // "uret" komutunu ekledim, KOMUTLAR listesine yazdim, skill'i yazdim,
-    // skill'in kendi testleri gecti -- ama komut oyunda hicbir sey yapmadi.
-    // Sebep: yonlendirici `komut.startsWith('uret ')` diye bakiyordu, oysa
-    // `komut` mesajin sadece ILK KELIMESI, icinde asla bosluk yok. Kosul
-    // hicbir zaman dogru olmadi ve hata da vermedi -- sessizce oldu.
-    // Fonksiyonu test etmek yetmiyor; BAGLANTIYI da test etmek gerekiyor.
+    // Why this test exists: the "uret" command was added to KOMUTLAR, the
+    // skill was written, the skill's own tests passed -- and the command did
+    // nothing in game. The router checked `komut.startsWith('uret ')`, but
+    // `komut` is only the first word of the message and never contains a
+    // space. The condition was never true and never errored, it just did
+    // nothing. Testing the function is not enough; the wiring needs a test
+    // too.
     const kaynak = fs.readFileSync(path.join(__dirname, '..', 'bot', 'index.js'), 'utf8')
     const { KOMUTLAR } = require('../bot/index')
 
     const eksik = []
     for (const { ad } of KOMUTLAR) {
       const ilk = ad.split(' ')[0]
-      // Yonlendiricide bu kelime bir esitlik karsilastirmasinda geciyor mu?
+      // Look for this word in an equality comparison in the router
       const desen = new RegExp(`komut === ['\"]${ilk}['\"]`)
       if (!desen.test(kaynak)) eksik.push(ad)
     }
@@ -1745,11 +1749,11 @@ async function main () {
     const eOdun = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0 })
     const eMaden = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'maden' })
 
-    // Neden onemli: `findBlocks` DUVARIN ARDINI da goruyor. y=15'te 64 blok
-    // yaricapinda her zaman bir cevher vardir -- tasin 40 blok gerisinde.
-    // Ortam "hedef var" dedigi icin `tazeMadeneIsinla` hic calismiyor ve
-    // ajan her bolumu ulasamayacagi bir cevhere tunel kazarak geciriyordu.
-    // Egitimde 1. bolum 5 cevher aldi, 2-18 arasi HEPSI sifir.
+    // `findBlocks` sees through walls. At y=15 there is always some ore
+    // within 64 blocks, usually 40 blocks deep in stone. The environment
+    // reported a target, so `tazeMadeneIsinla` never ran and the agent spent
+    // every episode tunnelling toward ore it could not reach. In training,
+    // episode 1 got 5 ore and episodes 2-18 all got zero.
     if (!(eMaden.yaricap < eOdun.yaricap)) {
       throw new Error(`maden yaricapi ${eMaden.yaricap}, odun ${eOdun.yaricap} -- kucuk degil`)
     }
@@ -1759,16 +1763,17 @@ async function main () {
   })
 
   await dene('gozlem mesafesi AYNI yaricapla normalize ediliyor', () => {
-    // Hedef secimi bir yaricap, gozlem normalizasyonu baska bir yaricap
-    // kullanirsa gozlem olcegi gorevden goreve kayar ve onceden egitilmis
-    // ag anlamsiz girdi gorur. Bu sessizce olur -- kod calisir, ajan aptallasir.
+    // If target selection uses one radius and observation normalization
+    // another, the observation scale shifts between tasks and a pretrained
+    // net sees meaningless input. It fails silently: the code runs, the
+    // agent just gets worse.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
     b.entity.position = new Vec3(0, 15, 0)
     const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
 
-    // Yaricapin TAM UCUNDA bir cevher: normalize mesafe 1.0 olmali
+    // Ore exactly at the radius edge: normalized distance should be 1.0
     const uzak = new Vec3(env.yaricap, 15, 0)
     b.findBlocks = () => [uzak]
     b.blockAt = (pos) => {
@@ -1784,20 +1789,20 @@ async function main () {
   })
 
   await dene('DIKEY ulasilamaz hedefi UZMAN OLMADAN da birakiyor', async () => {
-    // PPO cokusunun ikinci sebebi. "Ulasilamaz hedefi birak" mantigi
-    // sadece expert.js'teydi; PPO direksiyona gecince kimse cagirmadi ve
-    // ajan bolumun tamamini tam tepesindeki bir cevhere kilitli gecirdi.
-    // Ortamin kendi `HEDEF_SABIR`i (20 adim) cok yavas: yerinde sayma
-    // kesme esigi 60 adim, yani uc kotu hedef bolumun tamamini yiyor.
+    // Second cause of the PPO collapse. The "drop an unreachable target"
+    // logic lived only in expert.js; once PPO took the wheel nobody called
+    // it and the agent spent whole episodes locked onto ore straight
+    // overhead. The environment's own `HEDEF_SABIR` (20 steps) is too slow:
+    // the stall cutoff is 60 steps, so three bad targets eat a full episode.
     //
-    // Bu test UZMANI HIC CAGIRMIYOR -- sabit bir aksiyon dizisi suruyor.
+    // This test never calls the expert; it drives a fixed action sequence.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     b.entity.position = new Vec3(0.5, 15, 0.5)
     b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
-    b.canDigBlock = () => false // menzilde kiracak hicbir sey yok
+    b.canDigBlock = () => false // nothing breakable in range
 
-    // Cevher TAM TEPEMIZDE (yatay mesafe 0), aksiyon uzayinda yukari yok
+    // Ore straight overhead (horizontal distance 0), and there is no up action
     const cevher = new Vec3(0, 21, 0)
     b.findBlocks = () => [cevher]
     b.blockAt = (pos) => {
@@ -1811,7 +1816,7 @@ async function main () {
     const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
     if (!env.enYakinKutuk()) throw new Error('test kurulumu bozuk: hedef secilmedi')
 
-    // "Sola don" -- ajanin yapabilecegi ama bu hedefte ise yaramayan sey
+    // "Turn left": something the agent can do that gets it nowhere here
     for (let i = 0; i < 8; i++) await env.step(1)
 
     if (!env.karaListe.has('0,21,0')) {
@@ -1820,9 +1825,9 @@ async function main () {
   })
 
   await dene('tazeMadeneIsinla() cevher bulana kadar TEKRAR deniyor', async () => {
-    // Arama yaricapi 16'ya inince rastgele bir noktanin yakininda hic
-    // cevher OLMAMASI mumkun hale geldi. Tek atislik isinlanma hedefsiz
-    // bolum uretiyor; hedefsiz bolum PPO icin saf gurultu.
+    // With the search radius down to 16, a random spot can genuinely have no
+    // ore near it. A one-shot teleport then produces an episode with no
+    // target, which is pure noise for PPO.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     b.entity.position = new Vec3(0, 15, 0)
@@ -1830,7 +1835,7 @@ async function main () {
 
     let isinlanma = 0
     b.chat = (mesaj) => { if (/^\/tp /.test(mesaj)) isinlanma++ }
-    // Ilk iki isinlanmada cevher YOK, ucuncude var
+    // No ore on the first two teleports, ore on the third
     b.findBlocks = () => (isinlanma >= 3 ? [new Vec3(3, 15, 0)] : [])
     b.blockAt = (pos) => {
       const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
@@ -1849,15 +1854,15 @@ async function main () {
   console.log('\nAlet secimi (madenin 4 bolumu bunun yuzunden bosa gitti)')
 
   await dene('aletTipi() OYUNUN VERISIYLE uyusuyor (elle liste tutmuyoruz)', () => {
-    // Gercek hata: `aletTipi` elle yazilmis bir regex listesiydi ve
-    // 1.20.4'te 439 blogu kaciriyordu -- `tuff`, `calcite`,
-    // `smooth_basalt`, `amethyst_block`, `dripstone_block` dahil.
-    // Bunlar y=15 magaralarinda HER YERDE. Bot birine bakinca "kiracak
-    // aletim yok" deyip sonsuza kadar etrafindan dolasmaya calisti:
-    // uzman 4 bolumde HIC kirma yapmadi, 0 kaynak topladi.
+    // Real bug: `aletTipi` was a hand-written regex list and missed 439
+    // blocks in 1.20.4, including `tuff`, `calcite`, `smooth_basalt`,
+    // `amethyst_block` and `dripstone_block`. Those are everywhere in y=15
+    // caves. Facing one, the bot decided it had no tool for it and tried to
+    // walk around it forever: the expert broke nothing across 4 episodes and
+    // collected 0 resources.
     //
-    // Bu test elle liste tutmayi imkansiz kiliyor: oyunun kendi
-    // `material` alaniyla karsilastiriyor.
+    // This test makes a hand-kept list impossible: it compares against the
+    // game's own `material` field.
     const { aletTipi } = require('../bot/skills/alet')
     const mcData = require('minecraft-data')('1.20.4')
 
@@ -1875,8 +1880,9 @@ async function main () {
   })
 
   await dene('madende TUFF/CALCITE yolu kapatamiyor (kazma varken)', () => {
-    // Yukaridaki testin somut hali: kazmasi olan bot y=15'in en sik
-    // bloklarini kirabilmeli. Kirilamiyorsa bolum dolasmakla geciyor.
+    // Concrete version of the test above: with a pickaxe the bot has to be
+    // able to break the most common y=15 blocks, or the episode goes into
+    // walking around them.
     const g = require('../bot/bridge/gorevler')
     const mcData = require('minecraft-data')('1.20.4')
     const b = sahteBot()
@@ -1893,15 +1899,15 @@ async function main () {
   })
 
   await dene('uzman KIRAMADIGI blogun adini gerekcesine yaziyor', () => {
-    // Olculebilirlik testi. Bu dal bir kez maden gorevinin tamamini yedi
-    // ve gerekce sadece "engel_soldan_dolasiyorum" dedigi icin sebebi
-    // bulmak iki tur surdu. Artik gorev_kontrol dagiliminda blogun adi
-    // gorunuyor: "kiramadigim_tuff".
+    // Observability test. This branch once ate an entire mining run, and
+    // because the reason only said "engel_soldan_dolasiyorum" it took two
+    // rounds to find out why. The block name now shows up in the
+    // gorev_kontrol breakdown: "kiramadigim_tuff".
     const uzman = require('../bot/bridge/expert')
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     const e = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
-    // Kazma YOK -> tas kirilamaz -> dolasma dalina duser
+    // No pickaxe -> stone is unbreakable -> falls into the go-around branch
     b.inventory = { items: () => [] }
     b.blockAt = () => ({ name: 'tuff', material: 'mineable/pickaxe', boundingBox: 'block', position: new Vec3(0, 0, 0) })
 
@@ -1914,18 +1920,18 @@ async function main () {
   console.log('\nGorus hatti ve on nokta sirasi')
 
   await dene('DUVARIN ARDINDAKI cevheri menzilde saymiyor', () => {
-    // Gercek olay (ekran goruntusu): bot tasin ARDINDAKI cevheri kirdi.
-    // Mineflayer'in `canDigBlock`u sadece mesafeye bakiyor, gorus hattina
-    // bakmiyor -- sunucu da kabul ediyor. Kirilan cevher duvarin arkasina
-    // dusuyor ve bot ona ulasamiyor: "kirma" odulu aliniyor ama envantere
-    // HICBIR SEY girmiyor. Olcumdeki 0 kaynagin sebebi bu.
+    // Real run (screenshot): the bot broke ore on the far side of a stone
+    // wall. Mineflayer's `canDigBlock` checks distance only, not line of
+    // sight, and the server accepts it. The drop lands behind the wall out
+    // of reach: the break reward is paid but nothing enters the inventory.
+    // That is where the measured 0 resources came from.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     b.entity.position = new Vec3(0.5, 15, 0.5)
-    b.entity.yaw = 0 // -z yonune bakiyor
+    b.entity.yaw = 0 // facing -z
     b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
 
-    const cevher = new Vec3(0, 15, -3) // tam onumuzde, 3 blok oteda
+    const cevher = new Vec3(0, 15, -3) // straight ahead, 3 blocks away
     b.findBlocks = () => [cevher]
     b.blockAt = (pos) => {
       const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
@@ -1937,20 +1943,20 @@ async function main () {
 
     const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
 
-    // Gorus ACIK: menzilde sayilmali
+    // Line of sight clear: counts as in range
     b.canSeeBlock = () => true
     if (!env.onundekiKutuk()) throw new Error('gorus acikken cevheri menzilde saymadi')
 
-    // Gorus KAPALI (arada duvar var): menzilde SAYILMAMALI
+    // Line of sight blocked by a wall: must not count as in range
     b.canSeeBlock = () => false
     if (env.onundekiKutuk()) throw new Error('duvarin ardindaki cevheri menzilde saydi')
   })
 
   await dene('onumdeki noktalar ORTADAN basliyor (caprazdan degil)', () => {
-    // Gercek olay: bot hep SOL CAPRAZDAKI blogu kiriyor, ortadaki blok
-    // yerinde kaliyor, ileri basiyor ama gecemiyor. Sebep sadece sira:
-    // `onumuKapatan()` buldugu ILK blogu donduruyor ve ornekleme
-    // `[-0.35, 0, 0.35]` diye basliyordu.
+    // Real run: the bot kept breaking the front-left diagonal block while
+    // the centre block stayed put, pushing forward and getting nowhere. The
+    // cause was ordering alone: `onumuKapatan()` returns the first block it
+    // finds and sampling started at `[-0.35, 0, 0.35]`.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     b.entity.position = new Vec3(0.5, 15, 0.5)
@@ -1959,7 +1965,7 @@ async function main () {
 
     const noktalar = env.onumdekiNoktalar(0.8, [0.1])
     const yan = new Vec3(-Math.cos(0), 0, Math.sin(0))
-    // Ilk nokta yanal kaymasi SIFIR olmali
+    // The first sample point must have zero lateral offset
     const kayma = (noktalar[0].x - b.entity.position.x) * yan.x +
                   (noktalar[0].z - b.entity.position.z) * yan.z
     if (Math.abs(kayma) > 0.01) {
@@ -1968,23 +1974,23 @@ async function main () {
   })
 
   await dene('ONCE ortadaki blogu kiriyor, caprazdakini degil', () => {
-    // Yukaridaki testin davranissal hali: hem ortada hem sol caprazda
-    // kirilabilir blok varsa `onumuKapatan()` ORTADAKINI secmeli.
+    // Behavioural version of the test above: with breakable blocks both dead
+    // centre and front-left, `onumuKapatan()` has to pick the centre one.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
-    // BOT BLOGUN KENARINDA DURMALI.
+    // The bot has to stand at the edge of a block.
     //
-    // Ilk yazisimda botu blogun TAM ORTASINA (x=0.5) koymustum ve test
-    // ayirt etmiyordu: 0.35 yanal kayma orada hala AYNI bloga dusuyor,
-    // yani ucu de x=0. Ayni hatayi capraz-yaprak testinde de yapmistim.
-    // x=0.8'de ornekler [orta=0, sol=1, sag=0] bloklarina dagiliyor.
+    // A first version put it dead centre (x=0.5) and the test could not tell
+    // the difference: a 0.35 lateral offset still lands in the same block
+    // there, so all three samples hit x=0. The diagonal-leaf test had the
+    // same flaw. At x=0.8 the samples spread over [centre=0, left=1, right=0].
     b.entity.position = new Vec3(0.8, 15, 0.5)
     b.entity.yaw = 0 // -z
     b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
     b.canDigBlock = () => true
     b.blockAt = (pos) => {
       const x = Math.floor(pos.x); const y = Math.floor(pos.y); const z = Math.floor(pos.z)
-      // Orta: x=0, sol capraz: x=1 (ikisi de dolu)
+      // Centre: x=0, front-left: x=1 (both solid)
       if (z <= 0 && (x === 0 || x === 1)) {
         return { name: 'stone', material: 'mineable/pickaxe', boundingBox: 'block', position: new Vec3(x, y, z) }
       }
@@ -2002,14 +2008,15 @@ async function main () {
   console.log('\nGozlem boyutu (Node <-> Python sozlesmesi)')
 
   await dene('gozlem boyutlari env.py ile ayni (ORTAK 16 + EK 4)', () => {
-    // Node ile Python arasindaki tek sozlesme bu sayilar. Uyusmazsa Python
-    // tarafi ancak Minecraft'a baglandiktan SONRA patliyor -- yani kullanici
-    // sunucuyu ve oyunu actiktan sonra. Burada bir saniyede yakalaniyor.
+    // These numbers are the only contract between Node and Python. On a
+    // mismatch the Python side blows up only after it connects to Minecraft,
+    // that is, after the user has started the server and the game. Here it
+    // is caught in a second.
     //
-    // Odun DAR (16) kaliyor: Milestone 4'un kayitli modelleri 19 boyutlu
-    // girdi bekliyor. Maden GENIS (20). Cok gorevli egitim (Milestone 6)
-    // odunu da genise cekiyor, cunku tek ag iki gorevi de gorecekse
-    // genislik ortak olmak zorunda.
+    // Wood stays narrow (16): Milestone 4's saved models expect 19-dim
+    // input. Mining is wide (20). Multi-task training (Milestone 6) pulls
+    // wood up to wide too, because one net covering both tasks needs a
+    // shared width.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
 
     const olc = (gorev, genisGozlem) => {
@@ -2026,10 +2033,10 @@ async function main () {
     const ORTAK = 16
     const EK = 4
     const beklenen = [
-      ['odun', undefined, ORTAK],        // varsayilan: dar
-      ['odun', true, ORTAK + EK],        // cok gorevli egitim boyle istiyor
-      ['maden', undefined, ORTAK + EK],  // varsayilan: genis
-      ['maden', false, ORTAK]            // acikca dar istenirse dar
+      ['odun', undefined, ORTAK],        // default: narrow
+      ['odun', true, ORTAK + EK],        // what multi-task training asks for
+      ['maden', undefined, ORTAK + EK],  // default: wide
+      ['maden', false, ORTAK]            // narrow only when asked for explicitly
     ]
     for (const [gorev, genis, n] of beklenen) {
       const olculen = olc(gorev, genis)
@@ -2039,7 +2046,7 @@ async function main () {
       }
     }
 
-    // env.py'deki tabloyla karsilastir -- iki dosya BIRLIKTE degismeli
+    // Compare with the table in env.py; the two files have to change together
     const kaynak = fs.readFileSync(
       path.join(__dirname, '..', 'python', 'minecrai', 'env.py'), 'utf8')
     const o = /^ORTAK = (\d+)/m.exec(kaynak)
@@ -2053,11 +2060,11 @@ async function main () {
   })
 
   await dene('gorev degisince ARAMA YARICAPI da degisiyor', () => {
-    // Milestone 6 icin kritik ve sessiz bir tuzakti: `server.js` gorev
-    // degisiminde `env.gorev`i degistiriyordu ama yaricap yapicida bir kez
-    // hesaplanan bir ALAN'di. Cok gorevli egitimde gorev her bolumde
-    // degisiyor; odundan madene gecen bot 64 bloklu yaricapla kalirdi --
-    // yani "ulasilamaz hedefe kilitlenme" hatasi geri gelirdi, sessizce.
+    // Silent trap for Milestone 6: `server.js` swapped `env.gorev` on a task
+    // change, but the radius was a field computed once in the constructor.
+    // Multi-task training switches task every episode, so a bot going from
+    // wood to mining kept the 64-block radius and the "locked onto an
+    // unreachable target" bug came back, silently.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const env = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'odun' })
     if (env.yaricap !== 64) throw new Error(`odun yaricapi ${env.yaricap}, 64 bekleniyordu`)
@@ -2073,9 +2080,10 @@ async function main () {
   })
 
   await dene('gorev degisimi KILITLI HEDEFI ve kara listeyi temizliyor', () => {
-    // Odunda secilmis bir hedef madende anlamsiz; kara liste de oyle.
-    // Temizlenmezse ajan yeni gorevin ilk adimlarinda eski goreve ait bir
-    // konuma dogru yuruyor ve bunu gozlemden anlamanin yolu yok.
+    // A target picked on the wood task means nothing on mining, and neither
+    // does its blacklist. Left in place, the agent spends the first steps of
+    // the new task walking toward an old position, with nothing in the
+    // observation to explain it.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const env = new MinecraftEnvironment(sahteBot(), { zamanCarpani: 0, gorev: 'odun' })
     env.hedefKonum = new Vec3(10, 64, 10)
@@ -2087,19 +2095,19 @@ async function main () {
   })
 
   await dene('maden gozlemi ESYA yonunu gercekten tasiyor', () => {
-    // Testin ayirt edici olmasi icin: esya varken ve yokken gozlemin
-    // FARKLI olmasi gerek. Sadece uzunluga bakmak sahte bir guvence olurdu
-    // -- dort sifir eklemek de uzunlugu tutturur.
+    // For the test to discriminate, the observation has to differ with and
+    // without an item. Checking the length alone would be false comfort:
+    // four appended zeros match the length too.
     const { MinecraftEnvironment } = require('../bot/bridge/environment')
     const b = sahteBot()
     b.inventory = { items: () => [{ name: 'iron_pickaxe', count: 1, type: 1 }] }
     b.entity.position = new Vec3(0, 15, 0)
-    b.entity.yaw = 0 // -z yonune bakiyor
+    b.entity.yaw = 0 // facing -z
     const env = new MinecraftEnvironment(b, { zamanCarpani: 0, gorev: 'maden' })
 
     const esyasiz = env.gozlem()
 
-    // Esya SOLDA olsun (+x, bot -z'ye bakarken sol taraf)
+    // Put the item on the left (+x is left when facing -z)
     b.entities = {
       1: { name: 'item', position: new Vec3(3, 15, 0), objectType: 'Item' }
     }
@@ -2116,12 +2124,14 @@ async function main () {
   console.log('\nSohbet katmani (LLM)')
 
   await dene('BILINEN listesi yonlendiricideki HER komutu kapsiyor', () => {
-    // Sessiz bozulma: bir komut BILINEN'den duserse mesaj tam komut
-    // sayilmaz ve LLM'e gider. Calisir -- ama gereksiz gecikme, gereksiz
-    // maliyet, ve LLM yanlis yorumlarsa yanlis is. Hicbir hata mesaji yok.
+    // Silent breakage: if a command drops out of BILINEN the message is no
+    // longer treated as an exact command and goes to the LLM. It still
+    // works, at the cost of latency and tokens, and does the wrong thing if
+    // the LLM misreads it. No error anywhere.
     //
-    // Ayni sinif hata bu projede bir kez oldu: `komut.startsWith('uret ')`
-    // hicbir zaman dogru olamiyordu ve komut sessizce hicbir sey yapmadi.
+    // The same class of bug already happened here once:
+    // `komut.startsWith('uret ')` could never be true and the command
+    // silently did nothing.
     const kaynak = fs.readFileSync(path.join(__dirname, '..', 'bot', 'index.js'), 'utf8')
 
     const m = /const BILINEN = new Set\(\[([\s\S]*?)\]\)/.exec(kaynak)
@@ -2130,7 +2140,7 @@ async function main () {
       [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])
     )
 
-    // Yonlendiricide gercekten dallanan komutlar
+    // Commands the router actually branches on
     const dallanan = new Set(
       [...kaynak.matchAll(/komut === '([^']+)'/g)].map((x) => x[1])
     )
@@ -2141,11 +2151,11 @@ async function main () {
   })
 
   await dene('LLM SADECE izinli komutlari secebiliyor', () => {
-    // Oyun ici chat GUVENILMEZ girdi. Model ne uretirse uretsin
-    // olabilecek en kotu sey listedeki mesru bir komutun calismasi olmali.
+    // In-game chat is untrusted input. Whatever the model emits, the worst
+    // outcome should be a legitimate command from the list running.
     const { komutSatiri, IZINLI_KOMUTLAR } = require('../bot/sohbet/araclar')
 
-    // Yikici komutlar listede OLMAMALI
+    // Destructive commands must not be in the list
     for (const yasak of ['korumasil', 'koru', 'korumalar']) {
       if (Object.prototype.hasOwnProperty.call(IZINLI_KOMUTLAR, yasak)) {
         throw new Error(`${yasak} LLM'e acilmis -- yikici/oyuncu karari olmali`)
@@ -2155,11 +2165,11 @@ async function main () {
       }
     }
 
-    // Uydurma komut reddedilmeli
+    // Made-up commands are rejected
     if (komutSatiri({ komut: 'rm' })) throw new Error('bilinmeyen komut kabul edildi')
     if (komutSatiri(null)) throw new Error('bos girdi kabul edildi')
 
-    // Mesru komut gecmeli
+    // Legitimate commands pass
     if (komutSatiri({ komut: 'kes', arguman: '3' }) !== 'kes 3') {
       throw new Error('mesru komut reddedildi')
     }
@@ -2180,24 +2190,24 @@ async function main () {
     if (sec({}) !== null) throw new Error('anahtarsiz saglayici dondu')
     if (sec({ geminiAnahtari: 'x' }).ad !== 'gemini') throw new Error('gemini secilmedi')
     if (sec({ anthropicAnahtari: 'x' }).ad !== 'anthropic') throw new Error('anthropic secilmedi')
-    // Ikisi de varsa GEMINI: ucretsiz katmani var, varsayilan o olmali
+    // Both keys present: Gemini wins, it has a free tier
     if (sec({ geminiAnahtari: 'x', anthropicAnahtari: 'y' }).ad !== 'gemini') {
       throw new Error('ikisi varken ucretsiz olan secilmedi')
     }
-    // Acik secim kazanmali
+    // An explicit choice wins
     if (sec({ geminiAnahtari: 'x', sohbetSaglayici: 'anthropic' }).ad !== 'anthropic') {
       throw new Error('acik secim ezilmedi')
     }
-    // Uydurma saglayici sessizce gecmemeli
+    // An unknown provider must not pass silently
     let patladi = false
     try { sec({ sohbetSaglayici: 'yok_boyle' }) } catch { patladi = true }
     if (!patladi) throw new Error('bilinmeyen saglayici sessizce kabul edildi')
   })
 
   await dene('her saglayici KENDI bicimini uretip cozebiliyor', () => {
-    // Iki API'nin govde ve cevap sekli farkli. Bu test her ikisinin de
-    // ayni soyut istegi kendi bicimine cevirip, kendi cevabini ayni
-    // normal sekle geri cozdugunu dogruluyor.
+    // The two APIs differ in request body and response shape. This checks
+    // that both turn the same abstract request into their own format and
+    // parse their own response back into the same normalized shape.
     const { aracTanimi } = require('../bot/sohbet/araclar')
     const anthropic = require('../bot/sohbet/saglayici/anthropic')
     const gemini = require('../bot/sohbet/saglayici/gemini')
@@ -2212,7 +2222,7 @@ async function main () {
       ]
     }
 
-    // --- Anthropic: tek tasiyici
+    // --- Anthropic: one transport
     const ad = anthropic.denemeler()[0]
     const ag = ad.tasiyici.govde({ ...istek, model: ad.model })
     if (ag.system !== 'SISTEM METNI') throw new Error('anthropic: sistem metni kayip')
@@ -2229,7 +2239,7 @@ async function main () {
       throw new Error(`anthropic cozumleme: ${JSON.stringify(ac)}`)
     }
 
-    // --- Gemini: IKI tasiyici, ikisi de dogru bicim uretmeli
+    // --- Gemini: two transports, both have to produce the right format
     const gi = gemini.TASIYICILAR.interactions
     const gc2 = gemini.TASIYICILAR.generateContent
 
@@ -2250,7 +2260,7 @@ async function main () {
     if (!bg.tools[0].function_declarations?.[0]?.parameters) {
       throw new Error('generateContent: arac bicimi yanlis')
     }
-    // Model URL'de olmali (generateContent), govdede degil
+    // The model goes in the URL for generateContent, not the body
     const u = gc2.url({ model: 'test-model' })
     if (!u.includes('test-model') || !u.endsWith(':generateContent')) {
       throw new Error(`generateContent url yanlis: ${u}`)
@@ -2259,7 +2269,7 @@ async function main () {
       throw new Error('interactions url modeli icermemeli')
     }
 
-    // Tek cozumleyici IKI bicimi de okumali
+    // One parser has to read both formats
     const cozInter = gemini.coz({
       steps: [
         { type: 'function_call', name: 'k', arguments: { komut: 'uret', arguman: 'tas kazma' } },
@@ -2284,16 +2294,16 @@ async function main () {
   })
 
   await dene('gemini: her model IKI tasiyiciyla da deneniyor', () => {
-    // Google'in hangi API'yi kabul ettigi anahtara ve modele gore degisti ve
-    // bu iki kez yanlis tahmine mal oldu (503, sonra "use the Interactions
-    // API" diyen bir 404). Secmek yerine ikisi de deneniyor.
+    // Which API Google accepts varies by key and by model, and guessing cost
+    // two wrong turns here (a 503, then a 404 saying "use the Interactions
+    // API"). Instead of choosing, both are tried.
     const gemini = require('../bot/sohbet/saglayici/gemini')
     const liste = gemini.denemeler()
     const tasiyicilar = new Set(liste.map((d) => d.tasiyici.ad))
     if (tasiyicilar.size < 2) throw new Error(`tek tasiyici deneniyor: ${[...tasiyicilar]}`)
     if (liste.length < 4) throw new Error(`sadece ${liste.length} kombinasyon`)
 
-    // .env'de model verilmisse ONCE o denenmeli
+    // A model set in .env is tried first
     const secili = gemini.denemeler('benim-modelim')
     if (secili[0].model !== 'benim-modelim') {
       throw new Error('kullanicinin sectigi model ilk sirada degil')
@@ -2301,10 +2311,10 @@ async function main () {
   })
 
   await dene('gemini cozumlemesi BEKLENMEDIK bicimde de pes etmiyor', () => {
-    // Gemini Interactions API'sinin cevap sekli anahtar olmadan tam
-    // dogrulanamadi. Cozumleyici bu yuzden belirli bir yolu varsaymak
-    // yerine yapiyi geziyor. Bu test o savunmaciligi koruyor: sekil
-    // degisirse bile metin ve fonksiyon cagrisi bulunmali.
+    // The Gemini Interactions response shape could not be fully verified
+    // without a key, so the parser walks the structure instead of assuming
+    // one path. This test keeps that defensiveness: text and function call
+    // still have to be found if the shape changes.
     const gemini = require('../bot/sohbet/saglayici/gemini')
 
     const bicimler = [
@@ -2318,7 +2328,7 @@ async function main () {
     if (sonuclar[1].metin !== 'Selam.') throw new Error('output_text okunmadi')
     if (sonuclar[2].metin !== 'Selam.') throw new Error('ic ice metin bulunamadi')
     if (sonuclar[3].metin !== 'Selam.') throw new Error('farkli sarmalayici cozulemedi')
-    // Cop girdi coktürmemeli
+    // Junk input must not crash it
     for (const cop of [null, {}, { steps: 'yanlis' }, { steps: [1, 2, 3] }]) {
       const r = gemini.coz(cop)
       if (typeof r.metin !== 'string') throw new Error('cop girdide metin string degil')
@@ -2326,14 +2336,14 @@ async function main () {
   })
 
   await dene('teshis araci saglayici arayuzuyle uyumlu', () => {
-    // `test/sohbet_dene.js` saglayici arayuzunu YENIDEN kullaniyor ama
-    // ayri bir dosya oldugu icin arayuz degisince sessizce geride kaliyor.
-    // Tam da bu oldu: saglayicilardan `url` kaldirilip tasiyicilara
-    // tasindi, teshis araci `s.url(...)` cagirmaya devam etti ve
-    // kullanicinin makinesinde TypeError ile coktu.
+    // `test/sohbet_dene.js` reuses the provider interface but lives in its
+    // own file, so it falls behind silently when that interface changes.
+    // That happened: `url` moved off the providers onto the transports, the
+    // diagnostic tool kept calling `s.url(...)`, and it crashed with a
+    // TypeError on the user's machine.
     //
-    // Testler teshis aracini calistiramiyor (gercek ag istegi atiyor),
-    // ama hangi metotlari cagirdigini okuyabilir.
+    // Tests cannot run the tool itself (it makes real network requests),
+    // but they can read which methods it calls.
     const kaynak = fs.readFileSync(
       path.join(__dirname, 'sohbet_dene.js'), 'utf8')
 
@@ -2352,7 +2362,7 @@ async function main () {
       }
     }
 
-    // Tasiyici arayuzu de eksiksiz olmali
+    // The transport interface has to be complete too
     const gemini = require('../bot/sohbet/saglayici/gemini')
     for (const d of gemini.denemeler()) {
       for (const metot of ['url', 'govde']) {
@@ -2364,10 +2374,10 @@ async function main () {
   })
 
   await dene('sohbet: BIRDEN FAZLA komut zincirlenebiliyor', () => {
-    // Bot tek komut alabildigi surece "once odun kes sonra kazma yap" gibi
-    // siradan bir istek calismiyordu -- model niyeti anliyor ama ifade
-    // edemiyordu. Beceriler degismedi, kac tanesinin arka arkaya
-    // istenebilecegi degisti.
+    // While the bot took a single command, an ordinary request like "chop
+    // wood then make a pickaxe" did not work: the model understood the
+    // intent but had no way to express it. The skills did not change, only
+    // how many of them can be asked for in a row.
     const { komutSatirlari, MAKS_ADIM } = require('../bot/sohbet/araclar')
 
     const zincir = komutSatirlari({
@@ -2378,26 +2388,26 @@ async function main () {
       throw new Error(`yanlis zincir: ${JSON.stringify(zincir)}`)
     }
 
-    // Model sema disina cikip tekil bicim dondurse de kabul edilmeli
+    // Accept the singular form too, in case the model ignores the schema
     if (komutSatirlari({ komut: 'balta' })[0] !== 'balta') {
       throw new Error('tekil bicim reddedildi')
     }
 
-    // Zincirin ICINDEKI yasakli komut atilmali, digerleri kalmali
+    // A banned command inside the chain is dropped, the rest stay
     const karisik = komutSatirlari({
       adimlar: [{ komut: 'kes' }, { komut: 'korumasil' }, { komut: 'balta' }]
     })
     if (karisik.includes('korumasil')) throw new Error('yikici komut zincirden gecti')
     if (karisik.length !== 2) throw new Error(`gecerliler de atildi: ${karisik}`)
 
-    // Uzunluk siniri: model uzun liste uydurursa bot dakikalarca mesgul kalir
+    // Length cap: a long made-up list would keep the bot busy for minutes
     const uzun = komutSatirlari({ adimlar: Array(20).fill({ komut: 'kes' }) })
     if (uzun.length > MAKS_ADIM) throw new Error(`${uzun.length} adim gecti, sinir ${MAKS_ADIM}`)
   })
 
   await dene('anahtar yoksa sohbet katmani KAPALI', async () => {
-    // Projeyi klonlayan birinin API anahtari olmadan da her seyi
-    // calistirabilmesi gerekiyor. Sohbet bir ek, bagimlilik degil.
+    // Someone cloning the project has to be able to run everything without
+    // an API key. Chat is an extra, not a dependency.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
     const eski = [config.geminiAnahtari, config.anthropicAnahtari]
@@ -2405,12 +2415,12 @@ async function main () {
     try {
       if (beyin.acik()) throw new Error('anahtar yokken acik gorunuyor')
 
-      // ASIL SINANAN: API'ye HIC GIDILMEMELI.
+      // What is actually under test: the API must not be called at all.
       //
-      // Ilk yazisimda sadece "null donuyor mu" diye bakiyordum ve test
-      // ayirt etmiyordu: koruma kaldirilinca gercek API cagriliyor,
-      // 401 aliniyor, yakalaniyor ve yine null donuyordu. Dogru sonuc,
-      // yanlis sebep.
+      // A first version only checked for null and could not tell the
+      // difference: with the guard removed the real API gets called, returns
+      // 401, the error is caught and null comes back anyway. Right answer,
+      // wrong reason.
       let cagrildi = false
       const izleyen = async () => {
         cagrildi = true
@@ -2447,8 +2457,8 @@ async function main () {
       }
       if (sonuc.cevap !== 'Tamam, gidiyorum.') throw new Error('metin cevap kayboldu')
 
-      // Modele botun DURUMU gonderilmeli -- yoksa "envanterinde ne var"
-      // sorusuna korlemesine cevap verir
+      // The bot's state has to reach the model, or it answers "what is in
+      // your inventory" blind
       if (!/oak_log/.test(gorulenGovde.sistem)) {
         throw new Error('sistem metninde envanter yok')
       }
@@ -2483,32 +2493,32 @@ async function main () {
   })
 
   await dene('sohbet: CALISAN kombinasyonu hatirliyor', async () => {
-    // Olculdu: ucretsiz anahtarla alti kombinasyonun dordu 503/500/zaman
-    // asimi verdi, besincisi calisti. Her mesajda o listeyi bastan yurumek
-    // her cevabin onune ~40 saniye koyardi. Bir kez bulunan calisan
-    // kombinasyon hatirlanmali.
+    // Measured: on a free key, four of six combinations returned
+    // 503/500/timeout and the fifth worked. Walking that list from the top
+    // on every message added ~40 seconds to each reply. The working
+    // combination has to be remembered once found.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
     const eski = [config.geminiAnahtari, config.anthropicAnahtari]
     config.geminiAnahtari = 'test'
     beyin.gecmisiSil(); beyin.tercihiSifirla()
 
-    // Bu testte gercek HTTP yok: `cagir` sahtesi zaten cozulmus donuyor,
-    // yani dogrudan sirayi olcemeyiz. Onun yerine gercek yolu kullanan
-    // bir sahte fetch kuruyoruz.
-    // URL DEGIL, MODEL+URL kaydediyoruz. Interactions uc noktasinin URL'i
-    // modeli ICERMIYOR, o yuzden sadece URL'e bakan bir test iki farkli
-    // denemeyi ayirt edemiyor -- ilk yazisimda tam bu yuzden sabotaji
-    // yakalayamadi.
+    // No real HTTP here: the fake `cagir` returns an already-resolved answer,
+    // so the ordering cannot be measured directly. Instead a fake fetch sits
+    // on the real path.
+    // What gets recorded is model+URL, not URL alone. The Interactions
+    // endpoint URL does not contain the model, so a URL-only check cannot
+    // tell two attempts apart -- which is exactly why a first version missed
+    // a sabotage.
     const gercekFetch = global.fetch
     const gorulen = []
-    const basarisiz = new Set()   // hangi kimlikler 503 dondu
+    const basarisiz = new Set()   // ids that came back 503
     global.fetch = async (url, secenekler) => {
       const govde = JSON.parse(secenekler.body)
       const model = govde.model || url.split('/').pop().split(':')[0]
       const kimlik = `${model}@${url}`
       gorulen.push(kimlik)
-      // Ilk iki BENZERSIZ kombinasyon basarisiz, sonrakiler basarili
+      // First two unique combinations fail, the rest succeed
       if (basarisiz.size < 2 && !basarisiz.has(kimlik)) {
         basarisiz.add(kimlik)
         return { ok: false, status: 503, text: async () => 'busy' }
@@ -2549,10 +2559,10 @@ async function main () {
   })
 
   await dene('sohbet: tercih YENIDEN BASLATMADAN sonra da hatirlaniyor', async () => {
-    // Bellekteki tercih tek basina yetmiyordu: bot gelistirme sirasinda
-    // surekli yeniden baslatiliyor ve her baslatmadan sonraki ILK mesaj
-    // butun listeyi bastan yuruyordu. Oyunda olculdu: 12 saniyelik iki olu
-    // deneme butceyi bitirdi ve calisan kombinasyona hic sira gelmedi.
+    // An in-memory preference was not enough: the bot restarts constantly
+    // during development and the first message after each restart walked the
+    // whole list again. Measured in game: two dead attempts of 12 seconds
+    // burned the budget and the working combination never got a turn.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
     const eski = [config.geminiAnahtari, config.anthropicAnahtari]
@@ -2583,8 +2593,8 @@ async function main () {
       await beyin.yorumla(sahteBot(), 'p1', 'selam')
       const calisan = gorulen[gorulen.length - 1]
 
-      // YENIDEN BASLATMA benzetimi: modulu bellekten at, bastan yukle.
-      // Dosyaya yazilmadiysa yeni ornek hicbir sey hatirlamaz.
+      // Simulate a restart: drop the module from cache and load it again.
+      // Without a write to disk the new instance remembers nothing.
       delete require.cache[require.resolve('../bot/sohbet/beyin')]
       const yeniBeyin = require('../bot/sohbet/beyin')
 
@@ -2607,14 +2617,14 @@ async function main () {
   })
 
   await dene('sohbet: reddedilen ISTEGE GORE basitlestirip devam ediyor', async () => {
-    // Belgeler ile canli API bu entegrasyonda UC KEZ ayrildi: hangi uc
-    // nokta, hangi dusunme seviyeleri, ve bot turunun nasil kodlandigi.
-    // Her seferinde tek kelimelik bir fark ve ancak istek atarak bulunuyor.
+    // The docs and the live API disagreed three times in this integration:
+    // which endpoint, which thinking levels, and how the bot turn is encoded.
+    // Every time it was a one-word difference, findable only by sending a
+    // request.
     //
-    // Model basina tablo tutmak yerine istek KADEMELI OLARAK sadelesiyor:
-    // API neye itiraz ettiyse o istege bagli opsiyonel parca dusuruluyor.
-    // Her adim hala gecerli bir istek -- bot gecmissiz cevap verir, hic
-    // cevap vermemekten iyidir.
+    // Instead of a per-model table the request degrades step by step: drop
+    // the optional piece the API objected to. Every step is still a valid
+    // request -- a reply without history beats no reply at all.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
     const eski = [config.geminiAnahtari, config.anthropicAnahtari]
@@ -2627,13 +2637,13 @@ async function main () {
       const govde = JSON.parse(secenekler.body)
       govdeler.push(govde)
       const ayar = govde.generation_config || govde.generationConfig || {}
-      // 1. itiraz: dusunme ayari
+      // Objection 1: thinking setting
       if (ayar.thinking_level) {
         return { ok: false, status: 400, text: async () => JSON.stringify({
           error: { message: "'low' is not a supported thinking level for this model." }
         }) }
       }
-      // 2. itiraz: gecmisteki bot turu
+      // Objection 2: the bot turn in the history
       const girdi = govde.input || govde.contents || []
       if (girdi.length > 1) {
         return { ok: false, status: 400, text: async () => JSON.stringify({
@@ -2646,14 +2656,14 @@ async function main () {
 
     try {
       const b = sahteBot()
-      // AYNI oyuncu: gecmis oyuncu basina tutuluyor. Ilk yazisimda iki
-      // farkli ad kullanmisim, yani gecmis hic olusmadi ve test ikinci
-      // basitlestirmeyi hic denemedi -- sabotaji yakalayamadi.
+      // Same player: history is kept per player. A first version used two
+      // different names, so no history built up and the test never reached
+      // the second simplification, missing a sabotage.
       await beyin.yorumla(b, 'ayni', 'selam')
-      // Hiz siniri oyuncu basina 2 saniye; test arka arkaya iki mesaj
-      // gonderdigi icin sifirlaniyor. (Ilk yazisimda iki FARKLI oyuncu
-      // adi kullanmistim -- sinir asilmiyordu ama gecmis de olusmuyordu,
-      // yani test ikinci basitlestirmeyi hic denemiyordu.)
+      // Rate limit is 2 seconds per player and the test sends two messages
+      // back to back, so it gets reset. (A first version used two different
+      // player names -- no limit hit, but no history either, so the second
+      // simplification was never exercised.)
       beyin.hizSinirlariniSifirla()
       govdeler.length = 0
       const sonuc = await beyin.yorumla(b, 'ayni', 'ikinci mesaj')
@@ -2681,8 +2691,8 @@ async function main () {
   })
 
   await dene('sohbet: bilinmeyen 400 SESSIZCE dongude kalmiyor', async () => {
-    // Basitlestirme zinciri esles etmeyen bir 400'de durmali; yoksa
-    // sonsuz donguye girer.
+    // The simplification chain has to stop on a 400 it does not recognize,
+    // otherwise it loops forever.
     const config = require('../bot/config')
     const beyin = require('../bot/sohbet/beyin')
     const eski = [config.geminiAnahtari, config.anthropicAnahtari]
@@ -2699,8 +2709,8 @@ async function main () {
     try {
       const sonuc = await beyin.yorumla(sahteBot(), 'p', 'selam')
       if (sonuc !== null) throw new Error('bilinmeyen 400de cevap uretti')
-      // 6 kombinasyon x en fazla 3 basitlestirme adimi = 18 ust sinir.
-      // Guard kalkarsa ayni deneme sonsuza kadar tekrarlanir ve bu asilir.
+      // 6 combinations x at most 3 simplification steps = 18 upper bound.
+      // Without the guard the same attempt repeats forever and blows past it.
       if (sayac > 18) throw new Error(`${sayac} istek atti — dongude kalmis`)
     } finally {
       global.fetch = gercekFetch
@@ -2728,14 +2738,14 @@ async function main () {
   console.log('\nDokumanlar')
 
   await dene('BASLAT.md ve README\'deki komutlar GERCEKTEN var', () => {
-    // Dokuman cururken sessizce curuyor: kullanici yazdigim komutu
-    // yapistiriyor, "unrecognized arguments" aliyor ve nedenini bilmiyor.
-    // Bu projede kullanicinin ilk basvurdugu yer BASLAT.md -- oradaki
-    // bir yazim hatasi kod hatasindan daha pahali.
-    // BASLAT.md `.gitignore`da (kisisel not). Temiz bir klonda YOK, o yuzden
-    // varsa okunuyor yoksa atlaniyor -- yoksa repoyu klonlayan biri
-    // `node test/smoke.js` calistirinca test coker. Bunu yazarken tam da
-    // o hatayi yaptim.
+    // Docs rot silently: the user pastes a documented command, gets
+    // "unrecognized arguments", and has no idea why. BASLAT.md is the first
+    // place a user of this project looks, so a typo there costs more than a
+    // bug in the code.
+    // BASLAT.md is in `.gitignore` (personal notes) and is absent from a
+    // clean clone, so it is read when present and skipped otherwise --
+    // without that, cloning the repo and running `node test/smoke.js` makes
+    // the test crash. That mistake was made writing this very check.
     const metin = ['BASLAT.md', 'README.md']
       .map((d) => path.join(__dirname, '..', d))
       .filter((y) => fs.existsSync(y))
@@ -2764,17 +2774,18 @@ async function main () {
   })
 
   await dene('BASLAT.md butun gorevleri anlatiyor', () => {
-    // Yeni bir gorev eklenip BASLAT.md'ye yazilmazsa kullanici onu hic
-    // ogrenemiyor -- kod calisir, ozellik gorunmez kalir.
+    // A new task that never reaches BASLAT.md is a task the user never
+    // learns about: the code works, the feature stays invisible.
     //
-    // GOREV LISTESINI CLI'DAN OKU, gorevler.js'ten DEGIL.
+    // Read the task list from the CLI, not from gorevler.js.
     //
-    // Ilk yazisimda `GOREVLER` anahtarlarina bakiyordum ve test sahte
-    // guvence veriyordu: 'hepsi' (cok gorevli mod) Node tarafinda bir
-    // gorev degil, Python tarafinda bir kavram. Yani BASLAT.md'den
-    // tamamen silsem test yine gecerdi.
+    // A first version read the `GOREVLER` keys and gave false comfort:
+    // 'hepsi' (multi-task mode) is not a task on the Node side, it is a
+    // concept on the Python side. Deleting it from BASLAT.md entirely would
+    // still have passed.
     //
-    // Kullaniciyi ilgilendiren liste `--gorev` secenekleri; dogru kaynak o.
+    // The list the user cares about is the `--gorev` options; that is the
+    // right source.
     const cli = fs.readFileSync(
       path.join(__dirname, '..', 'python', 'collect_demos.py'), 'utf8')
     const m = /choices=\[([^\]]+)\]/.exec(cli)
@@ -2784,7 +2795,7 @@ async function main () {
       throw new Error(`sadece ${gorevler.length} gorev okundu: ${gorevler}`)
     }
 
-    // BASLAT.md `.gitignore`da; temiz klonda yoksa bu kontrolun konusu yok.
+    // BASLAT.md is in `.gitignore`; nothing to check if a clean clone lacks it.
     const yol = path.join(__dirname, '..', 'BASLAT.md')
     if (!fs.existsSync(yol)) return
     const metin = fs.readFileSync(yol, 'utf8')

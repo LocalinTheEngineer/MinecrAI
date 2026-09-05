@@ -1,28 +1,28 @@
 'use strict'
 
 /**
- * Ortak sabitler.
+ * Shared constants.
  *
- * environment.js ile expert.js birbirini require ederse dairesel bağımlılık
- * oluşuyor ve biri boş nesne alıyor. Paylaşılan sayılar burada duruyor.
+ * environment.js and expert.js requiring each other is a circular dependency
+ * and one of them ends up with an empty object. Shared numbers live here.
  */
 
 module.exports = {
-  // Bu kadar adım üst üste ilerleyemezsek "engele takıldık" sayılır
+  // No forward movement for this many steps in a row counts as stuck on an obstacle
   TAKILMA_ESIGI: 3,
 
-  // Takılınca kaç adım boyunca kaçınma manevrası yapılacak
+  // How many steps the avoidance manoeuvre runs once stuck
   KACINMA_SURESI: 7,
 
-  // Bu kadar adım hiçbir ilerleme olmazsa bölümü bitir
+  // End the episode after this many steps without any progress
   DURGUNLUK_SINIRI: 60,
 
-  // Hedefin dibindeyiz ama bu kadar adımdır bir şey kıramıyorsak
-  // o hedef ulaşılamıyordur; kara listeye alıp başkasına geç
+  // Standing right next to the target but breaking nothing for this many
+  // steps means it is unreachable: blacklist it and pick another
   HEDEF_SABIR: 20,
 
-  // Hedefin tam altında/üstündeyiz (yatay < 2) ama menzilde kıracak bir
-  // şey yok: ulaşılamaz. Aksiyon uzayında yukarı gitmek olmadığı için
-  // beklemenin anlamı yok — hızlıca bırak.
+  // Directly below or above the target (horizontal < 2) with nothing in
+  // range to break: unreachable. Going up is not in the action space, so
+  // waiting buys nothing; give up fast.
   DIKEY_SABIR: 3
 }

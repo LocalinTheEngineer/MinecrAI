@@ -1,12 +1,12 @@
 'use strict'
 
 /**
- * Test sahnesi kurucu.
+ * Test scene builder.
  *
- * Testler rastgele üretilen arazide tutarsız davranıyordu; ayrıca bot spawn
- * olduktan sonra bir süre DÜŞMEYE devam ediyor — konumunu hemen ölçersen
- * platformu yanlış yükseklikte kuruyorsun ve bot altından geçip gidiyor.
- * (Bu hatayı bir kez yaptık, o yüzden burada `botuBeklet` var.)
+ * Tests behaved inconsistently on randomly generated terrain, and the bot
+ * keeps falling for a while after spawn: measure its position right away and
+ * the platform goes in at the wrong height, with the bot dropping past it.
+ * That is why `botuBeklet` exists.
  */
 
 const mineflayer = require('mineflayer')
@@ -47,7 +47,7 @@ async function botBaglat (port, version, isim = 'TestBot') {
   return bot
 }
 
-/** Bot yere inip sabitlenene kadar bekle */
+/** Wait until the bot lands and its position settles */
 async function botuBeklet (bot, maksMs = 15000) {
   const bitis = Date.now() + maksMs
   let oncekiY = null
@@ -67,9 +67,9 @@ async function botuBeklet (bot, maksMs = 15000) {
 }
 
 /**
- * Botun etrafında düz bir taş platform açar ve üstünü temizler.
- * Bot zaten yerde olduğu için düşmez.
- * @returns {Vec3} platformun üst yüzeyinin bulunduğu ayak seviyesi
+ * Lays a flat stone platform around the bot and clears the space above it.
+ * The bot is already on the ground, so it does not fall.
+ * @returns {Vec3} foot level, the top surface of the platform
  */
 function platformKur (server, surum, merkez, { yaricap = 7, yukseklik = 6 } = {}) {
   const mcData = require('minecraft-data')(surum)
@@ -88,7 +88,7 @@ function platformKur (server, surum, merkez, { yaricap = 7, yukseklik = 6 } = {}
   return merkez
 }
 
-/** Platformun üstüne kütükten bir gövde diker */
+/** Plants a log trunk on top of the platform */
 function agacDik (server, surum, merkez, dx, dz, yukseklik = 4) {
   const mcData = require('minecraft-data')(surum)
   const kutuk = mcData.blocksByName.oak_log.defaultState
@@ -99,7 +99,7 @@ function agacDik (server, surum, merkez, dx, dz, yukseklik = 4) {
   return new Vec3(merkez.x + dx, merkez.y, merkez.z + dz)
 }
 
-/** Gövdenin etrafına yaprak kabuğu koyar — botun yolunu kapatan gerçekçi engel */
+/** Wraps the trunk in leaves: a realistic obstacle in the bot's path */
 function yaprakSar (server, surum, merkez, dx, dz, yukseklik = 4) {
   const mcData = require('minecraft-data')(surum)
   const yaprak = mcData.blocksByName.oak_leaves.defaultState
@@ -107,7 +107,7 @@ function yaprakSar (server, surum, merkez, dx, dz, yukseklik = 4) {
   for (let y = 1; y < yukseklik + 1; y++) {
     for (let ex = -2; ex <= 2; ex++) {
       for (let ez = -2; ez <= 2; ez++) {
-        if (ex === 0 && ez === 0) continue // gövde kalsin
+        if (ex === 0 && ez === 0) continue // leave the trunk
         player.setBlock(
           new Vec3(merkez.x + dx + ex, merkez.y + y, merkez.z + dz + ez), yaprak)
       }
@@ -115,7 +115,7 @@ function yaprakSar (server, surum, merkez, dx, dz, yukseklik = 4) {
   }
 }
 
-/** Kurulan blokların bota ulaşmasını bekle ve doğrula */
+/** Wait for the placed blocks to reach the bot, and confirm they did */
 async function sahneyiDogrula (bot, konum, beklenen = 'oak_log', maksMs = 8000) {
   const bitis = Date.now() + maksMs
   while (Date.now() < bitis) {
@@ -127,10 +127,11 @@ async function sahneyiDogrula (bot, konum, beklenen = 'oak_log', maksMs = 8000) 
 }
 
 /**
- * Sunucu tarafinda, adi verilen oyuncunun baglanip yere inmesini bekler.
- * Sahneyi ASIL botun konumuna kurmak icin gerekli — baska bir botun
- * konumuna kurarsan iki bot farkli yerlere dusuyor ve bot agaclari hic
- * gormuyor (bu hatayi bir kez yaptik).
+ * Waits server-side for the named player to connect and land.
+ *
+ * Needed to build the scene at the real bot's position: build it at another
+ * bot's position and the two land in different places, so the bot never sees
+ * the trees.
  */
 async function oyuncuyuBekle (server, isim, maksMs = 60000) {
   const bitis = Date.now() + maksMs
@@ -142,7 +143,7 @@ async function oyuncuyuBekle (server, isim, maksMs = 60000) {
   }
   if (!oyuncu) throw new Error(`${isim} baglanmadi`)
 
-  // Yere insin
+  // Wait for it to land
   let oncekiY = null
   let sabit = 0
   while (Date.now() < bitis) {

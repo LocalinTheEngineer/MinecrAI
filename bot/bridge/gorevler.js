@@ -22,7 +22,7 @@ const YUMUSAK = /_leaves$|vine|_sapling$|bamboo|cobweb|azalea|moss_|snow|sugar_c
 // not "is it good enough" — hitting diamond with a stone pickaxe destroys
 // the ore: the block breaks and nothing drops.
 //
-// Bu tabloyla ajan yetersiz kazmayla cevhere hiç yönlendirilmiyor.
+// With this table the agent is never sent at an ore its pickaxe cannot handle.
 const KAZMA_SEVIYELERI = ['wooden', 'stone', 'iron', 'diamond', 'netherite']
 
 const CEVHER_GEREKSINIMI = [
@@ -31,7 +31,7 @@ const CEVHER_GEREKSINIMI = [
   { desen: /(gold|redstone|diamond|emerald)_ore$/, seviye: 'iron' }
 ]
 
-/** Bu cevher için gereken kazma seviyesi (bilinmiyorsa en güvenlisi) */
+/** Pickaxe tier this ore needs (falls back to the safest one when unknown) */
 function gerekenSeviye (ad) {
   for (const { desen, seviye } of CEVHER_GEREKSINIMI) {
     if (desen.test(ad)) return seviye
@@ -39,7 +39,7 @@ function gerekenSeviye (ad) {
   return 'iron'
 }
 
-/** Envanterdeki en iyi kazmanın seviyesi ve kalan vuruşu */
+/** Tier of the best pickaxe in the inventory and its remaining hits */
 function kazmaDurumu (bot) {
   let enIyi = -1
   let kalan = 0
@@ -57,11 +57,11 @@ function kazmaDurumu (bot) {
   return { seviye: enIyi, kalan }
 }
 
-// Madende hiçbir koşulda kazılmayacak bloklar
+// Blocks never dug in the mine, under any condition
 const MADEN_TEHLIKE = /lava|water|bedrock|_spawner$|chest|obsidian/
 const DEEPSLATE_HARIC = /^(coal|iron|copper|gold|redstone|emerald|lapis|diamond)_ore$|^deepslate_(coal|iron|copper|gold|redstone|emerald|lapis|diamond)_ore$/
 
-/** Envanterdeki cevher ve külçe sayısı (kırılan cevher külçe/parça düşürüyor) */
+/** Ore and ingot count in the inventory (broken ore drops ingots or raw chunks) */
 function cevherSay (bot) {
   return bot.inventory.items()
     .filter((i) => /^raw_|^coal$|^diamond$|^emerald$|^redstone$|^lapis_lazuli$|_ore$/.test(i.name))
@@ -69,32 +69,30 @@ function cevherSay (bot) {
 }
 
 /**
- * GÖREVDEN BAĞIMSIZ EK GÖZLEM — 4 sayı.
+ * Extra observation, 4 numbers, same for every task.
  *
- * Önce sadece madende vardı. Ölçüm oradan geldi: bu bilgiler olmadan taklit
- * doğruluğu %25.5 çıkıyordu (dört aksiyonda kör tahmin %25), çünkü uzman
- * adımlarının %39'unu yere düşmüş cevheri toplamaya harcıyor ve gözlemde
- * düşmüş eşya hakkında hiçbir şey yoktu. Aynı gözleme bazen "sağa dön"
- * bazen "sola dön" düşüyordu: öğrenilemez veri.
+ * Started out mine-only, and the measurement came from there: without it BC
+ * accuracy was 25.5% against a 25% blind baseline over four actions. The
+ * expert spends 39% of its steps picking up dropped ore and the observation
+ * said nothing about dropped items, so the same observation carried "turn
+ * left" one time and "turn right" the next: unlearnable data.
  *
- * ODUN GÖREVİNDE DE AYNI DURUM VAR — orada da uzman düşen kütükleri
- * kovalıyor. Milestone 6'da (çok görevli tek ajan) iki görev aynı ağı
- * paylaşacağı için gözlemin de ortak olması gerekiyor; o yüzden burası
- * artık paylaşılan bir fonksiyon.
+ * The wood task has the same problem; the expert chases dropped logs there
+ * too. In Milestone 6 (one agent, several tasks) both tasks share a network,
+ * so the observation has to be shared as well; hence one shared function.
  *
- * Hepsi EGOSENTRİK (ajanın kendi bakışına göre), yani Python tarafında ek
- * bir dönüşüm gerekmiyor:
- *   sin(açı) : eşya sağımda mı solumda mı
- *   cos(açı) : 1 = tam önümde, -1 = tam arkamda
- *   mesafe   : 0..1 (eşya yoksa 1)
- *   kırılabilir engel: önümü kapatan bloğu KIRABİLİYOR muyum
+ * All of it is egocentric, so Python needs no extra transform:
+ *   sin(angle) : item on my right or my left
+ *   cos(angle) : 1 = straight ahead, -1 = straight behind
+ *   distance   : 0..1 (1 when there is no item)
+ *   breakable obstacle: can I break the block in front of me
  *
- * Son sayı ayrı bir boşluğu kapatıyor: uzman "kır" ile "dolaş" arasında
- * `onumuKapatan()`e bakarak seçiyor, ama gözlemde sadece "önüm kapalı mı"
- * vardı — "kırılabilir mi" yoktu.
+ * The last number closes a separate gap: the expert picks between breaking
+ * and going around by calling `onumuKapatan()`, but the observation only had
+ * "is my front blocked", not "is it breakable".
  *
- * Eşya yoksa sin=0 VE cos=0 gönderiliyor; gerçek bir açıda ikisi aynı anda
- * sıfır olamaz, yani "eşya yok" ayırt edilebilir durumda.
+ * With no item, sin=0 and cos=0 are both sent; at a real angle the two cannot
+ * be zero at once, so "no item" stays distinguishable.
  */
 const EK_GOZLEM = (env) => {
   const bot = env.bot
@@ -117,11 +115,11 @@ const EK_GOZLEM = (env) => {
   return [sin, cos, mesafe, env.onumuKapatan() ? 1 : 0]
 }
 
-// Kaç sayı eklediğini tek yerden bildir — testler ve env.py bunu kullanıyor
+// How many numbers this adds, in one place: the tests and env.py read it
 EK_GOZLEM.uzunluk = 4
 
 const GOREVLER = {
-  /** Varsayılan görev: ormanda odun topla. Milestone 1-4 bunun üstüne kuruldu. */
+  /** Default task: collect wood in a forest. Milestones 1-4 were built on it. */
   odun: {
     ad: 'odun',
     hedefAdet: 5,
@@ -157,7 +155,7 @@ const GOREVLER = {
     gozlemProfili: 'dar'
   },
 
-  /** Milestone 5: yeraltında cevher topla. */
+  /** Milestone 5: collect ore underground. */
   maden: {
     ad: 'maden',
     hedefAdet: 5,
@@ -166,75 +164,77 @@ const GOREVLER = {
     // across episodes. Measured: with 36 slots full, `/give iron_pickaxe`
     // succeeds server-side ("Gave 1 [Iron Pickaxe]") but the item never
     // arrives. A pickaxe-less bot destroys ore instead of collecting it, and
-    // bölümler boşa gidiyor. Aynı hatayı odun görevinde de yaşamıştık.
+    // the episodes are wasted. The wood task hit the same bug.
     //
-    // '*' = her şeyi sil. Kazma zaten bölüm kurulumunda veriliyor,
-    // yani her bölüm aynı temiz durumdan başlıyor — RL için doğrusu da bu.
+    // '*' = wipe everything. The pickaxe is handed out during episode setup
+    // anyway, so every episode starts from the same clean state, which is
+    // what RL wants.
     temizlemeEtiketi: '*',
     yuzeyGorevi: false,
 
-    // Bölüm bu derinlikte başlar. Demir y=15 civarında yoğun; elmas
-    // (y=-58) daha zengin ama bedrock'a yakın ve lav çok — eğitim için
-    // gereksiz ölüm riski.
+    // Episodes start at this depth. Iron is dense around y=15; diamond
+    // (y=-58) is richer but sits near bedrock with a lot of lava, which is
+    // pointless death risk during training.
     baslangicY: 15,
 
-    // Bölüm başında ajana verilen kazma.
+    // Pickaxe handed to the agent at the start of an episode.
     //
-    // NEDEN VERİYORUZ: yanlış kazmayla cevher kırmak onu YOK EDİYOR.
-    // Ajanın öğrenmesi gereken şey "cevheri bul ve kır"; alet tedariki
-    // ayrı bir problem ve onu elle yazılmış `kaz.js` zaten çözüyor.
-    // Ağaç görevinde de baltayı ajan üretmiyor.
+    // Breaking ore with the wrong pickaxe destroys it. What the agent has to
+    // learn is "find ore and break it"; getting tools is a separate problem
+    // and the hand-written `kaz.js` already solves it. The agent does not
+    // craft the axe in the tree task either.
     aletVer: 'iron_pickaxe',
 
     hedefMi: (blok) => !!blok && CEVHER.test(blok.name) && DEEPSLATE_HARIC.test(blok.name),
 
-    // Cevherde "oyuncunun yapısı mı" sorusu yok — cevher inşa edilmiyor.
-    // Ama YANLIŞ KAZMAYLA kırmak cevheri yok ediyor, o yüzden asıl soru
-    // "kırabilir miyim": elimdeki kazma yetiyor mu?
+    // "Is this player-built" does not apply to ore, nobody builds ore. But
+    // breaking it with the wrong pickaxe destroys it, so the real question is
+    // "can I break it": is the pickaxe I hold good enough?
     dogalMi: (bot, blok) => {
       if (!blok) return false
-      // Kazmam bu cevher için YETİYOR MU? "Kazmam var mı" yetmiyor:
-      // taş kazmayla elmasa vurmak elması yok ediyor.
+      // Is my pickaxe good enough for this ore? "Do I have a pickaxe" is not
+      // enough: hitting diamond with a stone pickaxe destroys the diamond.
       const { seviye, kalan } = kazmaDurumu(bot)
       if (kalan <= 0) return false
       return seviye >= KAZMA_SEVIYELERI.indexOf(gerekenSeviye(blok.name))
     },
 
     say: (bot) => cevherSay(bot),
-    hedefiDuzelt: (bot, blok) => blok, // damarın kendisi, düzeltme gerekmiyor
+    hedefiDuzelt: (bot, blok) => blok, // the vein itself, nothing to adjust
 
-    // MADENDE TAŞ KIRMAK GÖREVİN KENDİSİ.
+    // In the mine, breaking stone is the task.
     //
-    // Odun görevinde taşı kırmayı yasaklamıştık — orada taş kazmak bir
-    // kayıptı. Madende tam tersi: cevhere ulaşmanın tek yolu taşın içinden
-    // geçmek ve ajanın elinde kazma var. Aynı soruya iki görev iki farklı
-    // cevap veriyor; bu yüzden karar burada, ortamda değil.
+    // The wood task forbids breaking stone because mining stone there is
+    // wasted time. The mine is the opposite: the only way to reach ore is
+    // through stone and the agent holds a pickaxe. Two tasks answer the same
+    // question differently, which is why the decision lives here and not in
+    // the environment.
     engelKirilabilirMi: (bot, blok) => {
       if (!blok || blok.boundingBox !== 'block') return false
       if (MADEN_TEHLIKE.test(blok.name)) return false
       const { uygunAlet } = require('../skills/alet')
       if (uygunAlet(bot, blok)) return true
-      // Kürek işi bloklar (toprak, çakıl, kum, kil, çamur) ELLE de hızlı
-      // kırılır; kürek taşımıyoruz diye yolumuzu kapatmalarına gerek yok.
-      // Taş için bu geçerli değil: elle taş kazmak dakikalar sürer.
+      // Shovel blocks (dirt, gravel, sand, clay, mud) break fast by hand too,
+      // so not carrying a shovel is no reason to let them block the way.
+      // Stone is different: mining stone by hand takes minutes.
       return /^mineable\/shovel$/.test(blok.material || '') ||
         /dirt|gravel|sand/.test(blok.name)
     },
 
     /**
-     * DİKEY MESAFE YATAYDAN PAHALI.
+     * Vertical distance costs more than horizontal.
      *
-     * Kuş uçuşu mesafe madende yanlış ölçü. Ajanın aksiyonları yatay:
-     * ileri yürü, sağa dön, sola dön. Yukarı çıkmak için altına blok
-     * koyması ya da tavanı kırıp zıplaması gerekiyor — ikisi de aksiyon
-     * uzayında yok.
+     * Straight-line distance is the wrong measure in a mine. The agent's
+     * actions are horizontal: walk forward, turn right, turn left. Going up
+     * needs pillaring or breaking the ceiling and jumping, and neither is in
+     * the action space.
      *
-     * Sonuç: 8 blok TAM YUKARIDAKİ bir cevher, 12 blok ötede açık bir
-     * tünelin ucundaki cevherden "daha yakın" sayılıyordu. Bot ulaşamadığı
-     * hedefe kilitleniyordu.
+     * Result: an ore 8 blocks straight up counted as "closer" than one 12
+     * blocks away at the end of an open tunnel, and the bot locked onto a
+     * target it could not reach.
      *
-     * Dikey farkı 3 katına sayıyoruz: 8 blok yukarısı 24 birim, 12 blok
-     * ileri 12 birim. Artık ulaşılabilir olan seçiliyor.
+     * Vertical difference is tripled: 8 blocks up is 24 units, 12 blocks
+     * ahead is 12. The reachable one wins now.
      */
     hedefMaliyeti: (bot, konum) => {
       const p = bot.entity.position
@@ -244,100 +244,100 @@ const GOREVLER = {
     },
 
     /**
-     * MADENDE BÖLÜM BAŞINDA YÜRÜTME.
+     * No walking the agent in at episode start in the mine.
      *
-     * `baslangicaTasi()` pathfinder ile hedefe yaklaşıyor ve pathfinder
-     * `canDig: true` — yani taşın içinden TÜNEL KAZARAK gidiyor.
+     * `baslangicaTasi()` approaches the target with pathfinder, and
+     * pathfinder runs with `canDig: true`, so it tunnels through stone.
      *
-     * Ormanda bu masum: açık arazide yürümek görevin kendisi değil.
-     * Madende ise görevin TAM KENDİSİ. Ortam ajan adına tüneli kazıp
-     * onu cevherin dibine bırakıyor; ajan hiçbir şey öğrenmeden ödül
-     * alıyor ve öğrenme eğrisi anlamsızlaşıyor.
+     * In a forest that is harmless: walking across open ground is not the
+     * task. In a mine it is exactly the task. The environment digs the tunnel
+     * on the agent's behalf and drops it next to the ore; the agent collects
+     * reward without learning anything and the learning curve means nothing.
      *
-     * Bu, ajanın aksiyon uzayından "pathfinder ile ağaca git" aksiyonunu
-     * kaldırmamızla aynı sebep — sadece bu sefer arka kapıdan giriyordu.
+     * Same reason "walk to the tree with pathfinder" was removed from the
+     * action space, only here it came in through the back door.
      */
     baslangictaYurut: false,
 
     /**
-     * MADENDE ARAMA YARIÇAPI KÜÇÜK OLMAK ZORUNDA.
+     * The search radius has to be small in the mine.
      *
-     * Bu, PPO eğitiminin 2. bölümden sonra tamamen çökmesinin sebebiydi:
-     * 1. bölüm 5 cevher topladı, 2-18 arası HEPSİ sıfır aldı.
+     * This is why PPO training collapsed after episode 2: episode 1 collected
+     * 5 ores, episodes 2-18 all scored zero.
      *
-     * `findBlocks` DUVARIN ARDINI DA görüyor. Yer altında, y=15'te, 64
-     * blok yarıçapında her zaman bir cevher vardır — taşın 40 blok
-     * gerisinde. Ajan yerel damarı bitirdikten sonra ortam hâlâ "hedef
-     * var" diyordu, bu yüzden `tazeMadeneIsinla()` hiç çalışmadı ve ajan
-     * her bölümü ulaşamayacağı bir cevhere doğru tünel kazarak geçirdi.
-     * Bölümler tam 60 adımda (yerinde sayma kesme eşiği) bitiyordu.
+     * `findBlocks` sees through walls. Underground at y=15 there is always
+     * some ore within 64 blocks, 40 blocks deep in stone. After the agent
+     * finished the local vein the environment still reported "a target
+     * exists", so `tazeMadeneIsinla()` never ran and the agent spent every
+     * episode tunnelling toward ore it could not reach. Episodes ended at
+     * exactly 60 steps, the no-progress cutoff.
      *
-     * Ormanda bu sorun yok: orada 64 blok AÇIK arazi, ajan yürüyerek
-     * gidebiliyor. Madende bir bloğu geçmek dönme + kırma + yürüme
-     * demek; bir bölümde gerçekçi menzil ~15 blok.
+     * The forest does not have this problem: 64 blocks there is open ground
+     * the agent can walk. In a mine, one block of progress means turn, break
+     * and walk; realistic range in an episode is ~15 blocks.
      *
-     * 16'ya indirince ortamın değişmez kuralı geri geliyor:
-     * "bölüm başında ULAŞILABİLİR bir hedef vardır."
+     * At 16 the environment's invariant holds again: at the start of an
+     * episode there is a reachable target.
      */
     aramaYaricapi: 16,
 
     /**
-     * DİKEY HEDEFİ HIZLI BIRAK.
+     * Drop a vertical target quickly.
      *
-     * Ajanın aksiyon uzayında yukarı gitmek yok. Tam tepemizdeki bir
-     * cevher, menzilde değilse, bizim için ULAŞILAMAZ.
+     * Going up is not in the action space. An ore straight overhead that is
+     * out of reach is unreachable, full stop.
      *
-     * Bu mantık önce sadece `expert.js`teydi. PPO direksiyona geçince
-     * kimse çağırmadı ve ajan bölümün tamamını ulaşılamaz bir hedefe
-     * kilitli geçirdi. Aynı dersin yeni bir hâli: uzman, öğrencinin
-     * etkileyemeyeceği bir ortam durumuna dayanamaz — dolayısıyla bu
-     * karar ORTAMIN işi, uzmanın değil.
+     * This logic used to live only in `expert.js`. Once PPO took the wheel
+     * nobody called it and the agent spent whole episodes locked onto an
+     * unreachable target. Same lesson again: the expert cannot rely on
+     * environment state the student cannot affect, so this decision belongs
+     * to the environment, not the expert.
      */
     dikeyBirakma: true,
 
     /**
-     * MADENE ÖZEL EK GÖZLEM — UZMANIN GÖRDÜĞÜNÜ AJAN DA GÖRSÜN.
+     * Mine-specific extra observation: show the agent what the expert sees.
      *
-     * Ölçüm: taklit doğruluğu %25.5 çıktı. Dört aksiyon var, kör tahmin
-     * %25; "her zaman kır" desek %33 tutturur. Yani ağ hiçbir şey
-     * öğrenemedi. BC ve pretrain'in ikisi de aynı yeri gösterdi, yani
-     * veri bölme hatası değil — veri gerçekten öğrenilemezdi.
+     * Measured BC accuracy was 25.5%. With four actions blind guessing is
+     * 25% and "always break" would hit 33%, so the network learned nothing.
+     * BC and pretrain both pointed at the same place, so it was not a data
+     * split bug: the data really was unlearnable.
      *
-     * Sebep: uzman adımlarının %39'unu YERE DÜŞMÜŞ CEVHERİ toplamaya
-     * harcıyor (`yakin_cevheri_aliyorum_*`), ama gözlemde düşmüş eşya
-     * hakkında hiçbir şey yoktu. Aynı gözlemde bazen "sağa dön" bazen
-     * "sola dön" yazıyordu; ayrımı yapan bilgi ajana hiç gösterilmiyordu.
+     * Cause: the expert spends 39% of its steps picking up dropped ore
+     * (`yakin_cevheri_aliyorum_*`), and the observation said nothing about
+     * dropped items. The same observation was labelled "turn right" one time
+     * and "turn left" the next, and what separated the two was never shown
+     * to the agent.
      *
-     * Bu, projede üçüncü kez karşımıza çıkan aynı kural:
-     * UZMAN, ÖĞRENCİNİN GÖREMEDİĞİ BİLGİYE DAYANAMAZ.
+     * Third time the same rule shows up in this project: the expert cannot
+     * rely on information the student cannot see.
      *
-     * Neden şimdi patladı: görüş hattı düzeltmesinden önce bot cevheri
-     * duvarın ardından kırıyordu, düşen eşya ulaşılamaz yerlere düşüyordu
-     * ve bu dal neredeyse hiç çalışmıyordu. Bot düzelince dal çalışmaya
-     * başladı ve gözlemdeki boşluk ortaya çıktı.
+     * Why it surfaced now: before the line-of-sight fix the bot broke ore
+     * through walls, the drops landed somewhere unreachable and this branch
+     * almost never ran. Once the bot was fixed the branch started running and
+     * the gap in the observation showed.
      *
-     * Neden SADECE madende: odun görevi 16 sayıyla Milestone 4'te
-     * ölçüldü ve modelleri kayıtlı. Gözlemi orada da büyütmek o
-     * modelleri yüklenemez hale getirirdi.
+     * Why only in the mine: the wood task was measured with 16 numbers in
+     * Milestone 4 and its models are saved. Growing the observation there
+     * would make those models unloadable.
      *
-     * Dört sayı, hepsi EGOSENTRİK (ajanın kendi bakışına göre), yani
-     * Python tarafında ek bir dönüşüm gerekmiyor:
-     *   sin(açı) : eşya sağımda mı solumda mı
-     *   cos(açı) : 1 = tam önümde, -1 = tam arkamda
-     *   mesafe   : 0..1 (eşya yoksa 1)
-     *   kırılabilir engel: önümü kapatan bloğu KIRABİLİYOR muyum
+     * Four numbers, all egocentric, so Python needs no extra transform:
+     *   sin(angle) : item on my right or my left
+     *   cos(angle) : 1 = straight ahead, -1 = straight behind
+     *   distance   : 0..1 (1 when there is no item)
+     *   breakable obstacle: can I break the block in front of me
      *
-     * Son sayı ayrı bir boşluğu kapatıyor: uzman "kır" ile "dolaş"
-     * arasında `onumuKapatan()`e bakarak seçiyor, ama gözlemde sadece
-     * "önüm kapalı mı" vardı — "kırılabilir mi" yoktu.
+     * The last number closes a separate gap: the expert picks between
+     * breaking and going around by calling `onumuKapatan()`, but the
+     * observation only had "is my front blocked", not "is it breakable".
      *
-     * Eşya yoksa sin=0 VE cos=0 gönderiyoruz; gerçek bir açıda bu ikisi
-     * aynı anda sıfır olamaz, yani "eşya yok" ayırt edilebilir durumda.
+     * With no item, sin=0 and cos=0 are both sent; at a real angle the two
+     * cannot be zero at once, so "no item" stays distinguishable.
      */
     ekGozlem: EK_GOZLEM,
 
-    // Madende ek gözlem VARSAYILAN OLARAK AÇIK: bu görevin ölçülmüş
-    // sonuçları (Milestone 5b) zaten 20 sayılık gözlemle alındı.
+    // On by default in the mine: this task's measured results (Milestone 5b)
+    // were taken with the 20-number observation.
     gozlemProfili: 'genis'
   }
 }

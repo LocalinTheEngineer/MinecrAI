@@ -1,12 +1,12 @@
 'use strict'
 
 /**
- * MinecrAI köprüsü — Node tarafı.
+ * MinecrAI bridge, Node side.
  *
- * Çalıştırma:  npm run bridge
+ * Run with:  npm run bridge
  *
- * Ne yapar: Minecraft'a bir bot bağlar ve WebSocket üzerinden Python'a
- * "reset / step" arayüzü açar. Protokol için bot/bridge/protocol.md'ye bak.
+ * Connects a bot to Minecraft and exposes a "reset / step" interface to
+ * Python over WebSocket. See bot/bridge/protocol.md for the protocol.
  */
 
 const { WebSocketServer } = require('ws')
@@ -63,26 +63,23 @@ function kopruyuBaslat (ayarlar = {}) {
 
         try {
           if (istek.cmd === 'reset') {
-            // GÖREV DEĞİŞİMİ.
+            // Python announces which task it is playing in the reset. There
+            // is no separate "pick task" command: the task is fixed at the
+            // start of an episode and changing it mid-episode means nothing.
             //
-            // Python tarafı hangi görevi oynadığını reset ile bildiriyor.
-            // Ayrı bir "görev seç" komutu yapmadık: görev bölüm başında
-            // belli olur, bölüm ortasında değişmesinin anlamı yok.
-            //
-            // GÖREV DEĞİŞİMİ TEK NOKTADAN.
-            //
-            // Burası `env.gorev = gorevGetir(...)` diye elle atıyordu ve bu
-            // sessiz bir tuzaktı: ortamın türetilmiş durumu (arama yarıçapı,
-            // kilitli hedef, kara liste) güncellenmiyordu. Çok görevli
-            // eğitimde görev her bölümde değişeceği için odundan madene
-            // geçen bot 64 bloklu yarıçapla kalırdı — yani "ulaşılamaz
-            // hedefe kilitlenme" hatası geri gelirdi, üstelik sessizce.
+            // Task switching goes through one place. This used to assign
+            // `env.gorev = gorevGetir(...)` by hand, which silently skipped
+            // the environment's derived state (search radius, locked target,
+            // blacklist). In multi-task training the task changes every
+            // episode, so a bot going from wood to mining kept the 64-block
+            // radius and the "locked onto an unreachable target" bug came
+            // back, silently.
             if (env.gorevDegistir(istek.gorev)) {
               log.bilgi(`Görev: ${env.gorev.ad}`)
             }
 
-            // GENİŞ GÖZLEM: çok görevli eğitim tek bir gözlem genişliği
-            // ister. Belirtilmezse görevin kendi varsayılanı geçerli.
+            // Multi-task training wants a single observation width. When
+            // unset, the task's own default applies.
             if (istek.genisGozlem !== undefined) {
               env.genisGozlem = !!istek.genisGozlem
             }
@@ -91,9 +88,9 @@ function kopruyuBaslat (ayarlar = {}) {
           } else if (istek.cmd === 'step') {
             ws.send(JSON.stringify(await env.step(istek.action)))
           } else if (istek.cmd === 'expert') {
-            // Milestone 3: "bu durumda uzman ne yapardi?"
-            // Cevap {action, sebep} — sebep tani icin kritik: uzman hicbir
-            // sey yapmiyorsa NEDEN yapmadigini bilmeden tahmin yurutuyoruz.
+            // Milestone 3: "what would the expert do here?"
+            // Answer is {action, sebep}. The reason matters for diagnosis:
+            // when the expert does nothing, without it we are guessing why.
             const cevap = env.uzmanAksiyonu()
             cevap.tani = env.taniBilgisi()
             ws.send(JSON.stringify(cevap))

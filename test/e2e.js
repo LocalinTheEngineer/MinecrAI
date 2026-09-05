@@ -1,9 +1,9 @@
-// Otomatik test: flying-squid ile sahte bir sunucu açar, botu bağlar,
-// botun yanına ağaç diker ve iki şeyi test eder:
-//   TEST 1 — bot ağacı buluyor ve kesiyor mu?
-//   TEST 2 — "dur" komutu kesme işini gerçekten durduruyor mu?
+// Automated test: spins up a fake server with flying-squid, connects the bot,
+// plants a tree next to it and checks two things:
+//   TEST 1 - does the bot find and chop the tree?
+//   TEST 2 - does "dur" actually stop the chopping?
 //
-// Çalıştırma: node test/e2e.js
+// Run: node test/e2e.js
 process.env.MC_VERSION = '1.20.2'
 process.env.MC_PORT = '25599'
 process.env.MC_HOST = 'localhost'
@@ -58,9 +58,9 @@ async function main () {
   mv.canDig = true
   bot.pathfinder.setMovements(mv)
 
-  // --- Test sahnesini kur ---------------------------------------------
-  // Arazi rastgele uretildigi icin testler tutarsiz oluyordu.
-  // Cozum: botun etrafinda duz bir platform acip agaci oraya dikiyoruz.
+  // --- Build the test scene -------------------------------------------
+  // Randomly generated terrain made the tests inconsistent, so clear a flat
+  // platform around the bot and plant the tree on it.
   const mcData = require('minecraft-data')(bot.version)
   const logState = mcData.blocksByName.oak_log.defaultState
   const stoneState = mcData.blocksByName.stone.defaultState
@@ -68,7 +68,7 @@ async function main () {
   const p = bot.entity.position.floored()
   const player = server.players[0]
 
-  // 13x13 tas platform + uzerini temizle
+  // 13x13 stone platform, cleared above
   for (let dx = -6; dx <= 6; dx++) {
     for (let dz = -6; dz <= 6; dz++) {
       player.setBlock(new Vec3(p.x + dx, p.y - 1, p.z + dz), stoneState)
@@ -78,8 +78,8 @@ async function main () {
     }
   }
 
-  // Agaclar birbirine bitisik olursa flood-fill onlari TEK agac sayiyor.
-  // Bu yuzden aralarinda en az 3 blok birakiyoruz.
+  // Adjacent trees get counted as one by the flood-fill, so leave at least
+  // 3 blocks between them.
   const agacDik = (dx, dz, yukseklik = 4) => {
     for (let i = 0; i < yukseklik; i++) {
       player.setBlock(new Vec3(p.x + dx, p.y + i, p.z + dz), logState)

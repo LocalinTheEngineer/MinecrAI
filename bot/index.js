@@ -1,23 +1,23 @@
 'use strict'
 
 /**
- * MinecrAI — Milestone 1: kural tabanlı bot
+ * MinecrAI, Milestone 1: rule-based bot
  *
- * Çalıştırma:  npm run bot
+ * Run with:  npm run bot
  *
- * Oyun içinden chat'e yazarak kontrol edersin (tam liste için oyunda "komut" yaz):
- *   gel          -> yanına gelir
- *   kes          -> en yakın ağacı keser
- *   kes 3        -> 3 ağaç keser
- *   kes surekli  -> "dur" diyene kadar ağaç keser
- *   balta        -> envanterindeki oduna tahta balta yapar (yoksa)
-   koru         -> bulunduğun yerin 24 blok çevresini kesinlikle kesmez
-   koru 40      -> yarıçapı sen belirlersin
-   korumalar    -> işaretli bölgeleri sayar
-   korumasil    -> bütün koruma bölgelerini kaldırır
-   envanter     -> envanterini söyler
- *   nerede       -> koordinatlarını söyler
- *   dur          -> yaptığı işi anında bırakır
+ * Controlled from in-game chat (type "komut" in game for the full list):
+ *   gel          -> walks over to you
+ *   kes          -> chops the nearest tree
+ *   kes 3        -> chops 3 trees
+ *   kes surekli  -> chops until told "dur"
+ *   balta        -> crafts a wooden axe from inventory wood (if it has none)
+ *   koru         -> never chops within 24 blocks of where you stand
+ *   koru 40      -> you set the radius
+ *   korumalar    -> counts the marked areas
+ *   korumasil    -> removes every protected area
+ *   envanter     -> reports its inventory
+ *   nerede       -> reports its coordinates
+ *   dur          -> drops whatever it is doing at once
  */
 
 const mineflayer = require('mineflayer')
@@ -34,11 +34,11 @@ const sohbet = require('./sohbet/beyin')
 const { GorevKontrol, IptalEdildi, pathfinderDurdur } = require('./utils/gorev')
 
 /**
- * Komut listesi — TEK DOĞRULUK KAYNAĞI.
+ * Command list, single source of truth.
  *
- * Hem "komut" komutunun çıktısı hem de açılış mesajı buradan üretiliyor.
- * Yeni bir komut eklerken buraya da satır ekle, yoksa yardım metni koddan
- * sapar ve kimse fark etmez.
+ * Both the output of the "komut" command and the greeting message are built
+ * from this. Add a row here when you add a command, or the help text drifts
+ * away from the code and nobody notices.
  */
 const KOMUTLAR = [
   { ad: 'gel', aciklama: 'yanına yürür' },
@@ -67,14 +67,14 @@ const KOMUTLAR = [
 ]
 
 /**
- * Komut listesini chat'e yazar.
+ * Writes the command list to chat.
  *
- * Renk için `/tellraw` gerekiyor, o da op yetkisi istiyor. utils/chat.js bunu
- * bir kez deniyor; bot op değilse otomatik olarak düz metne düşüyor.
+ * Colour needs `/tellraw`, which needs op. utils/chat.js tries it once and
+ * falls back to plain text when the bot is not op.
  *
- * Not: vanilla sunucunun spam filtresi mesaj SAYISINA bakıyor. Her komutu ayrı
- * mesaj yapmak botu "disconnect.spam" ile attırıyordu — çözüm gecikmeyi
- * uzatmak değil, mesaj sayısını azaltmak.
+ * A vanilla server's spam filter counts messages. One message per command got
+ * the bot kicked with "disconnect.spam"; the fix is fewer messages, not a
+ * longer delay.
  */
 async function komutlariYaz (bot) {
   await renkliListe(bot, '=== MinecrAI komutları ===', KOMUTLAR)
@@ -94,31 +94,31 @@ function botOlustur () {
   bot.loadPlugin(pathfinderPlugin)
   bot.loadPlugin(collectBlock)
 
-  // Aynı anda tek görev çalışsın; "dur" bu nesne üzerinden iptal eder
+  // One task at a time; "dur" cancels through this object
   const kontrol = new GorevKontrol()
 
-  // --- Bağlantı olayları -------------------------------------------------
+  // --- Connection events -------------------------------------------------
   bot.once('spawn', () => {
     const movements = new Movements(bot)
-    movements.canDig = true // yolunu açmak için blok kırabilsin
-    movements.allow1by1towers = false // gereksiz kule dikmesin
+    movements.canDig = true // may break blocks to clear a path
+    movements.allow1by1towers = false // no pointless pillaring
 
-    // LAV AYARLARI — bot bir kez lavda öldü, sebebi büyük ihtimalle burası.
+    // Lava settings. The bot died in lava once and this is most likely why.
     //
-    // mineflayer-pathfinder'ın varsayılanında (lib/movements.js:73)
-    // lav "replaceable" listesinde: yol açarken lavı DEĞİŞTİRİLEBİLİR bir
-    // blok sayıyor ve içinden geçmeyi planlayabiliyor. Yerin 60 blok
-    // altında bu ölüm demek. Listeden çıkarıyoruz.
+    // By default mineflayer-pathfinder (lib/movements.js:73) has lava in the
+    // "replaceable" list: when clearing a path it treats lava as a block it
+    // can replace and may plan a route straight through it. 60 blocks
+    // underground that means death. Take it out of the list.
     try {
       movements.replaceables.delete(bot.registry.blocksByName.lava.id)
-    } catch (err) { /* sürüm farkı — kritik değil */ }
+    } catch (err) { /* version difference, not critical */ }
 
-    // Parkur = boşlukların üstünden atlamak. Yüzeyde hoş; mağarada
-    // lav gölünün üstünden atlamaya çalışmak demek.
+    // Parkour means jumping over gaps. Fine on the surface; in a cave it
+    // means trying to jump over a lava lake.
     movements.allowParkour = false
 
-    // Varsayılan 4 blok düşüşe izin veriyor. Karanlık bir mağarada
-    // 4 blok aşağısı çoğu zaman hiç görünmüyor.
+    // The default allows a 4-block drop. In a dark cave you usually cannot
+    // see 4 blocks down at all.
     movements.maxDropDown = 3
 
     bot.pathfinder.setMovements(movements)
@@ -135,10 +135,10 @@ function botOlustur () {
   bot.on('error', (err) => log.hata('Hata:', err.message))
   bot.on('end', (sebep) => log.uyari('Bağlantı kapandı:', sebep))
 
-  // --- Görev çalıştırıcı -------------------------------------------------
+  // --- Task runner -------------------------------------------------------
   /**
-   * Uzun süren işleri tek noktadan yönetir: aynı anda iki görev başlamasın,
-   * iptal edildiğinde temiz kapansın, hata olursa bot çökmesin.
+   * Runs long jobs from one place: no two tasks at once, clean shutdown on
+   * cancel, and no crash on error.
    */
   async function gorevCalistir (isim, isFn) {
     if (kontrol.calisiyor) {
@@ -159,21 +159,22 @@ function botOlustur () {
       }
     } finally {
       kontrol.bitir()
-      pathfinderDurdur(bot) // mandalı bırakma, sonraki goto'yu öldürür
+      pathfinderDurdur(bot) // do not leave the latch set, it kills the next goto
       bot.clearControlStates()
     }
   }
 
-  // --- Chat komutları ----------------------------------------------------
-  // BİLİNEN KOMUT KELİMELERİ.
+  // --- Chat commands -----------------------------------------------------
+  // Known command words.
   //
-  // Sohbet katmanının devreye girip girmeyeceğini bu belirliyor: ilk
-  // kelime buradaysa mesaj tam komuttur ve doğrudan çalışır (LLM
-  // çağrısı yok, gecikme yok, maliyet yok). Değilse doğal dil kabul
-  // edilip sohbet katmanına gider.
+  // This decides whether the chat layer gets involved: if the first word is
+  // in here the message is an exact command and runs directly, with no LLM
+  // call, no latency and no cost. Otherwise it is taken as natural language
+  // and goes to the chat layer.
   //
-  // Liste elle tutuluyor ama `test/smoke.js` bunu yönlendiricideki
-  // gerçek dallarla karşılaştırıyor — eksik kalırsa test söylüyor.
+  // The list is maintained by hand, but `test/smoke.js` compares it against
+  // the real branches in the router, so a missing entry shows up as a test
+  // failure.
   const BILINEN = new Set([
     'dur', 'komut', 'komutlar', 'yardim', 'yardım', 'help', '?',
     'nerede', 'envanter', 'takip', 'takibi', 'takipbirak', 'ver',
@@ -182,13 +183,13 @@ function botOlustur () {
   ])
 
   /**
-   * Bir chat mesajını işler.
+   * Handles one chat message.
    *
-   * `mesaj` doğrudan oyuncudan gelebilir ya da sohbet katmanının
-   * ürettiği bir komut satırı olabilir — ikisi de AYNI yoldan geçiyor.
-   * Böylece LLM'in çalıştırabildiği her şey zaten test edilmiş kod.
+   * `mesaj` can come straight from the player or be a command line produced
+   * by the chat layer; both take the same path, so everything the LLM can
+   * run is already tested code.
    */
-  // Oyuncu "dur" dediginde sohbet zincirinin kalan adimlari da atlanmali.
+  // When the player says "dur", the remaining steps of a chat chain are skipped too.
   let iptalEdildi = false
 
   async function mesajiIsle (username, mesaj) {
@@ -196,9 +197,9 @@ function botOlustur () {
     const komut = parcalar[0]
     const arguman = parcalar[1]
 
-    // "dur" her zaman çalışır — meşgulken bile
+    // "dur" always works, even while busy
     if (komut === 'dur') {
-      iptalEdildi = true   // sohbet zincirinin kalanini da atla
+      iptalEdildi = true   // skip the rest of the chat chain too
       kontrol.durdur()
       skills.takipBirak(bot)
       pathfinderDurdur(bot)
@@ -208,7 +209,7 @@ function botOlustur () {
       return
     }
 
-    // Yardım her zaman çalışır — meşgulken bile
+    // Help always works, even while busy
     if (komut === 'komut' || komut === 'komutlar' || komut === 'yardim' ||
         komut === 'yardım' || komut === 'help' || komut === '?') {
       await komutlariYaz(bot)
@@ -287,12 +288,11 @@ function botOlustur () {
 
     // "uret taş kazma" / "uret çubuk 8"
     //
-    // DİKKAT: `komut` mesajın SADECE İLK KELİMESİ (parcalar[0]).
-    // Burada bir zamanlar `komut.startsWith('uret ')` yazıyordu — `komut`
-    // hiçbir zaman boşluk içermediği için o koşul asla doğru olmuyordu ve
-    // "uret" komutu sessizce hiçbir şey yapmıyordu. Argümanlar `parcalar`
-    // dizisinin geri kalanında.
-    // "kaz demir" / "kaz elmas 5" / "kaz" (varsayilan: tas)
+    // Careful: `komut` is only the first word of the message (parcalar[0]).
+    // This once read `komut.startsWith('uret ')`, and since `komut` never
+    // contains a space that condition was never true and the "uret" command
+    // silently did nothing. The arguments are in the rest of `parcalar`.
+    // "kaz demir" / "kaz elmas 5" / "kaz" (default: tas)
     if (komut === 'cik') {
       await gorevCalistir('cik', async () => {
         bot.chat('Yüzeye çıkıyorum...')
@@ -327,7 +327,7 @@ function botOlustur () {
         return
       }
 
-      // Son kelime sayıysa adettir: "uret cubuk 8"
+      // A trailing number is the count: "uret cubuk 8"
       let adet = 1
       if (argumanlar.length > 1 && /^\d+$/.test(argumanlar[argumanlar.length - 1])) {
         adet = Math.min(64, Math.max(1, parseInt(argumanlar.pop(), 10)))
@@ -336,7 +336,7 @@ function botOlustur () {
 
       await gorevCalistir('uret', async () => {
         bot.chat(`${istek} için gerekeni toplayıp yapmayı deniyorum...`)
-        // getir = uret + tedarikçi: eksik ham maddeyi kendisi toplar
+        // getir = uret + supplier: it collects the missing raw material itself
         const sonuc = await skills.getir(bot, kontrol, istek, adet)
         bot.chat(sonuc.mesaj)
       })
@@ -349,7 +349,7 @@ function botOlustur () {
     }
 
     if (komut === 'kes') {
-      // "kes" -> 1 ağaç | "kes 3" -> 3 ağaç | "kes surekli" -> dur diyene kadar
+      // "kes" -> 1 tree | "kes 3" -> 3 trees | "kes surekli" -> until told to stop
       let adet = 1
       if (arguman === 'surekli' || arguman === 'sürekli' || arguman === 'durmadan') {
         adet = Infinity
@@ -376,14 +376,14 @@ function botOlustur () {
 
     const ilkKelime = mesaj.trim().toLowerCase().split(/\s+/)[0]
 
-    // Tam komutsa doğrudan çalıştır — LLM çağrısı yok.
+    // Exact command: run it directly, no LLM call.
     if (BILINEN.has(ilkKelime)) {
       await mesajiIsle(username, mesaj)
       return
     }
 
-    // Değilse doğal dil olarak yorumlamayı dene.
-    if (!sohbet.acik()) return   // anahtar yok: eskisi gibi sessiz kal
+    // Otherwise try to read it as natural language.
+    if (!sohbet.acik()) return   // no key: stay quiet, as before
 
     const yorum = await sohbet.yorumla(bot, username, mesaj, {
       mesgul: kontrol.calisiyor
@@ -392,16 +392,16 @@ function botOlustur () {
 
     if (yorum.cevap) bot.chat(yorum.cevap)
 
-    // KOMUT ZİNCİRİ.
+    // Command chain.
     //
-    // Model birden fazla iş önerebiliyor ("önce odun kes sonra kazma yap").
-    // Sırayla çalıştırıyoruz ve her birini BEKLİYORUZ: `gorevCalistir`
-    // meşgulken yeni iş almıyor, yani beklemezsek ikinci adım "şu an
-    // meşgulüm" cevabıyla düşerdi.
+    // The model can propose several jobs ("chop wood first, then make a
+    // pickaxe"). They run in order and each one is awaited: `gorevCalistir`
+    // refuses new work while busy, so without the await the second step would
+    // fall through with "I'm busy right now".
     //
-    // Oyuncu araya "dur" yazarsa `kontrol` iptal ediliyor ve kalan
-    // adımlar da atlanıyor — yoksa "dur" sadece o anki işi durdurur,
-    // sıradaki hemen başlardı.
+    // If the player types "dur" in between, `kontrol` is cancelled and the
+    // remaining steps are skipped; otherwise "dur" would stop only the
+    // current job and the next one would start immediately.
     if (Array.isArray(yorum.komutlar) && yorum.komutlar.length > 0) {
       log.bilgi(`Sohbet: "${mesaj}" -> ${yorum.komutlar.join(' ; ')}`)
       for (const [i, komutSatiri] of yorum.komutlar.entries()) {
@@ -421,7 +421,7 @@ function botOlustur () {
   return bot
 }
 
-// Dosya doğrudan çalıştırıldıysa botu başlat
+// Start the bot when this file is run directly
 if (require.main === module) {
   botOlustur()
 }

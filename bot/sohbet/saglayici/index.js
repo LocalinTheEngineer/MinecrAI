@@ -1,10 +1,10 @@
 'use strict'
 
 /**
- * Sağlayıcı seçimi.
+ * Provider selection.
  *
- * Hangi anahtar varsa o kullanılır — kullanıcının iki ayar birden
- * yazması gerekmiyor. `SOHBET_SAGLAYICI` verilirse o kazanır.
+ * Whichever key is present gets used, so nobody has to set two options.
+ * `SOHBET_SAGLAYICI` wins when it is set.
  */
 
 const anthropic = require('./anthropic')
@@ -19,7 +19,7 @@ function sec (config) {
     if (!s) throw new Error(`bilinmeyen sohbet saglayicisi: ${istenen}`)
     return s
   }
-  // Otomatik: hangi anahtar varsa. Gemini önce, çünkü ücretsiz katmanı var.
+  // Auto: whichever key exists. Gemini first, it has a free tier.
   if (gemini.hazir(config)) return gemini
   if (anthropic.hazir(config)) return anthropic
   return null

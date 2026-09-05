@@ -1,15 +1,15 @@
-// Demo toplama testi icin sunucu.
+// Server for the demo-collection test.
 //
-// Sahneyi ASIL bota (kopru botu) gore kurar: sunucu tarafinda o oyuncunun
-// baglanip yere inmesini bekler, sonra etrafina duz bir platform acip
-// agaclari diker. Kesilen agaclari periyodik olarak yeniler.
+// Builds the scene around the real bot (the bridge bot): waits server-side for
+// that player to connect and land, then clears a flat platform around it and
+// plants trees. Replants chopped trees periodically.
 const { sunucuBaslat, oyuncuyuBekle, platformKur, agacDik } = require('./sahne')
 
 const VERSION = process.env.TEST_VERSION || '1.20.2'
 const PORT = parseInt(process.env.TEST_PORT || '25605', 10)
 const BOT_ADI = process.env.TEST_BOT || 'Ajan'
 
-// Aralarinda >=2 blok bosluk olsun ki flood-fill onlari tek agac saymasin
+// Keep >=2 blocks between them or flood-fill counts them as one tree
 const AGAC_YERLERI = [
   [-6, -3], [-3, -6], [3, -6], [6, -3],
   [-6, 3], [-3, 6], [3, 6], [6, 3],

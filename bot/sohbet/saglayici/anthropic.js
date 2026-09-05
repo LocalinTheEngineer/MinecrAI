@@ -1,10 +1,10 @@
 'use strict'
 
 /**
- * Anthropic Messages API sağlayıcısı.
+ * Anthropic Messages API provider.
  *
- * Ortak arayüz (bkz. bot/sohbet/saglayici/index.js):
- *   hazir()        -> anahtar var mı
+ * Shared interface (see bot/sohbet/saglayici/index.js):
+ *   hazir()        -> is there a key
  *   cagir(istek)   -> { metin, arac }   arac = {komut, arguman} | null
  */
 

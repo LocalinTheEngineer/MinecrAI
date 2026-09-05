@@ -1,4 +1,4 @@
-"""MinecrAI — Minecraft'ta pekistirmeli ogrenme (RL) ile ogrenen ajan."""
+"""MinecrAI: an agent that learns to play Minecraft with reinforcement learning."""
 
 from .env import MinecraftEnv, zenginlestir
 from .coklu import CokluGorevEnv, ortam_kur

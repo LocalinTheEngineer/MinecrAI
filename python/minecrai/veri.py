@@ -1,13 +1,12 @@
-"""Demo verisini aga verilecek bicime cevirme.
+"""Converting demo data into the format the network expects.
 
-NEDEN AYRI DOSYA: bu fonksiyonun BIRBIRININ KOPYASI iki halde
-`train_bc.py` ve `pretrain_ppo.py` icinde duruyordu. Ayni duzeltmeyi iki
-kez yapmak zorunda kaldik ve ikincisinde biri unutulsa hata sessiz
-olurdu: iki script ayni veriyi farkli yorumlar, sonuclari karsilastirilamaz
-hale gelir -- ustelik ikisi de calisir gorunur.
+This lives in its own file because it used to exist as two copies, one in
+`train_bc.py` and one in `pretrain_ppo.py`. Every fix had to be made twice, and
+missing one was silent: the two scripts read the same data differently, their
+results stop being comparable, and both still look like they work.
 
-Cok gorevli egitim (Milestone 6) zenginlestirmeyi goreve bagimli yaptigi
-icin kopyalari surdurmenin maliyeti daha da artti.
+Multi-task training (Milestone 6) made the enrichment task-dependent, which
+raised the cost of keeping copies even further.
 """
 
 from __future__ import annotations
@@ -18,14 +17,14 @@ from .env import gozlem_boyutu, ham_boyutu, zenginlestirici
 
 
 def gozlemleri_hazirla(ham, gorev: str = "odun") -> np.ndarray:
-    """Kayitli demo gozlemlerini agin gordugu bicime cevirir.
+    """Converts recorded demo observations into what the network sees.
 
-    NEDEN GENISLIGE BAKIP KARAR VERIYOR: `collect_demos` bir donem HAM
-    yerine ZENGINLESTIRILMIS gozlem kaydetti. Egitim tarafi ustune bir kez
-    daha zenginlestirince girdi 16 -> 19 -> 22 oldu ve ag
-    "mat1 and mat2 shapes cannot be multiplied (256x22 and 19x128)" diye
-    coktu. Hata mesaji anlasilir degildi ve veriyi yeniden toplamak yarim
-    saat aliyordu. Boyuta bakmak hem eski hem yeni dosyalari calistiriyor.
+    It dispatches on the width because `collect_demos` went through a phase of
+    recording enriched observations instead of raw ones. Enriching them once
+    more on the training side turned the input into 16 -> 19 -> 22 and the net
+    died with "mat1 and mat2 shapes cannot be multiplied (256x22 and 19x128)".
+    The message was unreadable and re-collecting the data took half an hour.
+    Checking the width keeps both old and new files usable.
     """
     ham = np.asarray(ham, dtype=np.float32)
     genislik = ham.shape[1]
@@ -38,10 +37,9 @@ def gozlemleri_hazirla(ham, gorev: str = "odun") -> np.ndarray:
         print(f"  (veri zaten zenginlestirilmis: {genislik} boyut, tekrar edilmiyor)")
         return ham
 
-    # SESSIZ BOZULMAYA IZIN YOK.
-    #
-    # 20 sayilik maden verisini odun gorevi diye yuklemek, ya anlasilmaz bir
-    # boyut hatasi ya da -- daha kotusu -- sessizce yanlis egitim demek.
+    # Fail loudly instead of corrupting silently: loading 20-number mine data
+    # as the wood task gives either an unreadable shape error or, worse,
+    # training on the wrong thing without any sign of it.
     raise SystemExit(
         f"Gozlem boyutu {genislik}, '{gorev}' gorevi icin taninmiyor. "
         f"Beklenen {HAM} (ham) veya {GOZLEM} (zenginlestirilmis). "

@@ -2,8 +2,8 @@
 require('dotenv').config()
 
 /**
- * Tüm ayarlar tek yerde. Değerler .env dosyasından okunur,
- * .env yoksa buradaki varsayılanlar kullanılır.
+ * Every setting in one place. Values come from .env; without a .env the
+ * defaults here are used.
  */
 const config = {
   host: process.env.MC_HOST || 'localhost',
@@ -13,27 +13,27 @@ const config = {
   auth: process.env.MC_AUTH || 'offline',
   bridgePort: parseInt(process.env.BRIDGE_PORT || '8765', 10),
 
-  // SOHBET KATMANI (bot/sohbet/). Anahtar yoksa sessizce kapalı:
-  // bot tam komutlarla çalışmaya devam eder. Projeyi klonlayan birinin
-  // API anahtarı olmadan da her şeyi çalıştırabilmesi gerekiyor.
+  // Chat layer (bot/sohbet/). With no key it stays quietly off and the bot
+  // keeps working from exact commands, so someone cloning the project can
+  // run everything without an API key.
   //
-  // İki sağlayıcı destekleniyor; hangi anahtar varsa o kullanılır.
-  // Gemini'nin ÜCRETSİZ katmanı olduğu için o önce deneniyor —
-  // bu bir öğrenci portföyü, çalışması için kredi kartı gerekmemeli.
+  // Two providers are supported; whichever key exists is used. Gemini is
+  // tried first because it has a free tier: this is a student portfolio and
+  // should not need a credit card to run.
   geminiAnahtari: process.env.GEMINI_API_KEY || '',
   anthropicAnahtari: process.env.ANTHROPIC_API_KEY || '',
-  sohbetSaglayici: process.env.SOHBET_SAGLAYICI || '', // boş = otomatik
-  sohbetModeli: process.env.SOHBET_MODELI || '',       // boş = sağlayıcının varsayılanı
+  sohbetSaglayici: process.env.SOHBET_SAGLAYICI || '', // empty = auto
+  sohbetModeli: process.env.SOHBET_MODELI || '',       // empty = provider default
 
-  // Botun davranış ayarları
-  searchRadius: 64, // kaynak ararken kaç blok uzağa bakılsın
-  // (32'ydi: temizlenmiş bir alanda "ağaç bulamadım" deyip pes ediyordu.
-  //  Sunucu görüş mesafesi ~160 blok yüklüyor, 64 hâlâ güvenli.)
-  // (64 idi: yüklenmemiş chunk'lardaki ağaçları buluyordu)
-  maxLogsPerTree: 40 // tek seferde en fazla kaç kütük kesilsin
-  // (12'ydi: koyu meşe/orman ağaçları 20+ kütük, yayılma ortada kesiliyor,
-  //  kök ve tepe listeye hiç girmiyordu — botun ağacın ortasını kesip
-  //  gitmesinin asıl sebebi buydu)
+  // Bot behaviour settings
+  searchRadius: 64, // how far to look when searching for resources
+  // (was 32: in a cleared area it gave up with "no tree found". The server
+  //  loads ~160 blocks of view distance, so 64 is still safe.)
+  // (was 64: it found trees in unloaded chunks)
+  maxLogsPerTree: 40 // max logs cut in one go
+  // (was 12: dark oak and forest trees have 20+ logs, the flood fill stopped
+  //  halfway and root and top never made the list. That was the real reason
+  //  the bot cut the middle of a tree and walked off.)
 }
 
 module.exports = config

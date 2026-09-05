@@ -10,26 +10,26 @@ const { dusenleriTopla } = require('./chopTree')
 const koruma = require('../utils/koruma')
 
 /**
- * SKILL: Kaz  ("kaz demir", "kaz elmas 5")
+ * Skill: mine ("kaz demir", "kaz elmas 5").
  *
- * Madencilik ağaç kesmekten üç noktada ayrılıyor:
+ * Mining differs from chopping in three ways:
  *
- * 1) ALET ZORUNLU. Taşı elle kırarsan blok yok olur, hiçbir şey düşmez.
- *    Demir cevheri taş kazma ister, elmas demir kazma ister. Yanlış
- *    kazmayla kırmak cevheri YOK ETMEK demek — botun kendi ayağına
- *    sıkması. O yüzden kırmadan önce seviye kontrolü yapıyoruz.
+ * 1) A tool is mandatory. Break stone by hand and the block disappears with
+ *    no drop. Iron ore needs a stone pickaxe, diamond needs an iron one.
+ *    Breaking with the wrong pickaxe destroys the ore, so the tier gets
+ *    checked before every break.
  *
- * 2) CEVHER GÖRÜNMÜYOR. Ağaç yüzeyde duruyor, cevher taşın içinde.
- *    Önce doğru derinliğe inmek, sonra aramak gerekiyor.
+ * 2) Ore is not visible. A tree stands on the surface, ore sits inside stone:
+ *    get to the right depth first, search afterwards.
  *
- * 3) AŞAĞISI ÖLDÜRÜR. Dümdüz aşağı kazmak Minecraft'ın en klasik ölüm
- *    sebebi: altında lav gölü veya 30 bloklu bir mağara olabilir, ikisini
- *    de bloğu kırmadan göremezsin. Bu yüzden merdiven şeklinde iniyoruz —
- *    her adımda bir ileri bir aşağı, ayağının altı hep dolu.
+ * 3) Digging straight down kills. It is the classic Minecraft death: a lava
+ *    lake or a 30-block cave can be right underneath and neither is visible
+ *    until the block is gone. So the descent is a staircase, one step forward
+ *    and one down, with solid ground always underfoot.
  */
 
-// Türkçe ad -> blok adları. Derinlerde taş yerine deepslate var,
-// cevherin adı da değişiyor (iron_ore / deepslate_iron_ore) — ikisi de listede.
+// Turkish name -> block names. Deep down stone becomes deepslate and the ore
+// name changes with it (iron_ore / deepslate_iron_ore), so both are listed.
 const CEVHERLER = {
   komur: { bloklar: ['coal_ore', 'deepslate_coal_ore'], seviye: 'wooden', y: 50 },
   kömür: { bloklar: ['coal_ore', 'deepslate_coal_ore'], seviye: 'wooden', y: 50 },
@@ -47,40 +47,39 @@ const CEVHERLER = {
   taş: { bloklar: ['stone', 'deepslate', 'andesite', 'diorite', 'granite'], seviye: 'wooden', y: null }
 }
 
-// Kazma seviyeleri, zayıftan güçlüye. "iron" isteyen bir cevheri
-// elmas kazmayla da kırabilirsin — index karşılaştırması bunun için.
+// Pickaxe tiers, weakest first. An ore that asks for "iron" also breaks with
+// a diamond pickaxe, which is what the index comparison is for.
 const SEVIYELER = ['wooden', 'stone', 'iron', 'diamond', 'netherite']
 
-// Kazarken karşımıza çıkarsa DURACAĞIMIZ bloklar
+// Blocks that stop the dig if they turn up
 const TEHLIKELI = /lava|bedrock/
 const SU = /water|bubble_column/
 
-// Kazma kırılmadan önce yenisini yapmaya başladığımız eşik.
-// Sıfırı beklemek geç: kırıldığı anda elin boş kalıyor ve kırdığın
-// bir sonraki cevher YOK OLUYOR (alet olmadan kırılan cevher düşmez).
+// Durability at which a replacement pickaxe gets crafted.
+// Waiting for zero is too late: the moment it breaks the hand is empty and
+// the next ore broken is destroyed (ore broken without a tool drops nothing).
 const KRITIK_DAYANIKLILIK = 20
 
-// Yeterlilik ölçüsü KAZMA SAYISI değil, TOPLAM VURUŞ.
+// Stock is measured in total swings, not in number of pickaxes.
 //
-// Bu ayrım bir hataya mal oldu: bot elinde ELMAS KAZMA varken gidip
-// demir kazma yapıyordu. Sebep, stok kontrolünün "3 kazmam var mı?"
-// diye sorması. Bir elmas kazma tek başına 1561 vuruş — üç taş
-// kazmanın (393) dört katı. Sayarak bakınca "1 tane, az" görünüyor;
-// vuruşla bakınca fazlasıyla yeterli.
+// The bot used to craft an iron pickaxe while holding a diamond one, because
+// the stock check asked "do I have 3 pickaxes". One diamond pickaxe is 1561
+// swings, four times what three stone pickaxes give (393). By count it looks
+// like "only one, not enough", by swings it is plenty.
 //
-// Referans dayanıklılıklar: tahta 59, taş 131, demir 250, elmas 1561.
-// y=64'ten y=15'e inmek ~49 basamak x 3 blok = ~147 vuruş.
+// Reference durabilities: wood 59, stone 131, iron 250, diamond 1561.
+// Going from y=64 to y=15 is ~49 steps x 3 blocks = ~147 swings.
 const GUVENLIK_PAYI = 40
 
-/** Bu eşyada kaç vuruş kaldı? (aleti olmayan eşyalar için sonsuz) */
+/** Swings left on this item (Infinity for items with no durability) */
 function kalanDayaniklilik (esya) {
   if (!esya || !esya.maxDurability) return Infinity
   return esya.maxDurability - (esya.durabilityUsed || 0)
 }
 
 /**
- * Gerekli seviyeyi karşılayan kazmaların TOPLAM kalan vuruşu.
- * Tek tek değil toplam bakıyoruz: iki yarı ömürlü kazma bir tam kazma eder.
+ * Total swings left across every pickaxe that meets the required tier.
+ * Summed, not checked one by one: two half-worn pickaxes make a whole one.
  */
 function kazmaGucu (bot, gerekliSeviye) {
   const gerekli = SEVIYELER.indexOf(gerekliSeviye)
@@ -98,8 +97,8 @@ function kazmaGucu (bot, gerekliSeviye) {
 }
 
 /**
- * Bu iş kaç vuruş tutar? İniş + kazma + güvenlik payı.
- * Tahminle değil, yapılacak işin boyutundan hesaplanıyor.
+ * Swings this job costs: descent + mining + safety margin.
+ * Derived from the size of the job, not guessed.
  */
 function gerekenVurus (bot, hedefY, adet) {
   const su = Math.floor(bot.entity.position.y)
@@ -108,11 +107,11 @@ function gerekenVurus (bot, hedefY, adet) {
 }
 
 /**
- * Kazma stoğunu VURUŞ hedefine göre tazele.
+ * Top the pickaxe stock up to a swing target.
  *
- * Kazdığımız taş zaten envanterde olduğu için yeraltında taş kazma
- * yapmak mümkün — tek şart yanımızda tezgah olması, o yüzden inmeden
- * önce bir tane üretiyoruz.
+ * The stone being mined is already in the inventory, so a stone pickaxe can
+ * be crafted underground. The only requirement is a crafting table on hand,
+ * which is why one gets made before the descent.
  */
 async function kazmaStokla (bot, kontrol, seviye, hedefVurus, secenekler = {}) {
   const istek = seviye === 'wooden'
@@ -132,21 +131,20 @@ async function kazmaStokla (bot, kontrol, seviye, hedefVurus, secenekler = {}) {
   return yapilan
 }
 
-// Canın bu değerin altına düşmesi "buradan çık" demek.
-// 20 tam can; 12 = üç kalp gitmiş. Lav saniyede ~4 can götürüyor,
-// yani 12'de fark edip kaçmak ancak yetiyor.
+// Health below this means leave. Full health is 20, so 12 is three hearts
+// gone. Lava does ~4 health per second: noticing at 12 leaves just enough
+// time to get out.
 const KACIS_CANI = 12
 
-// Tünel açmadan önce önümüzü kaç blok ileriye kadar lav için tarıyoruz
+// How many blocks ahead to scan for lava before tunnelling
 const LAV_TARAMA = 4
 
 /**
- * Şu an tehlikede miyiz? Değilse null, tehlikedeysek sebebi.
+ * Null when safe, otherwise the reason it is not.
  *
- * Bu fonksiyonun olmaması bir ölüme mal oldu: bot lav gölüne girdi ve
- * kod hiçbir yerde canına bakmadığı için kazmaya devam etti. Kırdığı
- * blokları güvenlik açısından kontrol ediyorduk ama BOTUN KENDİ
- * durumunu hiç sormuyorduk.
+ * Not having this cost a death: the bot walked into a lava lake and kept
+ * mining because nothing in the code looked at its health. The blocks it
+ * broke were safety-checked, the bot's own state never was.
  */
 function tehlikedeMi (bot) {
   if (typeof bot.health === 'number' && bot.health < KACIS_CANI) {
@@ -161,11 +159,11 @@ function tehlikedeMi (bot) {
 }
 
 /**
- * Gitmek istediğimiz yönde lav var mı?
+ * Is there lava in the direction of travel?
  *
- * `guvenliMi` sadece KIRACAĞIMIZ bloğun komşularına bakıyordu — bir blok
- * ötesi kör nokta. Tünel açarken lav gölünün duvarını delip içine
- * yürümek tam olarak böyle oluyor.
+ * `guvenliMi` only looks at the neighbours of the block being broken, so
+ * anything one block further out is a blind spot. That is exactly how
+ * tunnelling punches through the wall of a lava lake and walks in.
  */
 function ondeLavVarMi (bot, yon, menzil = LAV_TARAMA) {
   const ayak = bot.entity.position.floored()
@@ -185,7 +183,7 @@ function ondeLavVarMi (bot, yon, menzil = LAV_TARAMA) {
   return false
 }
 
-/** Envanterdeki en iyi kazmanın seviyesi (yoksa null) */
+/** Tier of the best pickaxe in the inventory, null if there is none */
 function kazmaSeviyesi (bot) {
   let enIyi = -1
   for (const esya of bot.inventory.items()) {
@@ -197,7 +195,7 @@ function kazmaSeviyesi (bot) {
   return enIyi < 0 ? null : SEVIYELER[enIyi]
 }
 
-/** Botun baktığı yönün en yakın ana yönü (kuzey/güney/doğu/batı) */
+/** Nearest cardinal direction the bot is facing */
 function ileriYon (bot) {
   const yaw = bot.entity.yaw
   const x = -Math.sin(yaw)
@@ -207,23 +205,22 @@ function ileriYon (bot) {
     : new Vec3(0, 0, Math.sign(z))
 }
 
-/** Bu bloğu kırmak güvenli mi? Komşularında lav/su var mı? */
+/** Is breaking this block safe? Any lava or water next to it? */
 /**
- * Bu bloğu kırmak güvenli mi?
+ * Is breaking this block safe?
  *
- * SU, NEREYE GİTTİĞİNE GÖRE TEHLİKELİ.
+ * Water is dangerous or not depending on where the bot is headed.
  *
- * Eskiden su da lav gibi mutlak engeldi ve bu yüzden ulaşılabilir
- * elmaslar sessizce reddediliyordu — derinlerde su cebi çok yaygın.
- * Ama ayrım şurada:
+ * It used to be an absolute blocker like lava, which silently rejected
+ * reachable diamonds: water pockets are common down deep. The distinction:
  *
- *  - Uzaktan bir CEVHERE vuruyorsak yanındaki su önemsiz; en fazla
- *    biraz sel olur, biz yerimizde dururuz.
- *  - MERDİVEN kazıyorsak o boşluğa kendimiz gireceğiz. Su cebini açıp
- *    içine girmek boğulmak demek.
+ *  - Hitting an ore from a distance: water beside it does not matter, worst
+ *    case it floods a little while the bot stays put.
+ *  - Digging the staircase: the bot steps into that gap itself, and opening a
+ *    water pocket and walking into it means drowning.
  *
- * O yüzden `suTehlikeli` çağıran tarafın kararı: merdiven true diyor,
- * cevher kırma false.
+ * So `suTehlikeli` is the caller's call: the staircase passes true, ore
+ * breaking passes false.
  */
 function guvenliMi (bot, konum, { suTehlikeli = false } = {}) {
   for (const [dx, dy, dz] of [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0], [0, -1, 0]]) {
@@ -235,16 +232,16 @@ function guvenliMi (bot, konum, { suTehlikeli = false } = {}) {
   return true
 }
 
-/** Tek bir bloğu kır (kırılabiliyorsa) */
+/** Break one block, if it can be broken */
 async function blogoKir (bot, konum, kontrol, gerekliSeviye = null, { suTehlikeli = false } = {}) {
   const b = bot.blockAt(konum)
   if (!b || b.name === 'air' || b.boundingBox !== 'block') return true
 
-  // NEDEN kıramadığını SÖYLE.
+  // Say why it refused.
   //
-  // Bot ulaşabildiği bir elması kıramayıp döngüye girdi ve log'da tek
-  // satır sebep yoktu — kodu okuyup tahmin yürütmek zorunda kaldım.
-  // Reddin sebebi artık konsola yazılıyor; bir dahakine tahmin yok.
+  // The bot failed to break a reachable diamond and looped, and the log had
+  // not one line of reason: the only way to find out was reading the code and
+  // guessing. Every refusal now names its cause.
   const reddet = (sebep) => {
     log.uyari(`${b.name} @ ${konum} kırılmadı: ${sebep}`)
     return false
@@ -260,19 +257,18 @@ async function blogoKir (bot, konum, kontrol, gerekliSeviye = null, { suTehlikel
 
   const alet = uygunAlet(bot, b)
 
-  // ALETSİZ CEVHERE VURMA.
+  // Never hit ore without a tool.
   //
-  // `canDigBlock` "kırabilir misin"e bakıyor, "düşer mi"ye değil. Elle
-  // vurunca taş da cevher de kırılıyor ama YERE HİÇBİR ŞEY DÜŞMÜYOR.
-  // Kazma kırıldıktan sonra bot çalışmaya devam ederse elmas damarını
-  // sessizce siler. Kırılan kazma bu yüzden sadece bir yavaşlama değil,
-  // veri kaybı.
+  // `canDigBlock` answers "can you break it", not "will it drop". By hand,
+  // stone and ore both break and nothing lands on the floor. If the bot keeps
+  // working after its pickaxe breaks it silently erases a diamond vein, so a
+  // broken pickaxe is not just a slowdown, it is ore lost for good.
   if (gerekliSeviye && /ore$|ancient_debris/.test(b.name)) {
     const { toplam } = kazmaGucu(bot, gerekliSeviye)
     if (toplam <= 0) return reddet(`${gerekliSeviye} kazma gerekiyor, yok`)
   }
 
-  if (alet) { try { await bot.equip(alet, 'hand') } catch (err) { /* elle dene */ } }
+  if (alet) { try { await bot.equip(alet, 'hand') } catch (err) { /* fall back to bare hands */ } }
 
   await bot.lookAt(b.position.offset(0.5, 0.5, 0.5), true)
   await sinirli(bot.dig(b), 12000, kontrol)
@@ -280,12 +276,12 @@ async function blogoKir (bot, konum, kontrol, gerekliSeviye = null, { suTehlikel
 }
 
 /**
- * Merdiven şeklinde bir basamak in.
+ * Descend one staircase step.
  *
- * Her basamakta üç blok kırılıyor: önümüzdeki ayak ve baş hizası (geçmek
- * için) ve onun altındaki (inmek için). Ayağımızın altı hiçbir zaman
- * boşalmıyor, o yüzden ne düşüyoruz ne de lavın içine giriyoruz.
- * Lav/su görürsek basamağı hiç kırmadan duruyoruz.
+ * Each step breaks three blocks: foot and head level ahead to walk through,
+ * and the one below that to descend into. The ground underfoot is never
+ * removed, so there is no fall and no stepping into lava. If lava or water
+ * shows up the step is abandoned before anything is broken.
  */
 async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
   const yon = ileriYon(bot)
@@ -298,19 +294,19 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
 
   for (const konum of [onBas, onAyak, onAlt]) {
     kontrol.kontrolEt()
-    // İçine gireceğimiz boşluk: su da tehlike (boğulma)
+    // the bot steps into this gap, so water is a hazard here (drowning)
     if (!guvenliMi(bot, konum, { suTehlikeli: true })) return { ok: false, sebep: 'tehlike' }
   }
 
-  // AÇIK MAĞARA DURUMU.
+  // Open cave case.
   //
-  // Merdiven algoritması "önümüz dolu taş" varsayıyor. 1.18 sonrası
-  // devasa mağaralarda bu varsayım çöküyor: önümüz zaten boşluk, kıracak
-  // bir şey yok, sonra da havadaki bir noktaya yürümeye çalışıp
-  // "yuruyemedim" diyorduk. Ekran görüntüsünde bot tam olarak bunu
-  // yaşıyordu — bir mağara çıkıntısında durup inemiyordu.
+  // The staircase assumes solid stone ahead. In the huge post-1.18 caves that
+  // assumption breaks: there is already air ahead, nothing to break, and the
+  // code then tried to walk to a point in mid-air and reported "yuruyemedim".
+  // A screenshot caught exactly this, the bot stuck on a cave ledge, unable
+  // to descend.
   //
-  // Önümüz boşsa kazmaya gerek yok; iş pathfinder'ın işi.
+  // Nothing to dig when it is already open: that is the pathfinder's job.
   const onuBos = [onBas, onAyak, onAlt].every((k) => {
     const b = bot.blockAt(k)
     return !b || b.boundingBox !== 'block'
@@ -324,7 +320,7 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
     }
   }
 
-  // Açtığımız boşluğa yürü
+  // walk into the gap just opened
   const git = await pathfinderGit(bot, new goals.GoalBlock(onAlt.x, onAlt.y, onAlt.z),
     kontrol, { zamanAsimi: 8000, durgunlukMs: 3000 })
   if (!git.ok) return { ok: false, sebep: git.sebep }
@@ -332,13 +328,12 @@ async function birBasamakIn (bot, kontrol, gerekliSeviye = null) {
 }
 
 /**
- * Bir adım YATAY tünel aç (aşağı inmeden).
+ * Tunnel one step horizontally, without descending.
  *
- * `birBasamakIn` her çağrıldığında BİR BLOK AŞAĞI iniyor. Arama
- * döngüsünde onu kullanmak şu hataya yol açtı: cevher bulamayınca
- * "biraz ilerle, tekrar bak" derken bot her seferinde bir kat daha
- * iniyordu ve sonunda BEDROCK'a dayanıyordu. Aramak yatay bir iş;
- * derinliği zaten `seviyeyeIn` ayarladı, orada kalmalıyız.
+ * `birBasamakIn` drops one block on every call. Using it in the search loop
+ * meant every "move a bit and look again" also went a level deeper, and the
+ * bot ended up on bedrock. Searching is horizontal work: the depth was
+ * already set by `seviyeyeIn` and has to stay there.
  */
 async function birAdimIlerle (bot, kontrol, gerekliSeviye = null) {
   const yon = ileriYon(bot)
@@ -365,7 +360,7 @@ async function birAdimIlerle (bot, kontrol, gerekliSeviye = null) {
   return { ok: true }
 }
 
-/** Hedef Y seviyesine merdivenle in */
+/** Take the staircase down to the target Y */
 async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = 'stone', tedarikci = null } = {}) {
   let basamak = 0
   let takilma = 0
@@ -378,12 +373,13 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
 
     const oncekiY = Math.floor(bot.entity.position.y)
 
-    // İNİŞ SIRASINDA KAZMA BİTERSE.
+    // Pickaxe running out mid-descent.
     //
-    // Her basamak 3 blok. y=64'ten y=15'e inmek ~147 blok eder; tahta
-    // kazma 59, taş kazma 131 vuruş dayanır. Yani inişin ortasında
-    // kalmak istisna değil, KURAL. Eşiğe gelince duruyoruz ve kazdığımız
-    // taştan yenisini yapıyoruz — malzeme zaten envanterde.
+    // Each step is 3 blocks, so y=64 to y=15 is ~147 blocks against 59 swings
+    // for a wooden pickaxe and 131 for a stone one. Running out halfway down
+    // is the rule, not the exception. At the threshold the descent pauses and
+    // a new pickaxe is crafted from the stone just mined, which is already in
+    // the inventory.
     const guc = kazmaGucu(bot, seviye)
     if (guc.toplam < KRITIK_DAYANIKLILIK) {
       log.uyari(`Kazma bitmek üzere (${guc.toplam} vuruş), yenisini yapıyorum.`)
@@ -393,15 +389,15 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
       }
     }
 
-    // ÖNCE PATHFINDER, SONRA MERDİVEN.
+    // Pathfinder first, staircase second.
     //
-    // Pathfinder mağarayı, çıkıntıyı, merdiveni, tüneli hepsini biliyor
-    // ve `canDig` açık olduğu için gerekirse taş da kırıyor. Elle yazdığım
-    // merdiven onun yapamadığı tek şeyi yapıyor: DÜMDÜZ TAŞIN İÇİNDE yol
-    // açmak. Doğru sıra bu — önce hazır çözümü dene, olmazsa kaz.
+    // The pathfinder knows caves, ledges, ladders and tunnels, and with
+    // `canDig` on it breaks stone when it has to. The hand-written staircase
+    // does the one thing it cannot: open a way through solid stone. Hence the
+    // order, try the ready-made solution first and dig only if it fails.
     //
-    // 10 bloklu parçalar halinde iniyoruz: 50 bloğun tamamını tek seferde
-    // istemek pathfinder'a devasa bir arama uzayı veriyor.
+    // The descent goes in 10-block chunks: asking for all 50 at once hands
+    // the pathfinder a huge search space.
     const araHedef = Math.max(hedefY, oncekiY - 10)
     await pathfinderGit(bot, new goals.GoalY(araHedef), kontrol,
       { zamanAsimi: 20000, durgunlukMs: 5000 })
@@ -412,7 +408,7 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
       continue
     }
 
-    // Pathfinder ilerletemedi: elle merdiven kaz
+    // pathfinder made no progress: dig the staircase by hand
     const r = await birBasamakIn(bot, kontrol, seviye)
     if (!r.ok) {
       if (++takilma >= 3) return { ok: false, basamak, sebep: r.sebep }
@@ -428,16 +424,15 @@ async function seviyeyeIn (bot, hedefY, kontrol, { maksBasamak = 120, seviye = '
 }
 
 /**
- * Bir cevherden başlayıp DAMARIN TAMAMINI bulur (flood fill).
+ * Flood fill from one ore block to the whole vein.
  *
- * Cevherler tek tek değil damar halinde bulunuyor: bir demir damarı
- * genelde 4-9 blok. Eskiden kod her turda "en yakın cevheri" seçip
- * kırıyor, sonra yeniden arıyordu. Sorun şu: bir bloğu kırdıktan sonra
- * en yakın aday bazen başka bir damarın kenarı oluyor — bot 2 blok
- * kırıp 3-4'ünü bırakarak gidiyordu. Ekranda gördüğün buydu.
+ * Ore comes in veins, not single blocks: an iron vein is usually 4-9 blocks.
+ * The old code picked the nearest ore each round, broke it, then searched
+ * again. After a break the nearest candidate is sometimes the edge of another
+ * vein, so the bot broke 2 blocks and wandered off leaving 3-4 behind.
  *
- * Ağaç kesmede aynı şeyi `agaciTopla` ile çözmüştük; burada da damarın
- * tamamını bir liste yapıp bitirene kadar üstünde duruyoruz.
+ * `agaciTopla` solves the same problem for trees: collect the whole vein into
+ * a list and stay on it until it is finished.
  */
 function damarTopla (bot, baslangic, isimler, limit = 24) {
   const bulunan = []
@@ -467,7 +462,7 @@ function damarTopla (bot, baslangic, isimler, limit = 24) {
   return bulunan
 }
 
-/** Yakındaki hedef cevherleri, gerçek uzaklığa göre sıralı */
+/** Nearby target ores, sorted by real distance */
 function cevherBul (bot, isimler, yaricap, karaListe) {
   const idler = isimler
     .map((n) => (bot.registry.blocksByName[n] || {}).id)
@@ -481,9 +476,9 @@ function cevherBul (bot, isimler, yaricap, karaListe) {
 }
 
 /**
- * Ana komut.
+ * Main entry point.
  * @param {string} istek "demir", "elmas", "tas"
- * @param {number} adet kaç blok kırılsın
+ * @param {number} adet how many blocks to break
  */
 async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   const ad = String(istek || 'tas').toLowerCase().trim()
@@ -495,7 +490,7 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
     }
   }
 
-  // --- 1) Doğru kazma elimizde mi? Yoksa yapmayı dene ---
+  // --- 1) right pickaxe in hand? if not, try to craft one ---
   const gerekli = SEVIYELER.indexOf(cevher.seviye)
   let mevcut = SEVIYELER.indexOf(kazmaSeviyesi(bot))
 
@@ -513,18 +508,18 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
 
   const baslangicKonum = bot.entity.position.clone()
 
-  // --- 2) İnmeden önce STOK YAP ---
+  // --- 2) stock up before descending ---
   //
-  // Tek kazmayla derine inmek mümkün değil (yukarıdaki hesaba bak).
-  // Yanımıza yedek kazma ve bir tezgah alıyoruz; tezgah sayesinde
-  // aşağıda, kazdığımız taştan yerinde yeni kazma yapabiliyoruz.
+  // One pickaxe does not get you deep (see the swing arithmetic above). The
+  // bot takes spare pickaxes and a crafting table along; the table is what
+  // lets it make new pickaxes down there out of the stone it mines.
   if (cevher.y !== null && Math.floor(bot.entity.position.y) > cevher.y + 8) {
-    // NEDEN ODUN ARADIĞINI SÖYLE.
+    // Say why it is looking for wood.
     //
-    // Kullanıcı "kaz elmas" dedi ve bot ağaç aramaya başladı; haklı
-    // olarak "bu ne yapıyor?" diye sordu. Sebep görünmüyordu: elindeki
-    // kazma bu iş için yetersizdi ve yedek yapmaya çalışıyordu — yedek
-    // kazma da odun istiyor. Doğru davranış ama sessiz olması yanlıştı.
+    // The user typed "kaz elmas", the bot went off hunting for trees and the
+    // user fairly asked what it was doing. The reason was invisible: its
+    // pickaxe was not enough for the job so it was crafting a spare, and a
+    // spare pickaxe needs wood. Right behaviour, wrong that it was silent.
     const hedefVurus = gerekenVurus(bot, cevher.y, adet)
     const eldeki = kazmaGucu(bot, cevher.seviye)
     if (eldeki.toplam < hedefVurus) {
@@ -534,12 +529,12 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
       )
     }
     await kazmaStokla(bot, kontrol, cevher.seviye, hedefVurus, secenekler)
-    await uret(bot, kontrol, 'tezgah', 1, secenekler) // olmazsa olsun, sadece deniyoruz
+    await uret(bot, kontrol, 'tezgah', 1, secenekler) // best effort, fine if it fails
     const g = kazmaGucu(bot, cevher.seviye)
     log.bilgi(`${g.adet} kazma, toplam ${g.toplam} vuruş ile iniyorum.`)
   }
 
-  // --- 3) Doğru derinliğe in ---
+  // --- 3) descend to the right depth ---
   if (cevher.y !== null && Math.floor(bot.entity.position.y) > cevher.y + 8) {
     log.bilgi(`${ad} için y=${cevher.y} seviyesine iniyorum...`)
     const inis = await seviyeyeIn(bot, cevher.y, kontrol, { seviye: cevher.seviye, tedarikci: secenekler.tedarikci })
@@ -547,8 +542,8 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
       return { basarili: false, mesaj: `İnemedim (${inis.sebep}).` }
     }
     if (!inis.ok && inis.sebep === 'kazma_bitti') {
-      // Aletsiz yeraltında kalmak = mahsur kalmak. Kazdığımız merdiven
-      // hâlâ duruyor, oradan yürüyerek geri çıkabiliyoruz.
+      // No tool underground means stranded. The staircase is still standing,
+      // so walking back up it is the way out.
       await yuzeyeDon(bot, baslangicKonum, kontrol)
       return {
         basarili: false,
@@ -559,7 +554,7 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
     if (!inis.ok) log.uyari(`İniş yarıda kesildi (${inis.sebep}), buradan arıyorum.`)
   }
 
-  // --- 3) Cevheri ara ve kır ---
+  // --- 3) search for ore and break it ---
   const baslangic = bot.entity.position.clone()
   const karaListe = new Set()
   let kirilan = 0
@@ -567,12 +562,12 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   let kazmaBitti = false
   let kacildi = null
 
-  // DÖNGÜ SİGORTASI.
+  // Loop fuse.
   //
-  // Bot ulaşamadığı bir cevherin etrafında sonsuza kadar dönebiliyordu.
-  // İki koruma: toplam tur sayısı sınırlı, ve her turda ya bir blok
-  // kırılmalı ya da kara listeye bir şey eklenmeli. İkisi de olmuyorsa
-  // ilerleme yok demektir; sayıyoruz ve belli bir yerden sonra duruyoruz.
+  // The bot could circle an ore it cannot reach forever. Two guards: a cap on
+  // total rounds, and a rule that each round either breaks a block or adds
+  // something to the blacklist. Neither happening means no progress, so those
+  // rounds get counted and the loop stops after a few of them.
   const MAKS_TUR = 60
   let tur = 0
   let ilerlemesiz = 0
@@ -580,10 +575,8 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
   while (kirilan < adet && bosArama < 6 && tur < MAKS_TUR) {
     kontrol.kontrolEt()
 
-    // CANINA BAK. Lav saniyede ~4 can götürüyor; 12'de fark edip
-    // kaçmak ancak yetiyor. Bu kontrol olmadığı için bot bir kez
-    // lavda öldü — kırdığı blokları denetliyorduk ama kendi durumunu
-    // hiç sormuyorduk.
+    // Check health. Lava does ~4 per second, so noticing at 12 leaves just
+    // enough time to run. Without this check the bot died in lava once.
     const tehlike = tehlikedeMi(bot)
     if (tehlike) {
       log.hata(`${tehlike} — kaçıyorum.`)
@@ -595,20 +588,21 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
     const turBasiKirilan = kirilan
     const turBasiKara = karaListe.size
 
-    // KAZMA AZALDI ≠ KAZMA BİTTİ.
+    // Low pickaxe is not the same as no pickaxe.
     //
-    // Burası "elinde demir kazma, önünde elmas, ama kazmıyor"un sebebiydi.
-    // Eşiğin altına düşünce (20 vuruş) bot "kazmam bitti" deyip yüzeye
-    // dönüyordu — oysa 15 vuruşluk bir kazmayla birkaç elmas rahat kırılır.
+    // This was the cause of "iron pickaxe in hand, diamond in front of it,
+    // and it will not mine". Below the threshold (20 swings) the bot declared
+    // the pickaxe finished and headed back to the surface, while 15 swings
+    // breaks a few diamonds comfortably.
     //
-    // Eşik iki farklı iş için kullanılıyordu ve biri yanlıştı:
-    //   - İNİŞTE eşik doğru: yeraltında aletsiz kalmak mahsur kalmaktır,
-    //     yedeği önceden hazırlamak gerekir.
-    //   - KAZARKEN eşik yanlış: önündeki cevheri kırmak için yedeğe
-    //     ihtiyacın yok, elindeki kazmaya ihtiyacın var.
+    // One threshold was doing two jobs and one of them was wrong:
+    //   - during the descent it is right: no tool underground means stranded,
+    //     so the spare has to be ready beforehand.
+    //   - while mining it is wrong: breaking the ore in front of you needs
+    //     the pickaxe in hand, not a spare.
     //
-    // Artık eşik sadece "yenisini yapmayı DENE" diyor. Durmak için
-    // kazmanın gerçekten sıfırlanması gerekiyor.
+    // The threshold now only means "try to craft another one". Stopping needs
+    // the pickaxe to actually hit zero.
     if (kazmaGucu(bot, cevher.seviye).toplam < KRITIK_DAYANIKLILIK) {
       await kazmaStokla(bot, kontrol, cevher.seviye, gerekenVurus(bot, null, adet - kirilan), secenekler)
     }
@@ -619,17 +613,17 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
 
     const adaylar = cevherBul(bot, cevher.bloklar, 32, karaListe)
     if (adaylar.length === 0) {
-      // Bulamadık: yatay olarak biraz ilerleyip tekrar bak (tünel aç)
+      // nothing found: tunnel a bit further along and look again
       bosArama++
-      // YATAY ilerle. Eskiden `birBasamakIn` çağrılıyordu ve her boş
-      // aramada bir kat aşağı iniyorduk — bot böyle bedrock'a dayandı.
+      // Horizontal move. This used to call `birBasamakIn`, so every empty
+      // search also went a level down, which is how the bot hit bedrock.
       const r = await birAdimIlerle(bot, kontrol, cevher.seviye)
       if (!r.ok) break
       continue
     }
     bosArama = 0
 
-    // Damarın TAMAMINI al, tek bloğu değil
+    // take the whole vein, not a single block
     const damar = damarTopla(bot, adaylar[0], cevher.bloklar)
     log.bilgi(`${damar.length} bloklu damar bulundu (y=${adaylar[0].y}).`)
 
@@ -640,8 +634,8 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
       const anahtar = `${konum.x},${konum.y},${konum.z}`
       if (karaListe.has(anahtar)) continue
 
-      // Elimizin altındaysa yürümeye gerek yok — damarın içindeyken
-      // komşu bloklar zaten menzilde oluyor
+      // no need to walk when it is already in reach: standing inside a vein
+      // puts the neighbouring blocks in range anyway
       const goz = bot.entity.position.offset(0, bot.entity.height || 1.62, 0)
       const yakin = goz.distanceTo(konum.offset(0.5, 0.5, 0.5)) <= 4.4
 
@@ -664,22 +658,22 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
           pathfinderDurdur(bot); bot.stopDigging(); throw err
         }
         pathfinderDurdur(bot)
-        karaListe.add(anahtar) // ulaşamadık, bir daha deneme
+        karaListe.add(anahtar) // unreachable, do not try again
       }
     }
 
-    // DÜŞENLERİ HEMEN TOPLA.
+    // Pick up the drops right away.
     //
-    // Eskiden toplama sadece en sonda, BAŞLANGIÇ konumunun 16 blok
-    // çevresinde yapılıyordu. Bot yerin 100 blok altında, başlangıçtan
-    // yüzlerce blok ötede kazıyor — o yarıçapa hiçbir şey girmiyordu.
-    // Kırdığı elmas yerde kalıyor, envantere hiç girmiyordu.
+    // Collection used to happen only at the very end, within 16 blocks of the
+    // starting position. The bot mines 100 blocks underground and hundreds of
+    // blocks away from where it started, so nothing was ever inside that
+    // radius and the diamonds it broke stayed on the floor.
     if (kirilan > 0) {
       await kontrol.bekle(400)
       await dusenleriTopla(bot, bot.entity.position.clone(), kontrol, { yaricap: 10, maksTur: 3 })
     }
 
-    // Damarın kalanı ulaşılamıyorsa sonsuza kadar aynı damara dönme
+    // blacklist whatever is left of the vein so the loop stops returning to it
     for (const konum of damar) {
       const b = bot.blockAt(konum)
       if (b && cevher.bloklar.includes(b.name)) {
@@ -697,7 +691,7 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
     }
   }
 
-  // --- 4) Düşenleri topla ---
+  // --- 4) collect the drops ---
   if (kirilan > 0) {
     await kontrol.bekle(600)
     await dusenleriTopla(bot, baslangic, kontrol, { yaricap: 16 })
@@ -721,12 +715,11 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
     }
   }
 
-  // İŞ BİTİNCE YUKARI DÖN.
+  // Return to the surface when the job is done.
   //
-  // Eskiden bot kazdığı yerde kalıyordu. Log'da bunu gördük: bot y=17'de
-  // takılı kaldı ve oradan yüzeydeki ağaçlara ulaşmaya çalışıp her
-  // seferinde başarısız oldu. Bir sonraki komut ne olursa olsun yeraltı
-  // kötü bir başlangıç noktası.
+  // The bot used to stay where it dug. The log shows it stuck at y=17,
+  // trying to reach surface trees from down there and failing every time.
+  // Whatever the next command turns out to be, underground is a bad start.
   const derinlik = baslangicKonum.y - bot.entity.position.y
   if (derinlik > 6) await yuzeyeDon(bot, baslangicKonum, kontrol)
 
@@ -740,9 +733,9 @@ async function kaz (bot, kontrol, istek, adet = 8, secenekler = {}) {
 }
 
 /**
- * Başladığımız yere geri yürü.
- * Kazdığımız merdiven duruyor, o yüzden aletsiz de olsa çıkış yolu var —
- * yeter ki merdiveni kendi arkamızdan kapatmayalım.
+ * Walk back to the starting point.
+ * The staircase is still there, so there is a way out even without a tool,
+ * as long as the staircase does not get sealed up behind the bot.
  */
 async function yuzeyeDon (bot, hedef, kontrol) {
   log.bilgi('Yüzeye dönüyorum...')

@@ -1,8 +1,8 @@
-"""Taklit ederek ogrenen politika agi (behaviour cloning).
+"""Policy network trained by imitation (behaviour cloning).
 
-Kucuk bir MLP: 12 sayilik gozlemi alir, 5 aksiyon uzerinde olasilik dagilimi
-uretir. Amac uzmani taklit etmek — yani "bu gozlemde uzman ne yapardi?"
-sorusuna cevap veren bir siniflandirici.
+Small MLP: takes the 12-number observation, produces a distribution over 5
+actions. It imitates the expert, so it is really a classifier answering "what
+would the expert do in this observation?".
 """
 
 from __future__ import annotations
@@ -13,14 +13,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .env import GOZLEM_BOYUTU  # odun gorevinin boyutu (geriye donuk varsayilan)
+from .env import GOZLEM_BOYUTU  # wood task size (backwards-compatible default)
 AKSIYON_SAYISI = 5
 
 
 class PolitikaAgi(nn.Module):
-    # Gozlem boyutu GOREVE gore degisiyor (bkz. env.py `HAM_BOYUTLARI`).
-    # Varsayilan odun gorevi, cunku Milestone 4'un kayitli modelleri o
-    # boyutta ve `load_state_dict` boyut uyusmazliginda hata veriyor.
+    # Observation size depends on the task (see `HAM_BOYUTLARI` in env.py).
+    # Defaults to the wood task because Milestone 4's saved models have that
+    # size and `load_state_dict` errors out on a mismatch.
     def __init__(self, gizli: int = 128, gozlem_boyutu: int = GOZLEM_BOYUTU) -> None:
         super().__init__()
         self.gozlem_boyutu = gozlem_boyutu
@@ -37,10 +37,10 @@ class PolitikaAgi(nn.Module):
 
     @torch.no_grad()
     def aksiyon_sec(self, gozlem: np.ndarray, orneklem: bool = False) -> int:
-        """Tek bir gozlem icin aksiyon sec.
+        """Pick an action for a single observation.
 
-        orneklem=False  -> en yuksek skorlu aksiyon (degerlendirme icin)
-        orneklem=True   -> olasiliga gore ornekle (kesifi korur)
+        orneklem=False  -> highest scoring action (for evaluation)
+        orneklem=True   -> sample from the distribution (keeps exploration)
         """
         x = torch.as_tensor(gozlem, dtype=torch.float32).unsqueeze(0)
         skorlar = self(x)
@@ -56,13 +56,13 @@ def kaydet(model: PolitikaAgi, yol: Path) -> None:
 
 
 def yukle(yol: Path) -> PolitikaAgi:
-    """Kayitli agirliklari yukler.
+    """Loads saved weights.
 
-    Gozlem boyutunu DOSYADAN okuyor, cagirandan istemiyor. Gozlem boyutu
-    artik goreve gore degisiyor (odun 19, maden 23) ve cagiranin dogru
-    sayiyi gecmesine guvenmek sessiz bir hata kaynagi: yanlis sayi
-    `load_state_dict`te anlasilmaz bir boyut hatasi veriyor. Ilk katmanin
-    agirlik matrisi zaten dogru sayiyi tasiyor.
+    Reads the observation size from the file rather than taking it from the
+    caller. The size now varies per task (wood 19, mine 23) and trusting the
+    caller to pass the right number is a silent failure source: a wrong number
+    surfaces as an unreadable shape error in `load_state_dict`. The first
+    layer's weight matrix already carries the right number.
     """
     agirliklar = torch.load(yol, map_location="cpu")
     boyut = agirliklar["katmanlar.0.weight"].shape[1]

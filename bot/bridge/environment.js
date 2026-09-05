@@ -11,135 +11,125 @@ const config = require('../config')
 
 const MAX_ADIM = 500
 
-// Her donus aksiyonunda kac radyan donulecek.
-// DIKKAT: bu deger expert.js'teki YAW_TOLERANS ile uyumlu olmali.
-// Donus adimi tolerans*2'den buyukse ajan hedefi hicbir zaman tutturamaz,
-// saga-sola salinip durur (bu hatayi bir kez yaptik).
-const DONUS_ACISI = Math.PI / 8  // 22.5 derece
+// Radians turned per turn action. Must stay in sync with YAW_TOLERANS in
+// expert.js: if the turn step is larger than tolerance*2 the agent can never
+// land on a heading and just oscillates left and right.
+const DONUS_ACISI = Math.PI / 8  // 22.5 degrees
 
-// Yolu kapattiginda kirilmasi mantikli olan bloklar: yaprak, sarmasik, fidan,
-// mantar vb. Tas, toprak, cevher BILEREK disarida — elle kazmak cok uzun surer
-// ve gorevle ilgisi yok.
+// Blocks worth breaking when they block the path: leaves, vines, saplings,
+// mushrooms. Stone, dirt and ore are excluded on purpose: digging them by hand
+// takes minutes and has nothing to do with the task.
 const HEDEF_ODUN = 5
 
-// Ölüm cezası. Envanter kaybını ödüle yazmak yerine sabit bir ceza:
-// ajan uçurumdan kaçınmayı öğrensin ama tek olay bütün eğitimi bozmasın.
+// Death penalty. A flat cost instead of writing the inventory loss into the
+// reward: the agent should learn to avoid cliffs without one event wrecking
+// the whole run.
 const OLUM_CEZASI = -5
 
-// Bölüm başında bu yarıçaptaki düşmüş eşyalar silinir.
-// Her bölüm aynı temiz koşullardan başlasın diye.
+// Dropped items within this radius are cleared at episode start, so every
+// episode begins from the same clean state.
 const TEMIZLIK_YARICAPI = 100
 
-// Ortak sabitler (expert.js de aynılarını kullanıyor)
+// Shared constants (expert.js uses the same ones)
 const {
   DURGUNLUK_SINIRI, TAKILMA_ESIGI, KACINMA_SURESI, HEDEF_SABIR, DIKEY_SABIR
 } = require('./sabitler')
 
 /**
- * Botu bir RL "environment"ına çeviren katman.
+ * Wraps the bot as an RL environment.
  *
- * Python tarafı sadece şunu bilir: reset() ver, step(action) ver, karşılığında
- * gözlem + ödül al. Minecraft'ın karmaşası bu dosyada kalır.
+ * The Python side only knows reset() and step(action), and gets back an
+ * observation plus a reward. Minecraft's mess stays in this file.
  */
 class MinecraftEnvironment {
   constructor (bot, secenekler = {}) {
     this.bot = bot
 
-    // Beklemeleri ölçekleyen çarpan. Oyunda 1 (gerçek süreler).
-    // Testte 0 veriliyor: sahte botla oynarken ışınlanma/chunk yüklenmesi
-    // beklemenin bir anlamı yok. Bu olmadan smoke testi 43 saniye sürüyordu
-    // ve süresinin çoğu `tazeAlanaIsinla`nın 4 x 4 saniyelik beklemesiydi.
+    // Scales every wait: 1 in game (real durations), 0 in tests, where
+    // waiting for teleports and chunk loads against a fake bot is pointless.
+    // Without it the smoke test took 43 seconds, most of it `tazeAlanaIsinla`
+    // waiting 4 x 4 seconds.
     this.zamanCarpani = secenekler.zamanCarpani ?? 1
 
-    // HANGİ GÖREV?
-    //
-    // Ortamın değişmeyen kısmı (gözlem, aksiyonlar, ödül şekli, bölüm
-    // mantığı) tek; göreve göre değişen dört soru `gorevler.js`te.
-    // Varsayılan 'odun' — Milestone 1-4 hiç etkilenmiyor.
+    // Which task. The fixed part of the environment (observation, actions,
+    // reward shape, episode logic) is shared; the four task-specific questions
+    // live in `gorevler.js`. Defaults to 'odun' so Milestone 1-4 is unaffected.
     this.gorev = gorevGetir(secenekler.gorev || 'odun')
 
-    // GENİŞ GÖZLEM İSTEĞİ.
-    //
-    // null = görevin kendi varsayılanı (`gozlemProfili`). Python tarafı
-    // çok görevli eğitimde bunu açıkça true yapıyor, çünkü tek ağ iki
-    // görevi de görecekse gözlem genişliği ortak olmak zorunda.
+    // Wide-observation request. null = the task's own default
+    // (`gozlemProfili`). Multi-task training sets it to true explicitly: one
+    // network covering both tasks needs a single observation width.
     this.genisGozlem = secenekler.genisGozlem ?? null
 
     this.adim = 0
     this.oncekiOdun = 0
     this.oncekiMesafe = null
-    this.hedefKonum = null      // kilitli hedef ağaç
-    this.bolumBaslangicOdun = 0 // bölüm başındaki envanter — aşağıya bak
-    this.takilmaSayaci = 0      // üst üste kaç adımdır ilerleyemiyoruz
-    this.durgunlukSayaci = 0    // üst üste kaç adımdır hiçbir ilerleme yok
-    this.yerindeSayma = 0       // kaç adımdır fiilen yer değiştirmiyor
-    this.esyaKovalama = 0       // kaç adımdır aynı düşmüş eşyanın peşinde
+    this.hedefKonum = null      // locked target tree
+    this.bolumBaslangicOdun = 0 // inventory at episode start, see below
+    this.takilmaSayaci = 0      // consecutive steps unable to move forward
+    this.durgunlukSayaci = 0    // consecutive steps with no progress at all
+    this.yerindeSayma = 0       // steps without actually changing position
+    this.esyaKovalama = 0       // steps spent chasing the same dropped item
     this.sonOlcum = null
     this.sonOlcumOdun = 0
-    this.kacinmaAdimi = 0       // engelden kaçınma modunda kalan adım
-    this.kacinmaYonu = 1        // 1 = sağa, 2 = sola
-    this.karaListe = new Set()  // ulaşılamadığı anlaşılan hedefler
-    this.yol = []               // uzmanın planladığı yol (ara noktalar)
+    this.kacinmaAdimi = 0       // steps left in obstacle-avoidance mode
+    this.kacinmaYonu = 1        // 1 = right, 2 = left
+    this.karaListe = new Set()  // targets found to be unreachable
+    this.yol = []               // path the expert planned (waypoints)
     this.yolZamani = 0
     this.yolHedefi = null
-    this.hedefDenemesi = 0      // mevcut hedefte kaç adımdır ilerleme yok
-    this.dikeyDenemesi = 0      // dikey hedefte kaç adımdır kıramıyoruz
-    this.oldu = false           // bu bölümde öldü mü
+    this.hedefDenemesi = 0      // steps without progress on the current target
+    this.dikeyDenemesi = 0      // steps unable to break a vertical target
+    this.oldu = false           // died during this episode
 
-    // ÖLÜM TAKİBİ
-    //
-    // Minecraft'ta ölünce envanterdeki her şey yere düşüyor. Bunu ele
-    // almadığımız için bir bölümde "-451 odun" ve "-452 ödül" gördük:
-    // bot 451 kütükle başlamış, uçurumdan düşüp ölmüş, envanteri sıfırlanmış
-    // ve biz bunu "451 odun kaybetti" diye ödüle yazmışız.
-    //
-    // PPO'da böyle bir aykırı değer politikayı tek güncellemede mahvedebilir.
+    // Death tracking. Dying drops the whole inventory on the ground. Before
+    // this was handled, one episode reported "-451 wood" and "-452 reward":
+    // the bot started with 451 logs, fell off a cliff, lost its inventory, and
+    // the reward counted that as 451 wood lost. In PPO an outlier like that
+    // can destroy the policy in a single update.
     this.bot.on('death', () => { this.oldu = true })
   }
 
-  // ---------------------------------------------------------------- gözlem
+  // ----------------------------------------------------------- observation
 
   /**
-   * Hedef kütük.
+   * Target log.
    *
-   * İki tuzak vardı ve ikisi de eğitim verisini bozuyordu:
+   * Two traps, both of which corrupted the training data:
    *
-   *  1) `bot.findBlock` mesafeye göre garanti sıralı dönmüyor — bazen 6 blok
-   *     ötedeki ağaç dururken 26 blok ötedekini veriyordu. Artık bütün
-   *     adayları alıp mesafeyi kendimiz hesaplıyoruz.
+   *  1) `bot.findBlock` does not reliably return the nearest match: it would
+   *     hand back a tree 26 blocks away while one 6 blocks away stood there.
+   *     All candidates are fetched now and distances computed here.
    *
-   *  2) Hedef her adımda yeniden seçilince, benzer mesafedeki iki ağaç
-   *     arasında sürekli gidip geliyordu. Gözlemdeki "ağaç yönü" her adımda
-   *     zıplayınca ne uzman ne de ajan tutarlı davranabiliyor. Artık hedef
-   *     kilitleniyor: seçilen ağaç yok olana kadar aynı ağaç.
+   *  2) Re-picking the target every step made it flip between two trees at
+   *     similar distance. When the "tree direction" in the observation jumps
+   *     every step, neither expert nor agent can be consistent, so the target
+   *     is now locked until the chosen tree is gone.
    */
   /**
-   * Arama yarıçapı GÖREVE bağlı (bkz. gorevler.js `aramaYaricapi`).
+   * Search radius, per task (see `aramaYaricapi` in gorevler.js).
    *
-   * TÜRETİLMİŞ ALAN, kopyalanmış değil. Önce yapıcıda bir kez hesaplanan
-   * `this.yaricap` alanıydı ve bu Milestone 6 için sessiz bir tuzaktı:
-   * `server.js` görev değişiminde `env.gorev`i değiştiriyor ama alanı
-   * güncellemiyordu. Çok görevli eğitimde odundan madene geçince yarıçap
-   * 64'te kalırdı — yani dün düzelttiğimiz "ulaşılamaz hedefe kilitlenme"
-   * hatası geri gelirdi, üstelik sessizce.
-   *
-   * Türetilmiş tutunca güncellenmeyi unutmak mümkün değil.
+   * Derived, not copied. It used to be a `this.yaricap` field computed once in
+   * the constructor, a silent trap for Milestone 6: `server.js` swaps
+   * `env.gorev` on a task change but never updated the field, so switching
+   * from wood to mining left the radius at 64 and silently brought back the
+   * "locks onto an unreachable target" bug. Derived state cannot go stale.
    */
   get yaricap () {
     return this.gorev.aramaYaricapi ?? config.searchRadius
   }
 
-  /** Bu gözlemde ek 4 sayı var mı? (görev varsayılanı ya da açık istek) */
+  /** Does this observation carry the extra 4 numbers? (task default or explicit request) */
   get genisMi () {
     if (this.genisGozlem !== null) return this.genisGozlem
     return this.gorev.gozlemProfili === 'genis'
   }
 
   /**
-   * Görevi bölüm başında değiştir.
+   * Switch task at episode start.
    *
-   * `server.js` bunu `env.gorev = ...` diye elle yapıyordu; türetilmiş
-   * durum eklendikçe o yol kırılganlaşıyor. Tek giriş noktası olsun.
+   * `server.js` used to do this by hand with `env.gorev = ...`, which gets
+   * fragile as more derived state is added. One entry point instead.
    */
   gorevDegistir (ad) {
     if (ad && ad !== this.gorev.ad) {
@@ -154,11 +144,11 @@ class MinecraftEnvironment {
   }
 
   enYakinKutuk () {
-    // Kilitli hedef hâlâ duruyorsa onu kullan
+    // Reuse the locked target if it is still there
     if (this.hedefKonum) {
       const mevcut = this.bot.blockAt(this.hedefKonum)
       if (this.gorev.hedefMi(mevcut)) return mevcut
-      this.hedefKonum = null // kesilmiş, yenisini seç
+      this.hedefKonum = null // gone, pick a new one
     }
 
     const adaylar = this.bot.findBlocks({
@@ -168,9 +158,10 @@ class MinecraftEnvironment {
     })
     if (adaylar.length === 0) return null
 
-    // Yakından uzağa sırala, oyuncunun yapılarını atlayarak ilk DOĞAL ağacı seç
-    // Maliyet ölçüsü GÖREVE bağlı: ormanda kuş uçuşu mesafe, madende
-    // dikey farkı cezalandıran bir ölçü (ajan yatay hareket ediyor).
+    // Nearest first, skipping player builds to get the first natural tree.
+    // The cost metric is per task: straight-line distance in the forest, and
+    // one that penalises vertical offset in the mine, since the agent moves
+    // horizontally.
     const maliyet = this.gorev.hedefMaliyeti ||
       ((bot, konum) => konum.distanceTo(bot.entity.position))
     adaylar.sort((a, b) => maliyet(this.bot, a) - maliyet(this.bot, b))
@@ -182,13 +173,11 @@ class MinecraftEnvironment {
       const blok = this.bot.blockAt(konum)
       if (!this.gorev.dogalMi(this.bot, blok)) continue
 
-      // Gövdenin DİBİNİ hedefle, bulduğumuz kütüğü değil.
-      //
-      // Ormanda 3 boyutlu en yakın kütük çoğu zaman tepedeki bir daldır.
-      // Ona kilitlenen bot ulaşamadığı bir noktaya doğru arazide dolanıp
-      // duruyordu. Dibi hedefleyince yanına gidip yukarı doğru kırarak
-      // çıkabiliyor — insan oyuncunun yaptığı da bu.
-      // Odunda gövdenin dibi, madende bloğun kendisi
+      // Aim at the base of the trunk, not the log we found. In a forest the
+      // nearest log in 3D is usually a branch up top, and locking onto it made
+      // the bot wander toward a point it could never reach. Aiming at the base
+      // lets it walk up and break its way upward, which is what a human player
+      // does. Base of the trunk for wood, the block itself for mining.
       const dip = this.gorev.hedefiDuzelt(this.bot, this.bot.blockAt(konum))?.position || konum
       this.hedefKonum = dip
       return this.bot.blockAt(dip)
@@ -197,12 +186,11 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Şu anki hedefi bırak ve bir daha seçme.
+   * Drop the current target and never pick it again.
    *
-   * Uzman bazen hedefin ULAŞILAMAZ olduğunu ortamdan önce anlıyor
-   * (örneğin tam tepemizdeki bir cevher: aksiyon uzayında yukarı
-   * gitmek yok). Böyle bir hedefin etrafında dönüp durmak yerine
-   * onu bırakıp başkasına geçmesi gerekiyor.
+   * The expert sometimes sees a target is unreachable before the environment
+   * does (an ore directly overhead, for instance: the action space has no
+   * "go up"). Better to blacklist it and move on than to circle it.
    */
   hedefiBirak () {
     if (!this.hedefKonum) return false
@@ -214,18 +202,16 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Botun ÖNÜNDEKİ kırılabilir kütük.
+   * Breakable log in front of the bot.
    *
-   * Neden `blockAtCursor` değil: ajanın yukarı-aşağı bakma aksiyonu yok
-   * (bkz. docs/architecture.md, aksiyon uzayı). Bakış yatayda sabit olduğu
-   * için ışın sadece göz hizasındaki tek bloğu tarıyordu ve gövdenin diğer
-   * katlarını hiç göremiyordu — bot ağacın dibine gelip hiçbir şey kıramadan
-   * bekliyordu.
+   * Not `blockAtCursor`, because the agent has no look up/down action (see
+   * docs/architecture.md, action space). With the view pinned horizontal the
+   * ray only hit the single block at eye level and never saw the rest of the
+   * trunk, so the bot stood at the base of a tree breaking nothing.
    *
-   * Çözüm: dikey nişanı otomatik yapıyoruz (zaten ajanın kontrolünde değil),
-   * yatay hizalama ajanın işi olarak kalıyor. Yani ajan hâlâ ağaca dönmeyi ve
-   * yaklaşmayı öğrenmek zorunda; sadece "başını kaldırmayı" öğrenmesi
-   * gerekmiyor.
+   * Vertical aim is done automatically here since it is not the agent's to
+   * control; horizontal alignment stays the agent's job. It still has to learn
+   * to turn toward a tree and approach it, just not to look up.
    */
   onundekiKutuk (menzil = 4.4, koniKosinusu = 0.82) {
     const bot = this.bot
@@ -245,38 +231,36 @@ class MinecraftEnvironment {
       const yatay = new Vec3(fark.x, 0, fark.z)
       const uzaklik = yatay.norm()
 
-      // Minecraft'ta menzil GÖZDEN itibaren 3 boyutlu mesafedir. Eskiden
-      // sadece yatay mesafeye bakıp dikey farkı 2.5 ile sınırlıyorduk; bu,
-      // hemen yanı başındaki gövdenin üst katlarını "erişilemez" sayıyordu.
-      // Bot da kıracağı yerde o seviyeye tırmanmanın yolunu arıyordu.
+      // Reach in Minecraft is 3D distance from the eye. This used to check
+      // horizontal distance only and cap the vertical offset at 2.5, which
+      // marked the upper blocks of a trunk right next to the bot as out of
+      // reach, so it looked for a way to climb instead of breaking them.
       if (fark.norm() > menzil) continue
 
-      // Tam tepemizdeki bloğa yatay hizalama anlamsız — doğrudan kırılabilir
+      // Horizontal alignment is meaningless for a block straight overhead
       if (uzaklik > 0.9) {
-        const hiza = yatay.scaled(1 / uzaklik).dot(bakis) // 1 = tam önümde
+        const hiza = yatay.scaled(1 / uzaklik).dot(bakis) // 1 = dead ahead
         if (hiza < koniKosinusu) continue
       }
 
       const aday = bot.blockAt(konum)
-      if (!this.gorev.dogalMi(bot, aday)) continue // oyuncunun yapısını kırma
+      if (!this.gorev.dogalMi(bot, aday)) continue // do not break player builds
 
-      // GÖRÜŞ HATTI ŞART — DUVARIN ARDINI KIRMAK YASAK.
+      // Line of sight is required: no breaking through a wall.
       //
-      // Mineflayer'ın `canDigBlock`u SADECE mesafeye bakıyor
-      // (digging.js: `distanceTo(...) <= 5.1`), görüş hattına bakmıyor.
-      // Sunucu da bunu kabul ediyordu, yani bot 4 blok öteden, taşın
-      // ARDINDAN cevher kırıyordu.
+      // Mineflayer's `canDigBlock` only checks distance (digging.js:
+      // `distanceTo(...) <= 5.1`), not line of sight, and the server accepted
+      // it, so the bot broke ore 4 blocks away through solid stone. The ore
+      // then dropped behind the wall out of reach: the break reward was paid
+      // but nothing entered the inventory, which is where the zero in the
+      // measurements came from.
       //
-      // Sonucu oyunda gördük ve ölçümdeki sıfırı bu açıklıyor: kırılan
-      // cevher duvarın arkasına düşüyor, bot oraya ulaşamıyor. Yani
-      // "kırma" ödülü alınıyor ama envantere HİÇBİR ŞEY girmiyor.
-      //
-      // Öğrenme açısından daha da kötüsü: cevhere giden tüneli kazmayı
-      // öğrenmesi gereken ajan, tünel kazmadan ödül alıyordu. Görevin
-      // tamamı kısa devre oluyordu.
+      // Worse for learning: the agent that was supposed to learn to dig a
+      // tunnel to the ore got the reward without digging one, short-circuiting
+      // the whole task.
       if (typeof bot.canSeeBlock === 'function' && !bot.canSeeBlock(aday)) continue
 
-      // Alttan üste kesmek daha verimli: alçak olana öncelik ver
+      // Cutting bottom-up is more efficient: prefer the lower block
       const skor = -fark.norm() - Math.max(0, fark.y) * 0.3
       if (skor > enIyiSkor) { enIyiSkor = skor; enIyi = aday }
     }
@@ -285,10 +269,10 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Önümde tek bloklu bir basamak var mı?
+   * Is there a one-block step ahead?
    *
-   * Ayak hizasında katı blok + baş hizasında boşluk = zıplayarak çıkılabilir
-   * basamak. İki blok yüksekse zıplamak işe yaramaz, oraya girmiyoruz.
+   * Solid block at foot level plus air at head level = a step the bot can jump
+   * onto. Two blocks high cannot be jumped, so that does not count.
    */
   onumdeBasamakVar () {
     const bot = this.bot
@@ -300,51 +284,47 @@ class MinecraftEnvironment {
     const ustu = bot.blockAt(p.offset(bakis.x * 0.8, 2.2, bakis.z * 0.8))
 
     if (!ayakHizasi || ayakHizasi.boundingBox !== 'block') return false
-    if (basHizasi && basHizasi.boundingBox === 'block') return false // 2 blok, zıplanmaz
-    if (ustu && ustu.boundingBox === 'block') return false           // tavan var
+    if (basHizasi && basHizasi.boundingBox === 'block') return false // 2 blocks, no jump
+    if (ustu && ustu.boundingBox === 'block') return false           // ceiling
 
     return true
   }
 
   /**
-   * Önümü kapatan HERHANGİ bir katı blok var mı? (kırılabilir olmasa da)
+   * Is any solid block in the way, breakable or not?
    *
-   * `onumuKapatan` sadece kırılabilir yumuşak blokları (yaprak vb.) sayıyor,
-   * çünkü "kır" aksiyonu onları hedefliyor. Ama toprak duvara toslamak da
-   * ilerlemeyi engelliyor ve ajanın bunu GÖREBİLMESİ lazım — göremezse
-   * duvara toslamayı bırakmayı öğrenemez.
+   * `onumuKapatan` only counts breakable soft blocks (leaves and such) because
+   * the "break" action targets those. But walking into a dirt wall also stops
+   * progress, and the agent has to be able to see it, otherwise it cannot
+   * learn to stop walking into walls.
    *
-   * Zıplanabilir tek bloklu basamak engel sayılmaz, oradan geçebiliyoruz.
+   * A jumpable one-block step is not an obstacle.
    */
   /**
-   * Botun önündeki noktaları örnekler — SADECE ORTA ÇİZGİ DEĞİL.
+   * Samples points in front of the bot, not just the centre line.
    *
-   * Hem engel sensörü hem "önümü kapatan blok" tek bir noktaya bakıyordu:
-   * tam ileri, tam ortadan. Ama oyuncu kutusu 0.6 blok geniş. Tam ortası
-   * boş olsa bile ÇAPRAZDAKİ bir blok yürümeyi engelliyor.
+   * Both the obstacle sensor and the blocking-block check looked at a single
+   * point straight ahead. The player box is 0.6 blocks wide, so a block off to
+   * the diagonal stops movement even when the centre is clear.
    *
-   * Sonucu oyunda gördük: ajanın önünde sol ve sağ çaprazda yaprak var,
-   * ortası boş. Sensör "önüm açık" diyor, ajan ileri basıyor, oyun onu
-   * geçirmiyor. Zıplıyor, yine geçemiyor. Kırmayı da denemiyor çünkü
-   * "önümü kapatan blok" da aynı kör noktadan bakıyor.
+   * Seen in game: leaves on the left and right diagonal, centre empty. The
+   * sensor reported clear, the agent pushed forward, the game did not let it
+   * through. It jumped, still stuck, and never tried breaking, because the
+   * blocking-block check had the same blind spot.
    *
-   * Üç nokta örnekliyoruz: sol kenar, orta, sağ kenar.
+   * Three samples: left edge, centre, right edge.
    */
   onumdekiNoktalar (menzil, yukseklikler) {
     const yaw = this.bot.entity.yaw
     const ileri = new Vec3(-Math.sin(yaw), 0, -Math.cos(yaw))
-    const yan = new Vec3(-Math.cos(yaw), 0, Math.sin(yaw)) // ileriye dik
+    const yan = new Vec3(-Math.cos(yaw), 0, Math.sin(yaw)) // perpendicular to forward
     const p = this.bot.entity.position
 
-    // ÖNCE ORTA, SONRA ÇAPRAZLAR.
-    //
-    // Sıra önemliydi ve `[-0.35, 0, 0.35]` yazmıştım: `onumuKapatan()`
-    // bulduğu İLK bloğu döndürdüğü için bot hep SOL ÇAPRAZDAKİ bloğu
-    // kırıyordu. Ortadaki blok yerinde kalıyor, ajan ileri basıyor,
-    // oyun geçirmiyor. Oyunda tam olarak bu görüldü: "sadece çaprazını
-    // kırıyor ve ilerlemeye çalışıyor ama ilerleyemiyor".
-    //
-    // Yürümeyi engelleyen asıl blok ortadaki; onu önce ele al.
+    // Centre first, then the diagonals. Order matters: written as
+    // `[-0.35, 0, 0.35]` the bot always broke the left diagonal, because
+    // `onumuKapatan()` returns the first block it finds. The centre block
+    // stayed, the agent pushed forward and the game did not let it through.
+    // The block that actually stops movement is the centre one.
     const noktalar = []
     for (const yukseklik of yukseklikler) {
       for (const kayma of [0, -0.35, 0.35]) {
@@ -363,17 +343,16 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Önümüzü kapatan bloğun KENDİSİ (yoksa null).
+   * The blocking block itself, or null.
    *
-   * `onumdeEngelVar()` sadece evet/hayır diyordu ve bir hata sınıfını
-   * görünmez kılıyordu: "önümde katı blok var ama `onumuKapatan()` onu
-   * kırılabilir saymıyor". Ölçümde bunu ancak dolaylı görebildik —
-   * uzman 4 bölümde hiç kırma yapmadı, sebebini bulmak iki tur sürdü.
-   * (Sebep: `aletTipi()` `tuff`, `calcite` gibi 439 bloğu tanımıyordu.)
+   * `onumdeEngelVar()` was yes/no only, which hid a whole class of failure:
+   * "there is a solid block ahead but `onumuKapatan()` does not consider it
+   * breakable". In the measurements it only showed indirectly, as the expert
+   * breaking nothing across 4 episodes, and took two rounds to track down.
+   * (Cause: `aletTipi()` did not know 439 blocks such as `tuff` and `calcite`.)
    *
-   * Artık engelin ADI uzmanın gerekçesine yazılıyor, yani doğrudan
-   * `gorev_kontrol.py` çıktısında görünüyor. Ölçebildiğimiz bir arıza
-   * sessiz kalmamalı.
+   * The block name now goes into the expert's reason string, so it shows up
+   * directly in `gorev_kontrol.py` output.
    */
   onumdekiEngel () {
     if (this.onumdeBasamakVar()) return null
@@ -385,7 +364,7 @@ class MinecraftEnvironment {
     return null
   }
 
-  /** Verilen kütükten aşağı inerek gövdenin en alt kütüğünü bulur */
+  /** Walks down from the given log to the lowest log of the trunk */
   govdeninDibi (konum) {
     let en_alt = konum
     for (let i = 0; i < 24; i++) {
@@ -397,15 +376,15 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Verilen yaw yönünde engel var mı?
+   * Is there an obstacle in the given yaw direction?
    *
-   * Ajanın SOLUNU ve SAĞINI görebilmesi kritik. Uzman tıkandığında bir yöne
-   * dönmek zorunda; o yönü rastgele seçersek karar hiçbir gözlemden
-   * öğrenilemez hale gelir. "Sağım kapalı olduğu için sola döndüm" ise
-   * gözlemden anlaşılır bir karardır.
+   * The agent must be able to see left and right. When the expert is stuck it
+   * has to turn somewhere, and picking that direction at random makes the
+   * decision unlearnable from the observation, while "turned left because the
+   * right is blocked" is recoverable from it.
    *
-   * Taklitle öğrenmenin temel kuralı: uzman, öğrencinin göremediği bilgiye
-   * dayanmamalı. Bu yordamlar o kuralı sağlamak için var.
+   * Basic rule of imitation learning: the expert must not rely on information
+   * the student cannot see. These helpers are what keep that true.
    */
   yondeEngelVar (yawFarki) {
     const bot = this.bot
@@ -413,15 +392,15 @@ class MinecraftEnvironment {
     const bakis = new Vec3(-Math.sin(yaw), 0, -Math.cos(yaw))
     const p = bot.entity.position
 
-    // Ayak hizası dolu ama baş hizası boşsa: zıplanabilir basamak, engel değil
+    // Foot level solid, head level clear: a jumpable step, not an obstacle
     const ayak = bot.blockAt(p.offset(bakis.x * 0.8, 0.1, bakis.z * 0.8))
     const bas = bot.blockAt(p.offset(bakis.x * 0.8, 1.2, bakis.z * 0.8))
 
     if (bas && bas.boundingBox === 'block') return true
     if (ayak && ayak.boundingBox === 'block') {
       const ust = bot.blockAt(p.offset(bakis.x * 0.8, 2.2, bakis.z * 0.8))
-      if (ust && ust.boundingBox === 'block') return true // zıplanamaz
-      return false // tek bloklu basamak, geçilebilir
+      if (ust && ust.boundingBox === 'block') return true // cannot jump
+      return false // one-block step, passable
     }
     return false
   }
@@ -429,7 +408,7 @@ class MinecraftEnvironment {
   solumKapali () { return this.yondeEngelVar(Math.PI / 2) }
   sagimKapali () { return this.yondeEngelVar(-Math.PI / 2) }
 
-  /** Yerdeki en yakın eşya (kırılan kütükten düşen odun) */
+  /** Nearest item on the ground (wood dropped by a broken log) */
   yakinEsya (yaricap = 8) {
     let enIyi = null
     let enIyiMesafe = Infinity
@@ -442,38 +421,37 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Yolumu kapatan, kırılabilir blok.
+   * Breakable block in the way.
    *
-   * Ajan ağaca yürürken yaprak duvarına çarpıp orada kalıyordu: elinde
-   * "kütüğü kır" vardı ama "önümü açan şeyi kır" yoktu. Gerçek oyuncu da
-   * bu durumda yaprağı kırıp geçer.
+   * Walking to a tree the agent would hit a wall of leaves and stay there: it
+   * had "break the log" but no "break what is in front of me". A real player
+   * breaks the leaves and walks through.
    *
-   * Göz hizasına ve ayak hizasına bakıyoruz — ikisinden biri doluysa
-   * ileri gidemiyoruz demektir.
+   * Eye level and foot level are both checked; either one filled means no
+   * forward movement.
    */
   onumuKapatan (menzil = 1.6) {
-    // DIKKAT: burada "her kirilabilir blok" demek buyuk hataydi — bot bir
-    // magaraya dusunce elleriyle TAS kazmaya calisiyordu. Elle tas kazmak
-    // dakikalar surer ve gorevle hicbir ilgisi yok.
-    // Sadece agacin etrafindaki yumusak bitki bloklarini engel sayiyoruz.
+    // Saying "any breakable block" here was a big mistake: after falling into
+    // a cave the bot tried to mine stone by hand, which takes minutes and has
+    // nothing to do with the task. Only the soft plant blocks around the tree
+    // count as obstacles.
     const bot = this.bot
 
     const kirilabilir = (blok) => {
       if (!blok || blok.name === 'air') return false
-      if (blok.boundingBox !== 'block') return false // su, çimen vs. engel değil
-      // Neyi kırabileceğimiz GÖREVE bağlı: odunda sadece yaprak vb.,
-      // madende taşın kendisi. Karar gorevler.js'te.
+      if (blok.boundingBox !== 'block') return false // water, grass etc. do not block
+      // What may be broken is per task: leaves and such for wood, stone itself
+      // for mining. The decision lives in gorevler.js.
       if (!this.gorev.engelKirilabilirMi(bot, blok)) return false
       return bot.canDigBlock(blok)
     }
 
-    // Önümüz: üç nokta genişliğinde, ayak ve baş hizası, İKİ MESAFEDE.
+    // Ahead: three points wide, foot and head level, at two distances.
     //
-    // Tek mesafeye bakmak yetmiyordu: varsayılan 1.6 blok, komşu bloğun
-    // ötesine düşüyor ve hemen önümüzdeki yaprağı ıskalıyordu. Engel
-    // sensörü 0.8'e bakıyor, kırma 1.6'ya — ikisi farklı yerlere bakınca
-    // ajan "önüm kapalı" görüp kırmaya çalışıyor ama kıracak bir şey
-    // bulamıyordu.
+    // One distance was not enough: the default 1.6 blocks lands past the
+    // neighbouring block and missed the leaf right in front. The obstacle
+    // sensor looks at 0.8 and breaking looked at 1.6, so the agent saw
+    // "blocked" and then found nothing to break.
     for (const uzaklik of [0.8, menzil]) {
       for (const nokta of this.onumdekiNoktalar(uzaklik, [0.1, 1.1])) {
         const blok = bot.blockAt(nokta)
@@ -481,11 +459,9 @@ class MinecraftEnvironment {
       }
     }
 
-    // BAŞIMIZIN ÜSTÜ.
-    //
-    // Ajanın tek çıkış yolu bazen zıplamak oluyor ama kafasının üstünde
-    // yaprak varsa zıplayamıyor. Oyunda tam olarak bu görüldü: bot
-    // zıplayıp zıplayıp yerinde sayıyordu. Yukarısı da engeldir.
+    // Overhead. Sometimes the only way out is jumping, and leaves above the
+    // head prevent it: seen in game as the bot jumping in place over and over.
+    // Above counts as an obstacle too.
     const ustu = bot.blockAt(bot.entity.position.offset(0, 2.1, 0))
     if (kirilabilir(ustu)) return ustu
 
@@ -520,37 +496,37 @@ class MinecraftEnvironment {
       this.gorev.hedefMi(baktigi) ? 1 : 0,
       bot.entity.onGround ? 1 : 0,
       this.adim / MAX_ADIM,
-      this.onumdeEngelVar() ? 1 : 0, // önüm kapalı mı
-      this.solumKapali() ? 1 : 0,    // solum kapalı mı
-      this.sagimKapali() ? 1 : 0,    // sağım kapalı mı
-      this.onumdeBasamakVar() ? 1 : 0, // önümde zıplanabilir basamak var mı
-      // EK SAYILAR (bkz. gorevler.js `EK_GOZLEM`).
-      // Odun görevinde varsayılan KAPALI — Milestone 4'ün modelleri 16 sayı
-      // bekliyor. Çok görevli eğitim `genisGozlem: true` ile açıyor.
+      this.onumdeEngelVar() ? 1 : 0, // blocked ahead
+      this.solumKapali() ? 1 : 0,    // blocked on the left
+      this.sagimKapali() ? 1 : 0,    // blocked on the right
+      this.onumdeBasamakVar() ? 1 : 0, // jumpable step ahead
+      // Extra numbers (see `EK_GOZLEM` in gorevler.js). Off by default for the
+      // wood task, whose Milestone 4 models expect 16 numbers; multi-task
+      // training turns them on with `genisGozlem: true`.
       ...(this.genisMi && this.gorev.ekGozlem ? this.gorev.ekGozlem(this) : [])
     ]
   }
 
   /**
-   * BU BÖLÜMDE toplanan odun.
+   * Wood collected during this episode.
    *
-   * Envanterin toplamı değil — envanter bölümler arasında sıfırlanmıyor.
-   * Mutlak sayıya bakarken ilk bölümde 5 odun toplandıktan sonra her yeni
-   * bölüm "zaten hedefe ulaşılmış" diye tek adımda bitiyordu ve eğitim
-   * verisinin neredeyse tamamı kayboluyordu.
+   * Not the inventory total: the inventory is not cleared between episodes.
+   * Using the absolute count, once 5 wood was collected in the first episode
+   * every later one ended in a single step as "target already reached" and
+   * almost all training data was lost.
    */
   bolumOdunu () {
     return this.gorev.say(this.bot) - this.bolumBaslangicOdun
   }
 
-  /** Ham mesafe (normalize edilmemiş) — ödül hesabı için */
+  /** Raw, un-normalised distance, for the reward calculation */
   hamMesafe () {
     const kutuk = this.enYakinKutuk()
     if (!kutuk) return null
     return kutuk.position.distanceTo(this.bot.entity.position)
   }
 
-  // ---------------------------------------------------------------- aksiyon
+  // ---------------------------------------------------------------- action
 
   async aksiyonUygula (action) {
     const bot = this.bot
@@ -558,25 +534,25 @@ class MinecraftEnvironment {
     let kirilanKutuk = 0
 
     switch (action) {
-      case 0: { // ileri yürü
-        // Tek bloklu basamaklarda takılmasın diye zıplama desteği.
+      case 0: { // walk forward
+        // Jump assist so one-block steps do not trap the bot.
         //
-        // Eskiden bu "yürü, 250ms sonra ilerledim mi diye bak, ilerlemediysen
-        // zıpla" şeklindeydi — zamanlamaya dayalı olduğu için güvenilmezdi:
-        // bot ilk yarıda biraz ilerleyip ikinci yarıda takılırsa kontrol hiç
-        // tetiklenmiyor, bot duvara sürtüp yan yan kayıyordu.
+        // This used to be "walk, check after 250ms whether we moved, jump if
+        // not", which was timing-dependent and unreliable: if the bot moved a
+        // little in the first half and got stuck in the second, the check
+        // never fired and it slid sideways along the wall.
         //
-        // Artık tahmin etmek yerine ÖNCEDEN bakıyoruz: önümdeki blok katı ve
-        // üstü boşsa bu bir basamaktır, zıplamayı baştan basılı tutuyoruz.
-        // Bu bir makro değil, oyunun fiziği — Bedrock sürümünde "auto jump"
-        // diye bir ayar olarak zaten var.
+        // Now the check happens up front instead of guessing: a solid block
+        // ahead with air above it is a step, so jump is held from the start.
+        // Not a macro, just the game's physics; Bedrock ships this as an
+        // "auto jump" setting.
         const basamakVar = this.onumdeBasamakVar()
 
         bot.setControlState('forward', true)
         if (basamakVar) bot.setControlState('jump', true)
         await this.bekle(280)
 
-        // Yine de takıldıysak (öngöremediğimiz bir engel) bir kez daha zıpla
+        // Still stuck (an obstacle we did not predict): jump once more
         if (!basamakVar && bot.entity.onGround &&
             bot.entity.position.xzDistanceTo(oncekiKonum) < 0.08) {
           bot.setControlState('jump', true)
@@ -588,32 +564,32 @@ class MinecraftEnvironment {
         break
       }
 
-      case 1: // sağa dön (22.5°)
+      case 1: // turn right (22.5°)
         await bot.look(bot.entity.yaw - DONUS_ACISI, 0, true)
         break
 
-      case 2: // sola dön (22.5°)
+      case 2: // turn left (22.5°)
         await bot.look(bot.entity.yaw + DONUS_ACISI, 0, true)
         break
 
-      case 3: { // önündeki bloğu kır (kütük yoksa yolu kapatan blok)
+      case 3: { // break the block ahead (the blocking block if there is no log)
         const hedef = this.onundekiKutuk() || this.onumuKapatan()
         if (hedef && bot.canDigBlock(hedef)) {
           const kutuktu = this.gorev.hedefMi(hedef)
           try {
-            // Uygun alet varsa eline al — elle kesmek ~8 kat yavas
+            // Equip the right tool if we have one; bare hands are ~8x slower
             await aletKusan(bot, hedef)
-            // Dikey nişan otomatik; sonra bakışı tekrar yatayda sabitliyoruz
+            // Vertical aim is automatic, then the view is pinned horizontal again
             await bot.lookAt(hedef.position.offset(0.5, 0.5, 0.5), true)
             await bot.dig(hedef)
-            if (kutuktu) kirilanKutuk = 1 // ödül sadece kütük için
-          } catch (err) { /* kıramadıysa zaman cezası zaten var */ }
+            if (kutuktu) kirilanKutuk = 1 // reward is for logs only
+          } catch (err) { /* a failed dig already costs the time penalty */ }
           await bot.look(bot.entity.yaw, 0, true)
         }
         break
       }
 
-      case 4: // bekle
+      case 4: // wait
       default:
         await this.bekle(200)
         break
@@ -622,7 +598,7 @@ class MinecraftEnvironment {
     return kirilanKutuk
   }
 
-  // ---------------------------------------------------------------- döngü
+  // ------------------------------------------------------------------ loop
 
   async reset () {
     this.adim = 0
@@ -644,38 +620,33 @@ class MinecraftEnvironment {
     pathfinderDurdur(this.bot)
     this.bot.clearControlStates()
 
-    // Ajanin yukari-asagi bakma aksiyonu yok. Bakisi yatayda sabitliyoruz ki
-    // "kir" aksiyonu her zaman goz hizasindaki blogu hedeflesin.
+    // The agent has no look up/down action. Pinning the view horizontal keeps
+    // the "break" action targeting the block at eye level.
     await this.bot.look(this.bot.entity.yaw, 0, true)
 
-    // Bolumu RASTGELE bir yone bakarak basla.
+    // Start the episode facing a random direction.
     //
-    // Neden: uzman her bolume agaca donuk basliyordu, dolayisiyla demo
-    // verisinin nerdeyse tamami "kir" aksiyonundan olusuyordu ve "sola don"
-    // hic gorunmuyordu. Boyle bir veriyle egitilen ag sadece kirmayi
-    // ogreniyor, onunde agac olmayinca ne yapacagini bilemiyor.
-    // Rastgele baslangic yonu, demolarda donme ve yurume ornekleri olusturur.
+    // The expert used to start every episode already facing a tree, so nearly
+    // all demo data was the "break" action and "turn left" never appeared. A
+    // network trained on that only learns to break and is lost when no tree is
+    // in front of it. A random start heading produces turning and walking
+    // examples in the demos.
     await this.bot.look(Math.random() * 2 * Math.PI - Math.PI, 0, true)
 
-    // BÖLÜM ORTAMINI GÖREVE GÖRE HAZIRLA.
+    // Set up the episode per task. Wood and mining setups are opposites: one
+    // wants the surface, the other underground. The only shared part is making
+    // sure there is something to collect before the episode starts.
     //
-    // Odun ve maden görevlerinin kurulumu birbirinin TERSİ: biri yüzeye
-    // çıkmak ister, diğeri yeraltına inmek. Ortak olan tek şey, bölüm
-    // başlamadan önce ortamda toplanacak bir şey OLDUĞUNDAN emin olmak.
-    // SUDAN ÇIKMAK GÖREVDEN BAĞIMSIZ.
-    //
-    // Bunu yüzey kurulumunun içine koymuştum ve maden görevinde bot
-    // boğularak öldü: yeraltında su cebine girmek çok olağan, ama
-    // kurtarma sadece odun görevinde çalışıyordu. Ajanın aksiyon
-    // uzayında yüzme yok — hangi görevde olursa olsun boğulmaktan
-    // ortam sorumlu.
+    // Getting out of water is task-independent. It used to sit inside the
+    // surface setup and the bot drowned on the mining task: water pockets
+    // underground are common, but the rescue only ran for wood. The agent has
+    // no swim action, so drowning is the environment's problem in every task.
     await this.sudanCik()
 
-    // ENVANTERİ ÖNCE TEMİZLE, SONRA KURULUM.
-    //
-    // Sıra kritik: kurulum ajana kazma veriyor. Temizliği sonra yapsaydık
-    // az önce verdiğimiz kazmayı silerdik. Bir kez tersini yazdım ve
-    // envanter bölümden bölüme dolarak `/give`i işlevsiz bıraktı.
+    // Clear the inventory first, then run setup. Order matters: setup gives
+    // the agent a pickaxe, and clearing afterwards would delete it. Written
+    // the other way round once, the inventory filled up across episodes and
+    // `/give` stopped doing anything.
     if (this.gorev.temizlemeEtiketi === '*') {
       this.bot.chat(`/clear ${this.bot.username}`)
       await this.bekle(300)
@@ -689,14 +660,11 @@ class MinecraftEnvironment {
       await this.yeraltiKurulumu()
     }
 
-    // HEDEFSİZ BÖLÜMLERİ SESSİZ GEÇME.
-    //
-    // Bot boğulup öldükten sonra ağaçsız bir yere doğdu ve 50'den fazla
-    // bölüm üst üste "0 kaynak, 60 adım, -0.60 ödül" ile bitti. Rakamlar
-    // akıp gidiyordu ama hiçbir şey "burada öğrenilecek bir şey yok"
-    // demiyordu. PPO o gürültüden öğrenmeye çalıştı.
-    //
-    // Ölçebildiğimiz bir arıza sessiz kalmamalı.
+    // Do not let target-less episodes pass silently. After drowning, the bot
+    // respawned somewhere with no trees and 50+ consecutive episodes ended
+    // with "0 resources, 60 steps, -0.60 reward". The numbers kept scrolling
+    // past and nothing said there was nothing to learn here, so PPO tried to
+    // learn from the noise.
     if (!this.enYakinKutuk()) {
       this.hedefsizBolum = (this.hedefsizBolum || 0) + 1
       if (this.hedefsizBolum >= 3) {
@@ -712,51 +680,47 @@ class MinecraftEnvironment {
       this.hedefsizBolum = 0
     }
 
-    // Bolum baslangicini agaca makul bir mesafeye tasi.
+    // Move the episode start to a sane distance from the tree.
     //
-    // Bu pathfinder cagrisi ajanin AKSIYONU DEGIL, bolum kurulumu. Ayrimi
-    // korumak onemli: ajan hala yurumeyi ve donmeyi kendi ogreniyor, biz
-    // sadece her bolume benzer bir baslangic dagilimindan basliyoruz.
-    // Aksi halde agaclar kesildikce bot ormanin ortasinda kalip bos
-    // bolumler uretiyor ve egitim verisi bozuluyor.
-    // Bölüm başında hedefe yaklaştırma — sadece bunun görevi çözmediği
-    // görevlerde. Madende pathfinder tüneli ajan adına kazardı.
+    // This pathfinder call is episode setup, not an agent action. The
+    // distinction matters: the agent still learns walking and turning itself,
+    // this only makes every episode start from a similar distribution.
+    // Otherwise, as the trees get cut down, the bot ends up stranded in a
+    // cleared forest producing empty episodes.
+    //
+    // Only for tasks where it does not solve the task itself: in the mine the
+    // pathfinder would dig the tunnel on the agent's behalf.
     if (this.gorev.baslangictaYurut !== false) await this.baslangicaTasi()
-    // ENVANTERİ BOŞALT.
+    // Empty the inventory.
     //
-    // Bölümler arasında odun birikiyor ve envanter (36 slot × 64) eninde
-    // sonunda doluyor. Dolduğunda kırılan kütükler envantere GİRMİYOR:
-    // "odun = 0" ama ödül hâlâ pozitif çıkıyor, çünkü ödülün içinde
-    // 0.2×kırılan-kütük terimi var. Ölçtük: ~110. bölümden sonra bütün
-    // bölümler 0 odunla ve 500 adımda bitiyordu.
+    // Wood piles up between episodes and the inventory (36 slots x 64) fills
+    // up eventually. Once full, broken logs do not enter it: "wood = 0" while
+    // the reward stays positive, because it contains a 0.2 x broken-log term.
+    // Measured: from about episode 110 on, every episode ended with 0 wood
+    // after 500 steps. The 5-wood target then becomes unreachable, episodes
+    // never end, and the main source of reward is permanently zeroed out.
     //
-    // Sonuç: hedefe (5 odun) asla ulaşılamıyor, bölümler hiç bitmiyor ve
-    // ödülün asıl kaynağı kalıcı olarak sıfırlanıyor. PPO bozuk bir
-    // dünyadan öğreniyor.
-    //
-    // `#minecraft:logs` etiketi bütün kütük türlerini kapsıyor; balta ve
-    // diğer aletler envanterde kalıyor.
-    // Görev hangi kaynağı topluyorsa onu temizliyoruz. Madencilikte
-    // etiket yok (cevherler tek bir etikette toplanmıyor), o yüzden
-    // temizleme atlanıyor ve envanter sayacı bölüm başında sıfırlanıyor.
+    // The `#minecraft:logs` tag covers every log type; the axe and other tools
+    // stay in the inventory. Whichever resource the task collects is what gets
+    // cleared. Mining has no such tag (ores are not grouped under one), so the
+    // clear is skipped there and the inventory counter is zeroed at episode
+    // start instead.
 
-    // YERDEKİ EŞYALARI DA TEMİZLE.
+    // Clear the dropped items too.
     //
-    // Envanteri temizleyip yeri bırakmak yetmiyor: her bölüm bir öncekinin
-    // çöpünün üstüne biniyor. İlerleyen bölümlerde ajan eski yığınların
-    // üstünden geçip bedava ödül topluyor — kendi becerisiyle alakasız.
+    // Clearing the inventory and leaving the ground is not enough: each
+    // episode piles onto the previous one's litter, and later episodes let the
+    // agent walk over old stacks and collect free reward it did not earn.
     //
-    // Ajan bundan yanlış şeyi öğreniyor ("yürürsem odun geliyor"), ölçümler
-    // de şişiyor: değerlendirmede rastgele ajan bu yüzden 4.6 odun
-    // "toplamıştı".
-    //
-    // Her bölüm aynı temiz koşullardan başlasın.
+    // It learns the wrong lesson from that ("walking gives me wood") and the
+    // measurements inflate: this is why a random agent "collected" 4.6 wood in
+    // the evaluation. Every episode should start from the same clean state.
     this.bot.chat(`/kill @e[type=item,distance=..${TEMIZLIK_YARICAPI}]`)
     await this.bekle(500)
 
     const kalanOdun = this.gorev.say(this.bot)
     if (kalanOdun > 0) {
-      // Bot op değilse /clear çalışmaz — sessizce bozulmaktansa uyar
+      // /clear does nothing unless the bot is op: warn instead of failing silently
       log.uyari(
         `Envanter temizlenemedi (${kalanOdun} kütük kaldı). ` +
         `Bot op mu? Sunucu konsoluna: op ${this.bot.username}`
@@ -771,23 +735,23 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Bölüm kurulumu: bot yer altındaysa yüzeye çıkar.
+   * Episode setup: bring the bot to the surface if it is underground.
    *
-   * Ajan ileri yürürken bir çukura/mağaraya düşebiliyor. Elindeki 5 aksiyonla
-   * oradan çıkması pratikte imkânsız, bölüm de boşa gidiyor. Bu bir ajan
-   * aksiyonu değil, bölüm kurulumu — tıpkı başlangıç konumunu ayarlamak gibi.
+   * Walking forward the agent can fall into a pit or a cave, and getting out
+   * with its 5 actions is practically impossible, wasting the episode. Episode
+   * setup, not an agent action, like setting the start position.
    */
   /**
-   * Başımın üstü gökyüzü mü?
+   * Is there open sky overhead?
    *
-   * Eski kontrol sadece 5 blok yukarı bakıyordu ve BÜYÜK bir mağarada
-   * yanılıyordu: tavan 20 blok yukarıdaysa "üstüm açık" diyordu, oysa
-   * bot yerin 40 blok altındaydı. Bot madene düşüp çıkamadığında olan
-   * buydu — kurtarma hiç tetiklenmedi çünkü ortam sıkışmış olduğunu
-   * fark etmedi.
+   * The old check only looked 5 blocks up and was wrong in a big cave: with
+   * the ceiling 20 blocks up it reported open sky while the bot was 40 blocks
+   * underground. That is what happened when the bot fell into a mine and could
+   * not get out; the rescue never fired because the environment did not notice
+   * it was stuck.
    *
-   * Doğru soru "yakınımda tavan var mı" değil, "yukarısı SONUNA KADAR
-   * açık mı". Gökyüzünü görüyorsam yüzeydeyim.
+   * The right question is not "is there a ceiling nearby" but "is it open all
+   * the way up".
    */
   acikHavadaMi (tavan = 200) {
     const p = this.bot.entity.position.floored()
@@ -804,7 +768,7 @@ class MinecraftEnvironment {
 
     if (this.acikHavadaMi()) return false
 
-    // Yukarı doğru ilk "ayak basılacak zemin + üstünde iki blok hava" noktası
+    // First spot going up with solid ground plus two blocks of air above it
     for (let y = p.y + 2; y < p.y + 48; y++) {
       const alt = bot.blockAt(new Vec3(p.x, y - 1, p.z))
       const orta = bot.blockAt(new Vec3(p.x, y, p.z))
@@ -829,45 +793,44 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Yakında ağaç kalmadıysa taze bir bölgeye ışınlan.
+   * Teleport to a fresh area when no trees are left nearby.
    *
-   * NEDEN GEREKLİ: ajan öğrendiği ormanı kesiyor. Eğitim ilerledikçe ağaçlar
-   * bitiyor, bot daha uzağa yürümek zorunda kalıyor, bölümler uzuyor ve ödül
-   * düşüyor. Ölçtük: ilk bölümler 30-120 adım, 50. bölümden sonra 280-320.
+   * The agent cuts down the forest it learns in. As training goes on the trees
+   * run out, the bot has to walk further, episodes get longer and reward
+   * drops: measured at 30-120 steps early on, 280-320 after episode 50.
    *
-   * Bu, RL'in temel varsayımını ihliyor — algoritma ortamın SABİT kaldığını
-   * varsayar. Ortam kendiliğinden zorlaşırken öğrenme eğrisi ölçülemez hale
-   * geliyor: düz bir çizgi bile aslında iyileşme olabilir ama ayırt edemeyiz.
+   * That breaks RL's basic assumption of a stationary environment. When the
+   * environment gets harder on its own the learning curve stops being
+   * measurable: a flat line could be real improvement and there is no way to
+   * tell.
    *
-   * `/spreadplayers` kullanıyoruz: rastgele bir noktaya, KATI ZEMİN ÜSTÜNE
-   * güvenle yerleştiriyor. Bot op olduğu için komutu çalıştırabiliyor.
-   *
-   * Bu bir ajan aksiyonu değil, bölüm kurulumu — tıpkı başlangıç konumunu
-   * ayarlamak gibi.
+   * `/spreadplayers` places the bot safely on solid ground at a random spot;
+   * the bot is op so it can run the command. Episode setup, not an agent
+   * action, like setting the start position.
    */
   async tazeAlanaIsinla (deneme = 4) {
     const bot = this.bot
 
     for (let i = 0; i < deneme; i++) {
       const p = bot.entity.position
-      // Merkezden uzaklaş ki hep aynı bölgeyi tüketmeyelim
+      // Move away from the centre so the same area is not consumed twice
       const menzil = 120 + i * 80
 
       bot.chat(`/spreadplayers ${Math.round(p.x)} ${Math.round(p.z)} 40 ${menzil} false ${bot.username}`)
 
-      // Işınlanma + chunk yüklenmesi
+      // Teleport plus chunk load
       await this.bekle(2500)
       this.hedefKonum = null
       this.karaListe.clear()
 
       if (this.enYakinKutuk()) return true
-      await this.bekle(1500) // chunk'lar geç geldiyse bir şans daha
+      await this.bekle(1500) // one more chance if the chunks arrived late
       if (this.enYakinKutuk()) return true
     }
     return false
   }
 
-  /** Ayak veya göz hizasında su var mı? */
+  /** Water at foot or eye level? */
   suyunIcindeMi () {
     const p = this.bot.entity.position
     for (const dy of [0, 1]) {
@@ -878,26 +841,26 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Sudan çık.
+   * Get out of the water.
    *
-   * Ajanın aksiyon uzayında yüzme yok — ileri, sağa, sola, kır, bekle.
-   * Suya düşerse boğulmaktan başka yapabileceği bir şey yok ve gerçekten
-   * boğuldu: eğitim kaydında ölümden sonra 50'den fazla bölüm üst üste
-   * "0 odun, 60 adım, -0.60 ödül" ile bitti. Ajanın öğrenemeyeceği bir
-   * durumda ceza yemesi öğrenme değil gürültüdür — ORTAM düzeltmeli.
+   * The action space has no swimming: forward, right, left, break, wait. Fall
+   * in and there is nothing to do but drown, and it did: after that death the
+   * training log has 50+ consecutive episodes of "0 wood, 60 steps, -0.60
+   * reward". Punishing the agent in a situation it cannot learn out of is
+   * noise, not learning, so the environment fixes it.
    */
   async sudanCik () {
     if (!this.suyunIcindeMi()) return false
 
     log.uyari('Sudayım — çıkmaya çalışıyorum.')
-    this.bot.setControlState('jump', true) // suda zıplamak = yüzerek yükselmek
+    this.bot.setControlState('jump', true) // jumping in water = swimming up
     const bitis = Date.now() + 6000
     while (Date.now() < bitis && this.suyunIcindeMi()) {
       await this.bekle(300)
     }
     this.bot.setControlState('jump', false)
 
-    // Hâlâ sudaysak karaya ışınlanmak tek çare
+    // Still in water: teleporting to land is the only option left
     if (this.suyunIcindeMi()) {
       await this.tazeAlanaIsinla()
       return true
@@ -906,59 +869,56 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Yüzey görevi kurulumu (odun): suya/mağaraya düştüyse çıkar,
-   * etrafta ağaç kalmadıysa taze bir bölgeye ışınla.
+   * Surface task setup (wood): get out of water or a cave, and teleport to a
+   * fresh area if no trees are left around.
    */
   async yuzeyKurulumu () {
     await this.yuzeyeCik()
 
-    // Ajanın aksiyon uzayında "yüzeye tırman" diye bir şey yok;
-    // mağarada kalmak ORTAMIN sorunu.
+    // The action space has no "climb to the surface"; being stuck in a cave
+    // is the environment's problem.
     if (!this.acikHavadaMi()) {
       log.uyari('Yeraltındayım — yüzeye ışınlanıyorum.')
       await this.tazeAlanaIsinla()
     }
 
-    // Ajan öğrendiği ormanı kesiyor; ortam sabit kalmazsa öğrenme eğrisi
-    // ölçülemez hale geliyor.
+    // The agent cuts down the forest it learns in; a non-stationary
+    // environment makes the learning curve unmeasurable.
     if (!this.enYakinKutuk()) await this.tazeAlanaIsinla()
   }
 
   /**
-   * Taze bir maden bölgesine ışınlan.
+   * Teleport to a fresh mining area.
    *
-   * PROBLEM: 40 bölümlük demo toplamada ilk 18 bölüm iyi sonuç verdi
-   * (8, 6, 22, 12 cevher), sonra 19-35 arası neredeyse tamamen sıfır.
-   * Bot bulunduğu bölgenin cevherini bitirmişti. Odun görevinde bunu
-   * `/spreadplayers` ile çözmüştük ama o komut oyuncuyu YÜZEYE koyuyor —
-   * madende işe yaramaz, her seferinde baştan inmek gerekirdi.
+   * Collecting 40 demo episodes, the first 18 went well (8, 6, 22, 12 ore) and
+   * 19-35 were almost all zero: the bot had exhausted the ore around it. The
+   * wood task solves this with `/spreadplayers`, but that command puts the
+   * player on the surface, which is useless in a mine since the descent would
+   * start over every time.
    *
-   * ÇÖZÜM: aynı derinlikte, uzak bir XZ noktasına ışınlan. Ama oraya
-   * körlemesine ışınlanmak botu taşın içinde bırakır ve boğulur; önce
-   * `/fill` ile 1x2'lik bir cep açıp altına zemin koyuyoruz. İkisi de
-   * op komutu — bot zaten op olmak zorunda (kazmayı da öyle veriyoruz).
+   * Instead: teleport to a distant XZ point at the same depth. Teleporting
+   * there blind leaves the bot inside stone and suffocates it, so a 1x2 pocket
+   * is opened with `/fill` and a floor placed under it first. Both are op
+   * commands, and the bot has to be op anyway (that is how it gets a pickaxe).
    */
   async tazeMadeneIsinla (deneme = 4) {
     const bot = this.bot
 
-    // IŞINLANDIKTAN SONRA DOĞRULA.
-    //
-    // Arama yarıçapını 16'ya indirince (bkz. gorevler.js) rastgele bir
-    // noktanın yakınında hiç cevher OLMAMASI mümkün hale geldi. Odun
-    // görevindeki `tazeAlanaIsinla` bunu zaten deneme döngüsüyle
-    // çözüyor; maden tarafı tek atışlıktı ve hedefsiz bölüm üretiyordu.
-    // Hedefsiz bölüm PPO için saf gürültü.
+    // Verify after the teleport. With the search radius down to 16 (see
+    // gorevler.js) a random point can genuinely have no ore near it. The wood
+    // task's `tazeAlanaIsinla` already retries in a loop; the mining side was
+    // one-shot and produced target-less episodes, which are pure noise to PPO.
     for (let i = 0; i < deneme; i++) {
       const p = bot.entity.position
       const y = Math.floor(p.y)
 
-      // 60-140 blok ötede rastgele bir yön
+      // Random direction, 60-140 blocks out
       const aci = Math.random() * 2 * Math.PI
       const uzaklik = 60 + Math.random() * 80
       const x = Math.round(p.x + Math.cos(aci) * uzaklik)
       const z = Math.round(p.z + Math.sin(aci) * uzaklik)
 
-      // Önce cebi aç, SONRA ışınlan — sırası önemli, tersi boğulma demek
+      // Open the pocket first, then teleport: the other order means suffocating
       bot.chat(`/fill ${x} ${y} ${z} ${x} ${y + 1} ${z} air`)
       bot.chat(`/setblock ${x} ${y - 1} ${z} stone keep`)
       await this.bekle(300)
@@ -972,7 +932,7 @@ class MinecraftEnvironment {
         log.bilgi(`Taze maden bölgesi: x=${x} y=${y} z=${z}`)
         return true
       }
-      await this.bekle(900) // chunk geç geldiyse bir şans daha
+      await this.bekle(900) // one more chance if the chunk arrived late
       this.hedefKonum = null
       if (this.enYakinKutuk()) {
         log.bilgi(`Taze maden bölgesi: x=${x} y=${y} z=${z}`)
@@ -984,37 +944,35 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Yeraltı görevi kurulumu (maden).
+   * Underground task setup (mining).
    *
-   * İNİŞİ AJANA ÖĞRETMİYORUZ ve bu bilinçli bir karar: y=64'ten cevher
-   * seviyesine inmek binlerce adım, bir bölüm ise 500 adım. Ajan hiçbir
-   * zaman ödüle ulaşamaz, dolayısıyla hiçbir şey öğrenemez.
+   * The descent is deliberately not taught to the agent: getting from y=64
+   * down to ore level takes thousands of steps and an episode is 500, so the
+   * agent would never reach a reward and never learn anything.
    *
-   * Görev şu şekilde SINIRLANDIRILDI: "cevher seviyesindesin, kazman
-   * elinde — 500 adımda 5 cevher topla". Bu, ağaç göreviyle aynı
-   * büyüklükte ve aynı PPO koduyla eğitilebilir. İniş, tıpkı odun
-   * görevindeki `baslangicaTasi` gibi, bölüm KURULUMUNUN işi.
+   * The task is scoped to "you are at ore level with a pickaxe, collect 5 ore
+   * in 500 steps", which is the same size as the tree task and trains with the
+   * same PPO code. The descent is episode setup, like `baslangicaTasi` in the
+   * wood task.
    */
   async yeraltiKurulumu () {
     const bot = this.bot
 
-    // 1) Kazma olmadan cevher kırmak onu YOK EDER — önce aleti garantile
+    // 1) Breaking ore without a pickaxe destroys it: guarantee the tool first
     if (this.gorev.aletVer) {
       const { uygunAlet } = require('../skills/alet')
       if (!uygunAlet(bot, { name: 'iron_ore' })) {
         bot.chat(`/give ${bot.username} ${this.gorev.aletVer} 1`)
         await this.bekle(600)
 
-        // VERDİĞİMİZİ DOĞRULA.
-        //
-        // `/give` op yetkisi ister ve sessizce başarısız olur. Kazmasız
-        // bir bot cevheri kırıyor ama HİÇBİR ŞEY DÜŞMÜYOR — ölçümde
-        // tam olarak bunu gördük: %63 "önümde cevher var", 0 kaynak.
-        // Sessiz başarısızlık en pahalı hata türü.
+        // Verify what was given. `/give` needs op and fails silently. Without
+        // a pickaxe the bot breaks ore and nothing drops, which is exactly
+        // what the measurements showed: 63% "ore in front of me", 0 resources.
         if (!uygunAlet(bot, { name: 'iron_ore' })) {
-          // Sunucu log'u `/give`in BAŞARILI olduğunu gösteriyordu; eşya
-          // envantere giremiyordu çünkü 36 slot doluydu. "Op değilsin"
-          // demek yanlış teşhisti ve beni saatlerce yanlış yere baktırdı.
+          // The server log showed `/give` succeeding; the item could not
+          // enter the inventory because all 36 slots were full. Reporting
+          // "you are not op" was the wrong diagnosis and cost hours of
+          // looking in the wrong place.
           const dolu = bot.inventory.items().length
           log.hata(
             `${this.gorev.aletVer} envantere giremedi (${dolu} slot dolu). ` +
@@ -1025,29 +983,29 @@ class MinecraftEnvironment {
       }
     }
 
-    // 2) DERİNLİĞE GÖRE İN, "cevher görüyor muyum"a göre DEĞİL.
+    // 2) Descend by depth, not by "can I see ore".
     //
-    // Burada bir kez "zaten cevher görüyorsam inmeye gerek yok" yazdım ve
-    // görev hiç çalışmadı. Sebep: yüzeyde de cevher görünüyor — uçurum
-    // yüzündeki bir kömür damarı, mağara ağzındaki demir. Bot 30 blok
-    // ötedeki ulaşılamaz bir cevhere kilitlenip yüzeyde dönüp duruyordu.
+    // Written once as "no need to descend if ore is already visible", the task
+    // never worked. Ore is visible on the surface too: a coal vein in a cliff
+    // face, iron at a cave mouth. The bot locked onto unreachable ore 30
+    // blocks away and circled on the surface.
     //
-    // Ölçüm bunu söylüyordu: %63 "cevhere dönüyorum", %10 yürüme ve
-    // HİÇ kırma yok. Yerin altında olsaydı önü taş olurdu ve kırardı.
+    // The measurements said it: 63% "turning toward ore", 10% walking, no
+    // breaking at all. Underground it would have had stone in front of it and
+    // would have broken it.
     //
-    // Görev "cevher seviyesinde başla" diyor; ölçüt derinlik.
+    // The task says "start at ore level", so the criterion is depth.
     const hedefY = this.gorev.baslangicY ?? 15
     if (Math.floor(bot.entity.position.y) > hedefY + 6) {
-      // İNİŞİ BÖLÜMLERE YAY.
+      // Spread the descent over episodes.
       //
-      // y=70'ten y=15'e inmek ~55 basamak, her basamak 3 blok kırmak:
-      // dakikalar sürüyor. İlk denemede Python soketi zaman aşımına
-      // uğrayıp eğitimi düşürdü. Reset dakikalarca bloke olmamalı.
+      // y=70 to y=15 is ~55 steps down, 3 blocks broken each, taking minutes.
+      // On the first attempt the Python socket timed out and dropped the
+      // training run; reset must not block for minutes.
       //
-      // Çözüm: her reset en fazla 12 basamak insin. Bot yeraltında
-      // kaldığı için birkaç bölüm sonra hedefe varıyor ve o noktadan
-      // sonra iniş hiç çalışmıyor. Toplam süre aynı, ama tek bir
-      // çağrıda kilitlenmiyor.
+      // So each reset descends at most 12 steps. The bot stays underground, so
+      // after a few episodes it reaches the target depth and the descent stops
+      // running. Same total time, without one call that hangs.
       log.bilgi(`Maden görevi: y=${hedefY} hedefi, şu an y=${Math.floor(bot.entity.position.y)}`)
       const { seviyeyeIn } = require('../skills/kaz')
       const sahteKontrol = { kontrolEt () {}, bekle: (ms) => this.bekle(ms) }
@@ -1059,16 +1017,16 @@ class MinecraftEnvironment {
       return
     }
 
-    // 4) Derinlikteyiz ama cevher yok: bölge tükenmiş, taze alana geç.
-    //    Ajan öğrendiği madeni kazıp bitiriyor; ortam sabit kalmazsa
-    //    öğrenme eğrisi ölçülemez hale geliyor — odun görevinde de
-    //    aynı sebeple ışınlanma var.
+    // 4) At depth but no ore: the area is exhausted, move to a fresh one.
+    //    The agent mines out the area it learns in, and a non-stationary
+    //    environment makes the learning curve unmeasurable. The wood task
+    //    teleports for the same reason.
     if (!this.enYakinKutuk()) {
       await this.tazeMadeneIsinla()
     }
   }
 
-  /** Bölüm kurulumu: yakınlarda ağaç varsa makul bir mesafeye yürü */
+  /** Episode setup: walk to a sane distance if there is a tree nearby */
   async baslangicaTasi (idealMesafe = 10, zamanAsimi = 15000) {
     const hedef = this.enYakinKutuk()
     if (!hedef) return false
@@ -1090,22 +1048,22 @@ class MinecraftEnvironment {
       return false
     } finally {
       this.hedefKonum = null
-      // pathfinder botu hedefe donuk birakiyor — yonu tekrar rastgelelestir
+      // the pathfinder leaves the bot facing the target: re-randomise the heading
       await this.bot.look(Math.random() * 2 * Math.PI - Math.PI, 0, true)
     }
   }
 
   /**
-   * Suda mıyız? Öyleyse yüzerek yüksel.
+   * In water? Then swim up.
    *
-   * Ajanın aksiyon uzayında yüzme yok. Suya girerse ne yaparsa yapsın
-   * dibe iner ve boğulur — bir kez gerçekten oldu, ardından 50 bölüm
-   * boyunca çöp veri üretildi. Bölüm BAŞINDA sudan çıkarıyorduk ama
-   * bölüm ORTASINDA suya girerse orada ölüyordu.
+   * The action space has no swimming, so once in water the bot sinks and
+   * drowns whatever it does. That happened once and produced 50 episodes of
+   * garbage data. Getting out of water at episode start was already handled;
+   * falling in mid-episode still killed it.
    *
-   * Zıplama tuşu suda "yüzerek yüksel" demek. Ajan adına basmak aksiyon
-   * uzayını genişletmiyor; onun etkileyemediği bir ölümü engelliyor —
-   * tıpkı can barını da onun yönetmemesi gibi.
+   * The jump key means "swim up" in water. Pressing it on the agent's behalf
+   * does not widen the action space, it prevents a death the agent cannot
+   * affect, the same way it does not manage its own health bar.
    */
   async suUstundeKal () {
     if (!this.suyunIcindeMi()) return false
@@ -1116,18 +1074,18 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Kazma bölüm ORTASINDA kırılırsa.
+   * Replace the pickaxe if it breaks mid-episode.
    *
-   * Demir kazma 250 vuruş; bir bölüm 500 adım ve tünel açmak çok vuruş
-   * yiyor. Yani kırılması istisna değil, beklenen durum.
+   * An iron pickaxe lasts 250 hits; an episode is 500 steps and tunnelling
+   * eats hits, so breaking is expected, not an edge case.
    *
-   * Kırıldıktan sonra ajan cevhere vurmaya devam eder ve her vuruş bir
-   * cevheri YOK EDER — daha önce tam olarak bunu ölçtük: "%63 önümde
-   * cevher var, 0 kaynak". Ajan bunu gözleminden anlayamaz; alet
-   * durumu gözlemde yok ve olması da gerekmiyor.
+   * Once broken the agent keeps hitting ore and every hit destroys one, which
+   * is exactly the "63% ore in front of me, 0 resources" measurement. The
+   * agent cannot tell from its observation: tool state is not in there, and
+   * does not need to be.
    *
-   * Alet tedariki bu görevin konusu değil (elle yazılmış `kaz.js` onu
-   * zaten çözüyor). Ajanın öğrendiği şey "cevheri bul ve kır".
+   * Tool supply is not what this task is about (the hand-written `kaz.js`
+   * already handles it). What the agent learns is "find ore and break it".
    */
   async aletiTazele () {
     if (!this.gorev.aletVer) return
@@ -1152,22 +1110,21 @@ class MinecraftEnvironment {
 
     const kirilanKutuk = await this.aksiyonUygula(action)
 
-    // İlerleyebildik mi? "İleri yürü" dedik ama yerimizden kıpırdamadıysak
-    // bir engele toslamışız demektir.
+    // Did we move? "Walk forward" with no change in position means we hit
+    // something.
     const ilerleme = this.bot.entity.position.xzDistanceTo(oncekiKonum)
     if (action === 0 && ilerleme < 0.08) this.takilmaSayaci++
     else if (action === 0) this.takilmaSayaci = 0
 
-    // --- ödül hesabı ---
+    // --- reward ---
     const odun = this.gorev.say(this.bot)
 
-    // Envanter AZALDIYSA bu toplama değil kayıptır (ölüm, dolu envanter).
-    // Ajanın öğrenmesi gereken şey odun toplamak; envanter kaybını ödüle
-    // yazmak devasa negatif aykırı değerler üretiyor.
+    // A drop in the inventory is a loss, not a collection (death, full
+    // inventory). The agent is meant to learn to collect wood; writing
+    // inventory losses into the reward produces huge negative outliers.
     const yeniOdun = Math.max(0, odun - this.oncekiOdun)
 
-    // Bir şey topladıysak eşya kovalama sayacı sıfırlanır — demek ki
-    // kovalamak işe yarıyormuş.
+    // Collecting something resets the item-chase counter: the chase worked.
     if (yeniOdun > 0) this.esyaKovalama = 0
     this.oncekiOdun = odun
 
@@ -1184,23 +1141,22 @@ class MinecraftEnvironment {
       0.05 * yaklasma -
       0.01
 
-    // Ölüm: sabit ve makul bir ceza. Envanter kaybı kadar değil — ajan
-    // uçurumdan kaçınmayı öğrenmeli, travma geçirmemeli.
+    // Death: a flat, moderate penalty, not the size of the inventory loss.
+    // The agent should learn to avoid cliffs, not be traumatised by one fall.
     if (this.oldu) reward += OLUM_CEZASI
 
-    // Hiçbir ilerleme yoksa (ne odun, ne yaklaşma) sayacı artır.
-    // Bölümün 300 adımını duvara toslayarak geçirmek hem veriyi bozuyor hem
-    // de PPO eğitiminde saatler yiyor — 2 dakikalık bir bölüm hiçbir şey
-    // öğretmeden bitiyor.
+    // No progress at all (no wood, no closing distance): bump the counter.
+    // Spending 300 steps of an episode against a wall corrupts the data and
+    // eats hours of PPO training for an episode that teaches nothing.
     if (yeniOdun <= 0 && kirilanKutuk === 0 && Math.abs(yaklasma) < 0.05) {
       this.durgunlukSayaci++
     } else {
       this.durgunlukSayaci = 0
     }
 
-    // Hedefe yakınız ama bir şey kıramıyorsak o hedef ulaşılamıyordur
-    // (tepede, suyun ortasında, uçurumun ardında). Kara listeye alıp
-    // başkasına geç — yoksa bölümün tamamını orada geçiriyor.
+    // Close to the target but breaking nothing means it is unreachable (up a
+    // tree, in the middle of water, behind a cliff). Blacklist it and move on,
+    // otherwise the whole episode is spent there.
     if (this.hedefKonum) {
       const yakin = this.hedefKonum.xzDistanceTo(this.bot.entity.position) < 4
       if (yakin && kirilanKutuk === 0 && yeniOdun <= 0) this.hedefDenemesi++
@@ -1214,17 +1170,17 @@ class MinecraftEnvironment {
       }
     }
 
-    // DİKEY HEDEFTEN VAZGEÇME — UZMANIN DEĞİL ORTAMIN İŞİ.
+    // Giving up on a vertical target is the environment's job, not the
+    // expert's.
     //
-    // Hedefin tam altında/üstündeysek (yatay mesafe < 2) ve menzilde
-    // kırılacak bir şey yoksa o hedef bize göre değil: aksiyon uzayında
-    // yukarı gitmek yok. `HEDEF_SABIR` (20 adım) bunun için çok yavaş —
-    // yerinde sayma kesme eşiği 60 adım, yani üç kötü hedef bölümün
-    // tamamını yiyor.
+    // Directly under or over the target (horizontal distance < 2) with nothing
+    // breakable in range means the target is out of scope: the action space
+    // has no "go up". `HEDEF_SABIR` (20 steps) is far too slow here, since the
+    // stuck-in-place cutoff is 60 steps and three bad targets eat a whole
+    // episode.
     //
-    // Bu mantık `expert.js`te vardı ve PPO direksiyona geçince kimse
-    // çağırmadı; eğitimde 2-18. bölümlerin hepsi sıfır kaynakla bitti.
-    // Ortam kuralı, uzman kuralı değil.
+    // This logic lived in `expert.js` and nothing called it once PPO took the
+    // wheel; episodes 2-18 of that run all ended with zero resources.
     if (this.gorev.dikeyBirakma && this.hedefKonum) {
       const p = this.bot.entity.position
       const yatay = Math.hypot(
@@ -1244,17 +1200,17 @@ class MinecraftEnvironment {
 
     const bolumOdun = Math.max(0, this.bolumOdunu())
 
-    // YERİNDE SAYMA TESPİTİ.
+    // Stuck-in-place detection.
     //
-    // `durgunlukSayaci` "hedefe yaklaşma" değişimine bakıyor ve en ufak
-    // kıpırdanmada sıfırlanıyor. Yaprakların içine gömülen ajan sürekli
-    // biraz sağa biraz sola oynadığı için sayaç hiç dolmuyordu: eğitim
-    // kaydında 455 adımlık, 0 odunlu, -4.53 ödüllü bir bölüm var —
-    // bölüm sınırının neredeyse tamamı bir ağacın tepesinde harcandı.
+    // `durgunlukSayaci` watches the change in distance to the target and
+    // resets on the slightest movement. An agent buried in leaves wiggles a
+    // little left and right, so the counter never filled: the training log has
+    // a 455-step episode with 0 wood and -4.53 reward, nearly the whole step
+    // limit spent in the top of a tree.
     //
-    // Bu ölçüt farklı: 20 adımda bir GERÇEK KONUMU işaretliyoruz. Ajan
-    // 60 adımda 2 bloktan az yer değiştirdiyse ve odun da toplamadıysa,
-    // ne kadar kıpırdanırsa kıpırdansın ilerlemiyor demektir.
+    // This check is different: it records the actual position every 20 steps.
+    // Less than 2 blocks of movement in 60 steps with no wood collected means
+    // no progress, however much it wiggles.
     if (this.adim % 20 === 0) {
       const suan = this.bot.entity.position
       if (this.sonOlcum &&
@@ -1286,11 +1242,10 @@ class MinecraftEnvironment {
   }
 
   /**
-   * Tanı bilgisi: uzman neden o kararı verdi, ortamda ne var?
+   * Diagnostics: why the expert decided what it did, and what is around it.
    *
-   * "Uzman hiçbir şey yapmıyor" gözlemiyle karşılaşınca sebebini bilmeden
-   * tahmin yürütmek zorunda kaldık. Bu yordam ortamın uzmana nasıl
-   * göründüğünü tek bakışta veriyor.
+   * "The expert is doing nothing" left nothing to go on but guesswork. This
+   * shows how the environment looks to the expert in one glance.
    */
   taniBilgisi () {
     const hedef = this.enYakinKutuk()
@@ -1310,13 +1265,13 @@ class MinecraftEnvironment {
     }
   }
 
-  /** Uzman politikanin bu durumda sececeği aksiyon (Milestone 3) */
+  /** Action the expert policy would pick in this state (Milestone 3) */
   uzmanAksiyonu () {
     const { uzmanAksiyonu } = require('./expert')
     return uzmanAksiyonu(this.bot, this)
   }
 
-  // ---------------------------------------------------------------- yardımcı
+  // ----------------------------------------------------------------- helpers
 
   bekle (ms) {
     return new Promise((r) => setTimeout(r, ms * this.zamanCarpani))

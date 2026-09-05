@@ -5,27 +5,25 @@ const { tezgahKoy } = require('./alet')
 const { erit, eritmeGirdisi, yakitBul } = require('./erit')
 
 /**
- * SKILL: Üret  ("uret taş kazma")
+ * Skill: craft ("uret taş kazma").
  *
- * `baltaYap` tek bir eşyanın tarifini ELLE yazıyordu:
- * odun → tahta → çubuk → tezgah → balta. Beş adım, hepsi kodda sabit.
- * Kazma için aynısını yazmak, kürek için aynısını yazmak... her yeni eşya
- * yeni bir fonksiyon demekti.
+ * `baltaYap` hardcoded the recipe of one item: log -> planks -> stick ->
+ * table -> axe, five steps fixed in code. A pickaxe needed the same again, a
+ * shovel the same again: every new item meant a new function.
  *
- * Bu dosya onu genelleştiriyor: eşyanın adını söylüyorsun, tarif ağacını
- * KENDİSİ çözüyor. "Taş kazma yap" dediğinde:
+ * This file generalises it. Name the item and the recipe tree gets resolved
+ * here. "taş kazma" expands to:
  *
- *   taş kazma  ← 3 taş + 2 çubuk
- *     çubuk    ← 2 tahta        (yoksa yap)
- *       tahta  ← 1 kütük        (yoksa yap)
- *     taş      ← envanterde olmalı (kazılır, üretilemez)
+ *   stone pickaxe  <- 3 stone + 2 sticks
+ *     stick        <- 2 planks   (crafted if missing)
+ *       planks     <- 1 log      (crafted if missing)
+ *     stone        <- must be in the inventory (mined, not crafted)
  *
- * Özyinelemeli (recursive): eksik olan her ara malzeme için kendini
- * tekrar çağırıyor. Yeni bir eşya eklemek için kod yazmak gerekmiyor,
- * Minecraft'ın tarif tablosunda varsa yapabiliyor.
+ * Recursive: it calls itself for every missing intermediate. Adding an item
+ * takes no code, only an entry in Minecraft's recipe table.
  */
 
-// Türkçe → Minecraft adı. Kullanıcı "taş kazma" yazacak, "stone_pickaxe" değil.
+// Turkish -> Minecraft name. The user types "taş kazma", not "stone_pickaxe".
 const MALZEMELER = {
   tahta: 'wooden',
   ahsap: 'wooden',
@@ -52,7 +50,7 @@ const ALETLER = {
   çapa: 'hoe'
 }
 
-// Alet olmayan, tek parça eşyalar
+// Single-piece items that are not tools
 const ESYALAR = {
   tahta: 'oak_planks',
   cubuk: 'stick',
@@ -74,13 +72,13 @@ const ESYALAR = {
 }
 
 /**
- * "taş kazma" → "stone_pickaxe",  "çubuk" → "stick"
- * Zaten İngilizce yazılmışsa (stone_pickaxe) olduğu gibi geçiyor.
+ * "taş kazma" -> "stone_pickaxe", "çubuk" -> "stick".
+ * Input already written as a Minecraft name passes through unchanged.
  */
 function adiCoz (girdi) {
   const kelimeler = String(girdi).toLowerCase().trim().split(/\s+/)
 
-  // Doğrudan Minecraft adı mı? ("stone_pickaxe")
+  // already a Minecraft name? ("stone_pickaxe")
   if (kelimeler.length === 1 && kelimeler[0].includes('_')) return kelimeler[0]
 
   let malzeme = null
@@ -97,52 +95,51 @@ function adiCoz (girdi) {
   return ESYALAR[tek] || tek
 }
 
-// Kazarak / keserek elde edilebilen temel malzemeler.
-// Tedarikçinin gerçekten getirebildikleriyle aynı liste olmalı.
+// Raw materials obtainable by mining or chopping. Has to stay in sync with
+// what the supplier can actually fetch.
 const TOPLANABILIR = /_log$|_stem$|^cobblestone$|^stone$|^deepslate$|_ore$|^raw_|^coal$|^diamond$|^redstone$|^lapis_lazuli$|^emerald$/
 
 /**
- * Bir malzemeyi elde etmek NE KADAR makul?
+ * How plausible is it to obtain this material?
  *
- * Bu fonksiyonun varlık sebebi somut bir hata: bot "demir kazma yapamadım,
- * eksik olan stripped_birch_log" dedi. Sebep şu — Minecraft'ta tahta DÖRT
- * ayrı tariften yapılabiliyor:
+ * Exists because of a concrete failure: the bot said it could not make an
+ * iron pickaxe, missing stripped_birch_log. Planks have four recipes:
  *
  *     birch_planks <- birch_log
  *     birch_planks <- birch_wood
- *     birch_planks <- stripped_birch_log      <-- bunu seçmişti
+ *     birch_planks <- stripped_birch_log      <-- this is the one it picked
  *     birch_planks <- stripped_birch_wood
  *
- * Dördü de geçerli tarif. Ama soyulmuş kütük DOĞADA YOK — bir kütüğü
- * baltayla soyarak elde ediliyor. Bot onu "toplanamıyor" diye rapor edip
- * pes etti, oysa iki satır aşağıdaki normal kütük tarifi gayet uygundu.
+ * All four are valid, but stripped logs do not generate in the world, you
+ * strip a log with an axe. The bot reported it as uncollectable and gave up
+ * while the plain log recipe two lines above would have worked.
  *
- * Eski kod tarifleri sadece "malzemesi ELİMDE VAR MI" diye puanlıyordu.
- * Hiçbiri elde yoksa dördü de sıfır puan alıyor ve sıra rastgele kalıyordu.
- * Artık "elde YOKSA nasıl elde edilir" de puanlanıyor.
+ * The old code scored a recipe only on "do I already hold the material". With
+ * nothing in the inventory all four scored zero and the order was arbitrary.
+ * Now "how would I get it if I do not have it" is scored too.
  */
 function malzemePuani (bot, mcData, isim, derinlik = 0) {
-  if (sayim(bot, isim) > 0) return 4 // zaten var, en iyisi
-  if (isim.startsWith('stripped_')) return -4 // doğada yok, elle soyulur
-  if (/_wood$|_hyphae$/.test(isim)) return -2 // 6 kütükten yapılır, israf
-  if (TOPLANABILIR.test(isim)) return 3 // kazılır/kesilir
-  if (eritmeGirdisi(isim)) return 1 // eritilir
+  if (sayim(bot, isim) > 0) return 4 // already have it, best case
+  if (isim.startsWith('stripped_')) return -4 // not natural, stripped by hand
+  if (/_wood$|_hyphae$/.test(isim)) return -2 // costs 6 logs, wasteful
+  if (TOPLANABILIR.test(isim)) return 3 // mined or chopped
+  if (eritmeGirdisi(isim)) return 1 // smeltable
 
   const e = mcData.itemsByName[isim]
   if (!e) return -3
   const tarifler = bot.recipesAll(e.id, null, true)
-  if (tarifler.length === 0) return -3 // çıkmaz sokak
+  if (tarifler.length === 0) return -3 // dead end
 
-  // BİR KAT DAHA DERİNE BAK.
+  // Look one level deeper.
   //
-  // Bu olmadan bot şuna takılıyordu: çubuk için tahta lazım, tahtanın da
-  // 11 çeşidi var (meşe, huş, kiraz...). Hiçbiri elde yokken hepsi aynı
-  // puanı alıyor ve bot listedeki ilkini — meşeyi — seçiyor. Oysa
-  // envanterde KİRAZ KÜTÜĞÜ var; kiraz tahtası bir adım ötede, meşe
-  // tahtası imkânsız.
+  // Without it the bot got stuck like this: a stick needs planks, and planks
+  // have 11 variants (oak, birch, cherry...). With none in the inventory they
+  // all score the same and the first in the list, oak, wins. Meanwhile the
+  // inventory holds a cherry log: cherry planks are one step away, oak planks
+  // impossible.
   //
-  // Tek kat bakınca ikisi de "üretilebilir" görünüyor. İki kat bakınca
-  // fark ortaya çıkıyor: kirazın malzemesi elimizde.
+  // At one level both look craftable. At two levels the difference shows up:
+  // the cherry ingredient is on hand.
   if (derinlik >= 2) return 1
 
   let enIyi = 1
@@ -153,21 +150,21 @@ function malzemePuani (bot, mcData, isim, derinlik = 0) {
     const enZayif = Math.min(
       ...isimler.map((x) => malzemePuani(bot, mcData, x, derinlik + 1))
     )
-    // En zayıf halka neyse tarif o kadar sağlam
-    if (enZayif >= 4) enIyi = Math.max(enIyi, 3) // malzemesi hazır
-    else if (enZayif >= 3) enIyi = Math.max(enIyi, 2) // toplanabilir
+    // a recipe is only as good as its weakest ingredient
+    if (enZayif >= 4) enIyi = Math.max(enIyi, 3) // ingredients on hand
+    else if (enZayif >= 3) enIyi = Math.max(enIyi, 2) // collectable
   }
   return enIyi
 }
 
-/** Envanterde bu addan kaç tane var */
+/** How many of this item the inventory holds */
 function sayim (bot, ad) {
   return bot.inventory.items()
     .filter((i) => i.name === ad)
     .reduce((t, i) => t + i.count, 0)
 }
 
-/** Yakında masa var mı, yoksa koyabilir miyiz */
+/** A crafting table nearby, placing one if needed */
 async function masaBul (bot, mcData) {
   const masa = bot.findBlock({
     matching: mcData.blocksByName.crafting_table.id, maxDistance: 4
@@ -181,11 +178,11 @@ async function masaBul (bot, mcData) {
 }
 
 /**
- * Bir tarifin girdilerini {ad: adet} olarak verir.
+ * Recipe inputs as {name: count}.
  *
- * mineflayer tarifi `delta` dizisinde tutuyor: eksi sayılar TÜKETİLEN,
- * artı sayı ÜRETİLEN. inShape/ingredients formatları tarife göre
- * değiştiği için delta'yı okumak tek güvenilir yol.
+ * mineflayer keeps a recipe in a `delta` array: negative counts are consumed,
+ * the positive one is produced. inShape/ingredients change format from recipe
+ * to recipe, so delta is the only reliable thing to read.
  */
 function tarifGirdileri (mcData, tarif) {
   const girdi = {}
@@ -200,8 +197,8 @@ function tarifGirdileri (mcData, tarif) {
 }
 
 /**
- * Eritme denemesi: ham maddeyi, fırını ve yakıtı sağlayıp fırına ver.
- * Hem "önce eritmeyi düşün" kestirmesi hem de normal B adımı bunu kullanıyor.
+ * Smelting attempt: supply the raw material, the furnace and the fuel, then
+ * smelt. Used both by the "try smelting first" shortcut and by step B.
  */
 async function eritmeyiDene (bot, mcData, ad, adet, kontrol, altSaglama) {
   const hamMadde = eritmeGirdisi(ad)
@@ -212,7 +209,7 @@ async function eritmeyiDene (bot, mcData, ad, adet, kontrol, altSaglama) {
   const ham = await altSaglama(hamMadde, eksik)
   if (!ham.ok) return { ok: false, hata: ham }
 
-  // Fırın da tezgahta üretiliyor — kendi tarif ağacından geçiyor
+  // a furnace is crafted too, so it goes through its own recipe tree
   const f = await altSaglama('furnace', 1)
   if (!f.ok) return { ok: false, hata: f }
 
@@ -247,39 +244,37 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
     saglamaAl(bot, mcData, isim, n, kontrol, secenekler, iz, derinlik + 1)
 
   try {
-    // İKİ TUR.
+    // Several rounds.
     //
-    // Neden: bot "spruce_log toplanamıyor" dedi. Minecraft'ta çubuk ~12
-    // tarifle yapılabiliyor (her ağaç türü için bir tahta çeşidi). Envanter
-    // boşken hepsi aynı puanı alıyor ve bot rastgele birini — ladin —
-    // seçip ısrar ediyordu. Oysa ormanda meşe vardı.
+    // The bot used to report that spruce_log could not be collected. A stick
+    // has ~12 recipes, one per plank variant. With an empty inventory they all
+    // score the same, so it picked one at random, spruce, and kept insisting,
+    // while the forest around it was oak.
     //
-    // Birinci tur tedarikçiyi tetikliyor ("bana kütük lazım"), tedarikçi
-    // eline NE GEÇERSE onu getiriyor (meşe). İkinci turda tarifler
-    // yeniden puanlanıyor; artık elde meşe kütüğü olduğu için meşe tarifi
-    // +4 alıp öne geçiyor ve zincir devam ediyor.
+    // The first round triggers the supplier ("I need logs") and the supplier
+    // brings back whatever it finds (oak). The second round rescores the
+    // recipes: with an oak log in hand the oak recipe gets +4, moves to the
+    // front and the chain continues. The tree species is not guessed, it is
+    // read off what the forest actually gave.
     //
-    // Yani "hangi ağaç türü" sorusunu tahmin etmiyoruz — ormanın cevabını
-    // görüp ona uyuyoruz.
-    // Tedarik sayacı: bu turda ALT DALLARDA bile bir şey toplandı mı?
-    //
-    // Eskiden her kare sadece KENDİ tedarik çağrısına bakıyordu. Ama
-    // "çubuk" karesi hiçbir zaman kendi tedarikini yapmıyor — tedarik
-    // torunlarında (tahta > kütük) oluyor. Çubuk karesi bunu göremediği
-    // için "12 tarifi de denedim, olmadı" deyip pes ediyordu; oysa bu
-    // arada envantere meşe kütüğü girmişti ve meşe tarifi artık
-    // çalışacaktı. Ortak bir sayaç bunu görünür kılıyor.
+    // Supply counter: did anything get collected this round, sub-branches
+    // included? Each frame used to look only at its own supply call, but the
+    // "stick" frame never supplies anything itself, that happens in its
+    // descendants (planks > log). Blind to it, the stick frame concluded
+    // "tried all 12 recipes, none worked" and gave up, even though an oak log
+    // had arrived in the meantime and the oak recipe would now work. A shared
+    // counter makes it visible.
     const durum = secenekler._durum || (secenekler._durum = { tedarik: 0 })
 
     for (let tur = 0; tur < 3; tur++) {
       const turBasiTedarik = durum.tedarik
-      // ---- ÖNCE ERİTMEYİ DÜŞÜN ----
+      // ---- try smelting first ----
       //
-      // Demir külçenin TEZGAH tarifleri de var: demir bloğundan 9, demir
-      // parçasından (nugget) 9. İkisi de külçeden yapıldığı için çıkmaz
-      // sokak — ama tarif listesinde göründükleri için bot önce onları
-      // deniyor, boşuna özyineleme yapıyordu. Ham madde zaten elimizdeyse
-      // fırın kestirme yol: doğrudan oraya git.
+      // An iron ingot also has crafting-table recipes: 9 from an iron block,
+      // 9 from nuggets. Both are made out of ingots, so both are dead ends,
+      // but they show up in the recipe list and the bot tried them first and
+      // recursed for nothing. If the raw material is already in the inventory
+      // the furnace is the short path, go straight there.
       const hamElde = eritmeGirdisi(ad)
       if (hamElde && sayim(bot, hamElde) > 0) {
         const hizli = await eritmeyiDene(bot, mcData, ad, adet, kontrol, altSaglama)
@@ -287,19 +282,19 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
         sonHata = hizli.hata || sonHata
       }
 
-      // ================= A) TEZGAHTA ÜRET =================
+      // ================= A) craft on a table =================
       //
-      // PLANLAMA için tarifleri masa VARMIŞ GİBİ soruyoruz (üçüncü argüman true).
-      // mineflayer'ın `recipesAll(id, meta, masa)` fonksiyonu masa verilmezse
-      // 3x3 tarifleri listeden ELİYOR. Taş kazma 3x3'tür; masasızken sorunca
-      // boş liste dönüyor ve "üretilemiyor" sanıyorduk. Tavuk-yumurta:
-      // masayı almak için tarifi bilmen, tarifi görmek için masan olması
-      // gerekiyordu. Planlarken masa varmış gibi bak, üretmeden hemen önce
-      // masayı gerçekten yap ve yere koy.
+      // For planning, recipes are queried as if a table were there (third
+      // argument true). mineflayer's `recipesAll(id, meta, table)` drops 3x3
+      // recipes from the list when no table is passed. A stone pickaxe is
+      // 3x3, so asking without a table returned an empty list and it looked
+      // uncraftable. Chicken and egg: getting a table needed the recipe,
+      // seeing the recipe needed a table. Plan as if the table were there,
+      // then really craft and place it right before crafting.
       const tarifler = bot.recipesAll(esya.id, null, true)
 
-      // Envanterdekine en çok uyan tarifi önce dene: aynı eşyanın birçok
-      // varyantı var (meşe tahtası, huş tahtası...), elimizdekine uyanı seç.
+      // Try the recipe that best matches the inventory first: one item has
+      // many variants (oak planks, birch planks...), pick the matching one.
       const sirali = tarifler
         .map((t) => {
           const { girdi } = tarifGirdileri(mcData, t)
@@ -309,7 +304,7 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
           return { t, puan }
         })
         .sort((a, b) => b.puan - a.puan)
-        .slice(0, 6) // 3'tü: tahtanın 4 varyantı var, iyi olan listeye girmiyordu
+        .slice(0, 6) // was 3: planks have 4 variants and the good one fell off the list
         .map((x) => x.t)
 
       for (const tarif of sirali) {
@@ -321,9 +316,9 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
         for (const [isim, n] of Object.entries(girdi)) {
           const alt = await altSaglama(isim, n * kere)
           if (!alt.ok) {
-          // İLK (en iyi puanlı) tarifin hatasını sakla, sonuncununkini değil.
-          // Kullanıcıya "stripped_birch_log eksik" demek yanıltıcıydı:
-          // o, denenen son ve en kötü tarifin hatasıydı.
+          // Keep the error of the first, best-scoring recipe, not the last.
+          // Reporting "stripped_birch_log eksik" was misleading: that was the
+          // error of the last and worst recipe tried.
             if (!sonHata) sonHata = alt
             girdilerTamam = false
             break
@@ -351,25 +346,25 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
         }
       }
 
-      // ================= B) FIRINDA ERİT =================
+      // ================= B) smelt in a furnace =================
       //
-      // Demir külçesi tezgahta ÜRETİLEMİYOR, sadece eritiliyor. Bu adım
-      // olmadan taş kazmanın ötesine geçilemez: demir kazma için külçe,
-      // külçe için fırın gerekiyor. Tarif ağacı burada tezgahtan fırına
-      // atlıyor ve aynı özyineleme devam ediyor.
+      // An iron ingot cannot be crafted, only smelted. Without this step
+      // nothing past a stone pickaxe is reachable: an iron pickaxe needs
+      // ingots, ingots need a furnace. The recipe tree switches from table to
+      // furnace here and the same recursion continues.
       if (eritmeGirdisi(ad)) {
         const sonuc = await eritmeyiDene(bot, mcData, ad, adet, kontrol, altSaglama)
         if (sonuc.ok) return { ok: true }
         sonHata = sonuc.hata || sonHata
       }
 
-      // ================= C) DIŞARIDAN TEDARİK =================
+      // ================= C) supply from outside =================
       //
-      // Ne üretiliyor ne eritiliyor: kütük, taş, cevher. Bunlar toplanır.
-      // `tedarikci` dışarıdan enjekte ediliyor (bot/skills/index.js) —
-      // burada doğrudan `kaz`ı çağırsaydık kaz->uret->kaz döngüsel bağımlılık
-      // olurdu. Bu yüzden uret "nasıl toplanacağını" bilmiyor, sadece
-      // "toplanabilir mi" diye soruyor.
+      // Neither crafted nor smelted: logs, stone, ore. Those get collected.
+      // `tedarikci` is injected from outside (bot/skills/index.js); calling
+      // `kaz` directly here would make kaz->uret->kaz a circular dependency.
+      // So uret does not know how something is collected, only whether it
+      // can be.
       if (secenekler.tedarikci && tur === 0) {
         const eksik = adet - sayim(bot, ad)
         try {
@@ -385,9 +380,9 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
         sonHata = { ok: false, eksik: ad, mesaj: `${ad} üretilemiyor, eritilemiyor, toplanamıyor` }
       }
 
-      // Hiçbir yerde (alt dallarda dahil) yeni malzeme gelmediyse dur
+      // stop if no new material arrived anywhere, sub-branches included
       if (durum.tedarik === turBasiTedarik) break
-      sonHata = null // yeni malzemeyle baştan dene
+      sonHata = null // retry from the top with the new material
     }
 
     return sonHata || { ok: false, eksik: ad, mesaj: 'tarif uygulanamadı' }
@@ -397,7 +392,7 @@ async function saglamaAl (bot, mcData, ad, adet, kontrol, secenekler = {}, iz = 
 }
 
 /**
- * Dışarıya açılan komut.
+ * Public entry point.
  * @param {string} istek "taş kazma", "çubuk", "stone_pickaxe"
  */
 async function uret (bot, kontrol, istek, adet = 1, secenekler = {}) {

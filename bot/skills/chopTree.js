@@ -9,55 +9,52 @@ const { sutunaCik, sutundanIn } = require('./sutun')
 const koruma = require('../utils/koruma')
 
 /**
- * SKILL: Ağaç kes
+ * Skill: chop a tree.
  *
- * Adımlar:
- *  1) Yakındaki en yakın kütük (log) bloğunu bul
- *  2) O ağacın gövdesini oluşturan bağlı bütün kütükleri topla (flood fill)
- *  3) Ağacın dibine yürü (pathfinder)
- *  4) Kütükleri alttan üste doğru kır
- *  5) Yere düşen odunları toplamak için üstlerinden geç
+ * Steps:
+ *  1) find the nearest log block
+ *  2) flood fill the connected logs that make up that trunk
+ *  3) walk to the base of the tree (pathfinder)
+ *  4) break the logs bottom to top
+ *  5) walk over the dropped wood to pick it up
  *
- * Her adımda `kontrol.kontrolEt()` çağrılır — "dur" komutu böyle çalışır.
+ * Every step calls `kontrol.kontrolEt()`, which is how the "dur" command works.
  */
 
-// Bir bloğun "kütük" olup olmadığını isminden anlıyoruz.
-// Böylece meşe / huş / ladin / mangrove fark etmeksizin hepsi çalışıyor.
+// A block is a log if its name says so, which covers oak / birch / spruce /
+// mangrove without listing them.
 function kutukMu (block) {
   if (!block) return false
   return /_log$|_stem$/.test(block.name)
 }
 
 /**
- * Bu kütük DOĞAL bir ağacın parçası mı, yoksa oyuncunun yaptığı bir yapı mı?
+ * Is this log part of a natural tree, or of something the player built?
  *
- * Bot kullanıcının kütükten yaptığı EVİ kesmeye başlamıştı. Sebep: kod bir
- * bloğun ağaç olup olmadığını sadece ADINA bakarak anlıyordu, ev de aynı
- * bloktan yapıldığı için aynı kontrolden geçiyordu.
+ * The bot started chopping down the user's log house: matching on the block
+ * name alone says "tree" for a wall built out of the same block.
  *
- * Üç işarete birden bakıyoruz:
+ * Three signals:
  *
- *  1) `stripped_` ile başlayan kütükler doğada oluşmaz — kesinlikle insan işi.
- *  2) Ağaç gövdesi en fazla 2x2'dir. Aynı seviyede etrafında bir sürü kütük
- *     varsa bu bir DUVAR demektir.
- *  3) Doğal ağacın yaprakları vardır. Yakınında hiç yaprak yoksa şüphelen.
+ *  1) `stripped_` logs never generate naturally, so they are player-placed.
+ *  2) A trunk is at most 2x2. Many logs at the same level means a wall.
+ *  3) A natural tree has leaves. No leaves nearby is suspicious.
  *
- * Pahalı bir kontrol (çok blok okuyor), o yüzden her bloğa değil sadece
- * aday kütüklere uygulanıyor.
+ * Reads a lot of blocks, so it runs on candidate logs only, not every block.
  */
 function dogalAgacMi (bot, blok) {
   if (!kutukMu(blok)) return false
 
-  // 0) Oyuncunun işaretlediği koruma bölgesi — sezgisellerden ÖNCE gelir
+  // 0) player-marked protected area, checked before the heuristics
   if (koruma.korumaliMi(blok.position)) return false
 
-  // 1) Soyulmuş kütük doğada bulunmaz
+  // 1) stripped logs do not occur naturally
   if (blok.name.startsWith('stripped_')) return false
 
   const p = blok.position
 
-  // 2) Duvar testi: aynı yükseklikte etrafta kaç kütük var?
-  //    Meşe/huş/ladin 1x1, koyu meşe/orman 2x2. Fazlası duvardır.
+  // 2) wall test: how many logs are around it at the same height?
+  //    oak/birch/spruce are 1x1, dark oak/jungle 2x2. More than that is a wall.
   let ayniSeviye = 0
   for (let dx = -2; dx <= 2; dx++) {
     for (let dz = -2; dz <= 2; dz++) {
@@ -67,7 +64,7 @@ function dogalAgacMi (bot, blok) {
   }
   if (ayniSeviye > 3) return false
 
-  // 3) Yaprak testi: doğal ağacın tepesi vardır
+  // 3) leaf test: a natural tree has a canopy
   for (let dy = 0; dy <= 6; dy++) {
     for (let dx = -3; dx <= 3; dx++) {
       for (let dz = -3; dz <= 3; dz++) {
@@ -80,11 +77,11 @@ function dogalAgacMi (bot, blok) {
 }
 
 /**
- * En yakın DOĞAL ağacı bul (oyuncunun yapılarını ve kara listeyi atlar).
+ * Nearest natural tree, skipping player structures and the blacklist.
  *
- * `karaListe`: daha önce denenip ULAŞILAMAYAN gövde dipleri. Bu olmadan
- * bot aynı erişilemez kütüğü sonsuza kadar seçiyordu — log'da bunu
- * (1429,71,-48) beş kez üst üste denerken gördük. Her deneme ~20 saniye.
+ * `karaListe` holds trunk bases that were tried and could not be reached.
+ * Without it the bot picks the same unreachable log forever: the log shows
+ * (1429,71,-48) tried five times in a row, ~20 seconds per attempt.
  */
 function enYakinDogalAgac (bot, yaricap, karaListe = null) {
   const adaylar = bot.findBlocks({
@@ -108,12 +105,11 @@ function enYakinDogalAgac (bot, yaricap, karaListe = null) {
 }
 
 /**
- * Bir kütükten aşağı inerek gövdenin DİBİNİ bulur.
+ * Walks down from a log to the bottom of the trunk.
  *
- * Neden gerekli: yayılma (flood fill) nereden başlarsa oraya yakın blokları
- * önce buluyor. Ortadaki bir kütükten başlayınca ve limite takılınca hem
- * kök hem tepe listenin dışında kalıyordu. Dipten başlayınca yayılma
- * ağacın tabanından yukarı doğru ilerliyor.
+ * The flood fill spreads outward from wherever it starts, so starting from a
+ * log in the middle and hitting the limit left both the root and the top out
+ * of the list. Starting at the bottom makes it fill upward from the base.
  */
 function govdeninDibi (bot, blok) {
   let p = blok.position
@@ -126,8 +122,8 @@ function govdeninDibi (bot, blok) {
 }
 
 /**
- * Verilen kütüğe bağlı bütün kütükleri bulur (ağacın gövdesi).
- * 3x3x3 komşulukta yayılır — dallı ağaçlarda da çalışır.
+ * All logs connected to the given one, i.e. the trunk.
+ * Spreads over a 3x3x3 neighbourhood, so branching trees work too.
  */
 function agaciTopla (bot, baslangic, limit) {
   const bulunan = []
@@ -142,7 +138,7 @@ function agaciTopla (bot, baslangic, limit) {
 
     const block = bot.blockAt(pos)
     if (!kutukMu(block)) continue
-    if (block.name.startsWith('stripped_')) continue // insan yapımı, dokunma
+    if (block.name.startsWith('stripped_')) continue // player-placed, leave it
     bulunan.push(block)
 
     for (let dx = -1; dx <= 1; dx++) {
@@ -155,19 +151,19 @@ function agaciTopla (bot, baslangic, limit) {
     }
   }
 
-  // Alttan üste sırala: ağacın altını önce kesmek daha güvenli
+  // bottom to top: cutting the base first is safer
   bulunan.sort((a, b) => a.position.y - b.position.y)
   return bulunan
 }
 
-/** Envanterdeki toplam kütük sayısı — ödül fonksiyonunda da kullanacağız */
+/** Total logs in the inventory, also used by the reward function */
 function oduncuSay (bot) {
   return bot.inventory.items()
     .filter((item) => /_log$|_stem$/.test(item.name))
     .reduce((toplam, item) => toplam + item.count, 0)
 }
 
-/** Yerdeki eşyaları bul (canlı liste — her çağrıda yeniden bakar) */
+/** Items lying on the ground, re-read on every call */
 function yerdekiEsyalar (bot, merkez, yaricap) {
   return Object.values(bot.entities)
     .filter((e) => e.name === 'item' &&
@@ -179,11 +175,10 @@ function yerdekiEsyalar (bot, merkez, yaricap) {
 }
 
 /**
- * Yere düşen odunları topla.
+ * Pick up the dropped wood.
  *
- * Neden döngü? Kütükler kırıldıktan sonra eşyalar hemen belirmez, sonra da
- * yere düşerken biraz savrulurlar. Tek seferlik bakmak yetmiyordu — bu yüzden
- * "hiç eşya kalmayana kadar" birkaç tur atıyoruz.
+ * Items do not appear the instant a log breaks and they scatter a bit while
+ * falling, so a single pass missed some. Loops until a round finds nothing.
  */
 async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6 } = {}) {
   let toplanan = 0
@@ -195,7 +190,7 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
     const esyalar = yerdekiEsyalar(bot, merkez, yaricap)
     if (esyalar.length === 0) {
       bosTur++
-      await kontrol.bekle(600) // biraz daha bekle, belki düşmemiştir
+      await kontrol.bekle(600) // wait a bit longer, they may not have dropped yet
       continue
     }
 
@@ -203,7 +198,7 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
 
     for (const esya of esyalar) {
       kontrol.kontrolEt()
-      if (!esya.isValid) continue // bu arada toplanmış olabilir
+      if (!esya.isValid) continue // may already have been picked up
 
       const p = esya.position
       const git = await pathfinderGit(bot, new goals.GoalNear(p.x, p.y, p.z, 0),
@@ -218,14 +213,14 @@ async function dusenleriTopla (bot, merkez, kontrol, { yaricap = 12, maksTur = 6
 }
 
 /**
- * Tek bir ağaç keser.
- * @param {object} kontrol GorevKontrol nesnesi (iptal için)
+ * Chops one tree.
+ * @param {object} kontrol GorevKontrol instance, used for cancellation
  */
 async function chopTree (bot, kontrol, { karaListe = null } = {}) {
   const baslangicOdun = oduncuSay(bot)
   kontrol.kontrolEt()
 
-  // --- 1) En yakın DOĞAL ağacı bul (oyuncunun yapıları hariç) ---
+  // --- 1) nearest natural tree, player structures excluded ---
   const hedef = enYakinDogalAgac(bot, config.searchRadius, karaListe)
 
   if (!hedef) {
@@ -235,19 +230,19 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
 
   log.bilgi(`Ağaç bulundu: ${hedef.name} @ ${hedef.position}`)
 
-  // --- 2) Ağacın tamamını topla ---
+  // --- 2) collect the whole tree ---
   const kutukler = agaciTopla(bot, hedef, config.maxLogsPerTree)
   log.bilgi(`Bu ağaçta ${kutukler.length} kütük var.`)
 
-  // --- 3) Ağacın dibine yürü ---
+  // --- 3) walk to the base ---
   const dip = kutukler[0].position
   const dibeGit = await pathfinderGit(bot, new goals.GoalNear(dip.x, dip.y, dip.z, 2),
     kontrol, { zamanAsimi: 20000, durgunlukMs: 4000 })
   if (!dibeGit.ok) {
-    // Dibine yürüyemedik. ESKİDEN yine de denerdik: bot 20 saniye
-    // uzaktan uzanmaya çalışır, başaramaz, sonra AYNI ağacı tekrar
-    // seçerdi. Artık uzaklığa bakıyoruz — hâlâ menzil dışındaysak bu
-    // ağaç bize göre değil, kara listeye yazıp bir sonrakine geçiyoruz.
+    // Could not walk to the base. It used to try anyway: 20 seconds of
+    // reaching from a distance, failing, then picking the same tree again.
+    // Now the distance decides. If the tree is still out of range it goes on
+    // the blacklist and the next one is tried.
     const uzaklik = bot.entity.position.distanceTo(dip)
     if (uzaklik > 6) {
       if (karaListe) karaListe.add(`${dip.x},${dip.y},${dip.z}`)
@@ -257,25 +252,25 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
     log.uyari('Ağacın dibine tam yürüyemedim — yine de deneyeceğim.')
   }
 
-  // --- 4) Kütükleri kır ---
+  // --- 4) break the logs ---
   //
-  // Üç kademeli deneme. Eskiden sadece ilk ikisi vardı ve üçüncüsü
-  // olmadığı için ağacın TEPESİ hep ayakta kalıyordu:
+  // Three fallbacks. With only the first two the top of the tree was always
+  // left standing:
   //
-  //   a) Kolumun altındaysa doğrudan kır          (en hızlı)
-  //   b) Değilse yürüyerek yanına git, kır        (pathfinder)
-  //   c) O da olmuyorsa ve blok YUKARIDAYSA:      (yeni)
-  //      altıma blok koya koya yukarı çık, sonra kır
+  //   a) in reach: break it directly            (fastest)
+  //   b) otherwise walk next to it, then break   (pathfinder)
+  //   c) still not reachable and the block is above:
+  //      pillar up by placing blocks underneath, then break
   //
-  // Sonra ikinci bir tur atıyoruz: ilk turda ulaşılamayan bloklar,
-  // aradaki kütükler kırıldıktan sonra çoğu zaman ulaşılabilir hale
-  // geliyor (görüş açılıyor, dallar iniyor).
+  // Then a second pass: blocks the first pass could not reach are usually
+  // reachable once the logs in between are gone (line of sight opens up,
+  // branches come down).
 
   const zeminY = Math.floor(bot.entity.position.y)
   let kesilen = 0
   let sutunKuruldu = false
 
-  /** Göz hizasından bloğun MERKEZİNE olan gerçek uzaklık */
+  /** Real distance from eye level to the centre of the block */
   function erisimMesafesi (blok) {
     const goz = bot.entity.position.offset(0, bot.entity.height || 1.62, 0)
     return goz.distanceTo(blok.position.offset(0.5, 0.5, 0.5))
@@ -289,22 +284,22 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
     const guncel = bot.blockAt(konum)
     if (!kutukMu(guncel)) return 'zaten_yok'
 
-    await aletKusan(bot, guncel) // baltayla kesmek ~8 kat hızlı
+    await aletKusan(bot, guncel) // an axe is ~8x faster
 
-    // (a) elimizin altında
+    // (a) in reach
     if (elimdeMi(guncel)) {
       await bot.lookAt(guncel.position.offset(0.5, 0.5, 0.5), true)
       await sinirli(bot.dig(guncel), 15000, kontrol)
       return 'kirildi'
     }
 
-    // (b) yürüyerek yaklaş
+    // (b) walk closer
     //
-    // Blok 3+ blok yukarıdaysa pathfinder'a KISA süre veriyoruz. Sebebi:
-    // havada duracak zemin olmadığı için orada zaten yol bulamayacak, ama
-    // aramayı 12 saniye boyunca sürdürüyor. Test kaydında 7 kütüklük bir
-    // ağaç 54 saniye sürmüştü — süre bu boşa aramalarda gidiyordu.
-    // Kısa deneyip (c)'ye, yani sütuna geçmek hem daha hızlı hem doğru.
+    // A block 3+ above gets a short pathfinder timeout: there is no floor up
+    // there so no path exists, but the search still runs for 12 seconds. In a
+    // test recording a 7-log tree took 54 seconds, nearly all of it in these
+    // dead searches. Trying briefly and falling through to (c), the pillar,
+    // is both faster and more likely to work.
     const yukarida = konum.y - Math.floor(bot.entity.position.y) >= 3
     const yaklas = await pathfinderGit(bot,
       new goals.GoalLookAtBlock(konum, bot.world, { range: 4 }),
@@ -318,9 +313,9 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
       }
     }
 
-    // (c) yukarıdaysa sütun ör
+    // (c) pillar up if the block is above
     if (sutunaIzinVar && konum.y - Math.floor(bot.entity.position.y) >= 2) {
-      // Kütüğün 2 blok altına çıkarsak göz hizası tam ona bakar
+      // standing 2 blocks below the log puts it at eye level
       const cikis = await sutunaCik(bot, konum.y - 2, kontrol)
       if (cikis.cikilan > 0) sutunKuruldu = true
 
@@ -353,8 +348,8 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
     }
   }
 
-  // Sütun örmüşsek in — hem blokları geri alıyoruz hem de ikinci turu
-  // yerden yapmak daha güvenli
+  // Climb down if a pillar was built: the blocks come back and the second
+  // pass is safer from the ground.
   if (sutunKuruldu) {
     try { await sutundanIn(bot, zeminY, kontrol) } catch (err) {
       if (err instanceof IptalEdildi) throw err
@@ -362,9 +357,9 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
     sutunKuruldu = false
   }
 
-  // --- 4b) İKİNCİ TUR: ilk turda ulaşılamayanlar ---
-  // Bu tur olmadan botun ağacın ortasını kesip kökü ve tepesini
-  // bırakması normaldi: ilk denemede görüş kapalıydı, sonra açıldı.
+  // --- 4b) second pass over what the first pass could not reach ---
+  // Without it the bot routinely cut the middle of a tree and left the root
+  // and the top: the view was blocked on the first try and opened up later.
   const halaDuran = kacirilan.filter((p) => kutukMu(bot.blockAt(p)))
   if (halaDuran.length > 0) {
     log.bilgi(`${halaDuran.length} kütüğe ilk turda ulaşamadım, tekrar deniyorum.`)
@@ -388,16 +383,16 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
   const kalan = kutukler.filter((k) => kutukMu(bot.blockAt(k.position))).length
   if (kalan > 0) log.uyari(`${kalan} kütüğe hiç ulaşamadım.`)
 
-  // --- 5) Düşen odunları topla ---
+  // --- 5) pick up the dropped wood ---
   if (kesilen > 0) {
-    await kontrol.bekle(1000) // eşyaların belirip yere düşmesini bekle
+    await kontrol.bekle(1000) // let the items spawn and land
     await dusenleriTopla(bot, dip, kontrol)
   }
 
   if (kesilen === 0 && karaListe) karaListe.add(`${dip.x},${dip.y},${dip.z}`)
 
-  // Envanter dışarıdan boşaltılmış olabilir (/clear); negatif kazanç
-  // "odun topladık" sayılmamalı ama hata da değil.
+  // The inventory may have been emptied from outside (/clear). A negative
+  // gain does not count as collected wood, but it is not an error either.
   const kazanilanOdun = Math.max(0, oduncuSay(bot) - baslangicOdun)
   log.basari(`${kesilen} kütük kesildi, envantere +${kazanilanOdun} odun girdi.`)
 
@@ -405,16 +400,16 @@ async function chopTree (bot, kontrol, { karaListe = null } = {}) {
 }
 
 /**
- * Birden fazla ağaç keser.
- * @param {number} adet kaç ağaç kesilsin (Infinity = "dur" denene kadar)
+ * Chops several trees.
+ * @param {number} adet how many trees to chop (Infinity = until "dur")
  */
 async function chopTrees (bot, kontrol, adet = 1) {
   let toplamKesilen = 0
   let toplamOdun = 0
   let agac = 0
 
-  // Bütün turlar boyunca PAYLAŞILAN kara liste. Ulaşılamayan bir ağaç
-  // bir kez işaretlenince tekrar seçilmiyor.
+  // Blacklist shared across all rounds: an unreachable tree gets marked once
+  // and is never picked again.
   const karaListe = new Set()
   let ustUsteBasarisiz = 0
 
@@ -423,9 +418,9 @@ async function chopTrees (bot, kontrol, adet = 1) {
 
     const sonuc = await chopTree(bot, kontrol, { karaListe })
     if (!sonuc.basarili) {
-      // Ağaç kalmadıysa daha fazla dönmenin anlamı yok
+      // no trees left, no point in looping
       if (sonuc.hata === 'agac_yok') break
-      // Peş peşe ulaşılamıyorsa buradan kesecek ağaç yok demektir
+      // repeated unreachable trees means there is nothing to chop here
       if (++ustUsteBasarisiz >= 5) {
         log.uyari('Ulaşabildiğim ağaç kalmadı.')
         break

@@ -1,9 +1,9 @@
-"""MinecrAI'nin Gymnasium environment'i.
+"""MinecrAI's Gymnasium environment.
 
-Standart bir Gym arayuzu sundugu icin stable-baselines3 gibi hazir RL
-kutuphaneleri bu environment'i dogrudan egitebilir.
+It exposes a standard Gym interface, so off-the-shelf RL libraries such as
+stable-baselines3 can train against it directly.
 
-Kullanim:
+Usage:
     from minecrai import MinecraftEnv
     env = MinecraftEnv()
     obs, info = env.reset()
@@ -20,46 +20,46 @@ from gymnasium import spaces
 
 from .bridge import BridgeClient
 
-# Node tarafindan gelen HAM gozlem boyutu — environment.js ile AYNI olmali.
+# Raw observation size coming from Node, must match environment.js.
 #
-# GOREVE GORE DEGISIYOR ve bu bilincli bir karar.
+# It varies per task, deliberately.
 #
-# Maden gorevi 4 sayi daha aliyor (dusmus esyanin egosentrik yonu/mesafesi
-# ve "onumu kapatan blogu kirabiliyor muyum"). Sebep olculdu: bu bilgiler
-# olmadan taklit dogrulugu %25.5 — dort aksiyonda kor tahmin %25, yani ag
-# hicbir sey ogrenemiyordu. Uzman adimlarinin %39'unu yere dusmus cevheri
-# toplamaya harciyor ve gozlemde esya hakkinda hicbir sey yoktu.
-# Ayrinti: bot/bridge/gorevler.js `ekGozlem`.
+# The mine task gets 4 extra numbers (egocentric direction/distance of the
+# dropped item, and whether the blocking block in front is breakable). Without
+# them BC accuracy was 25.5% against a 25% blind baseline over four actions,
+# so the net learned nothing: the expert spends 39% of its steps picking up
+# dropped ore and the observation said nothing about items.
+# Details: `ekGozlem` in bot/bridge/gorevler.js.
 #
-# Odun gorevi 16'da BIRAKILDI: Milestone 4'un egitilmis modelleri
-# (bc_policy.pt, ppo_son.zip) 19 boyutlu girdi bekliyor. Gozlemi orada da
-# buyutmek calisan, olculmus ve yayinlanmis modelleri yuklenemez hale
-# getirirdi — yeni bir gorevi duzeltmek icin odenecek bedel degil.
-ORTAK = 16          # her gorevde gonderilen temel sayilar
-EK = 4              # gorevler.js EK_GOZLEM: dusmus esya + kirilabilir engel
-TURETILEN = 3       # `zenginlestir`: egosentrik hedef acisi
+# The wood task stays at 16: Milestone 4's trained models (bc_policy.pt,
+# ppo_son.zip) expect a 19-wide input. Widening the observation there too
+# would make working, measured, published models unloadable, which is too
+# high a price for fixing a new task.
+ORTAK = 16          # base numbers sent for every task
+EK = 4              # EK_GOZLEM in gorevler.js: dropped item + breakable obstacle
+TURETILEN = 3       # `zenginlestir`: egocentric target angle
 
 HAM_BOYUTLARI = {"odun": ORTAK, "maden": ORTAK + EK}
 
-# COK GOREVLI (Milestone 6): iki gorev TEK agi paylasiyor.
+# Multi-task (Milestone 6): both tasks share one network.
 #
-# Iki sart var:
-#   1) Gozlem genisligi ortak olmali -> odun da genis gozlem gonderiyor
-#      (`genisGozlem: true`), yani ikisi de ORTAK + EK.
-#   2) Ag hangi gorevde oldugunu BILMELI. Ayni gozlemde odun gorevi
-#      "tasi kirma" derken maden gorevi "kir" diyor; gorev bilgisi olmadan
-#      bu iki etiket celisir ve ag ikisinin ortalamasini ogrenir --
-#      Milestone 5b'de donmus gozlem yuzunden yasadigimiz seyin aynisi,
-#      sadece sebebi farkli.
+# Two conditions:
+#   1) Observation width must be shared -> wood also sends the wide
+#      observation (`genisGozlem: true`), so both are ORTAK + EK.
+#   2) The net must know which task it is in. On the same observation the wood
+#      task says "do not break stone" while the mine task says "break it";
+#      without the task bit those labels contradict each other and the net
+#      learns their average, the same failure as the frozen observation in
+#      Milestone 5b for a different reason.
 #
-# Ham kayitta gorev, SON SUTUNDA bir indis olarak duruyor (0=odun, 1=maden);
-# aga verilirken one-hot'a cevriliyor. Indis olarak saklamak demolari
-# okunur tutuyor ve gorev listesi buyurse eski kayitlar hala gecerli.
+# In the raw record the task sits in the last column as an index (0=wood,
+# 1=mine) and is turned into a one-hot on the way into the net. Storing an
+# index keeps demos readable and old records stay valid if the task list grows.
 COKLU_GOREVLER = ["odun", "maden"]
 HAM_BOYUTLARI["hepsi"] = ORTAK + EK + 1
 
 GOZLEM_BOYUTLARI = {ad: n + TURETILEN for ad, n in HAM_BOYUTLARI.items()}
-# one-hot, ham'daki tek indis sutununun yerini aliyor: +len-1
+# the one-hot replaces the single index column in the raw record: +len-1
 GOZLEM_BOYUTLARI["hepsi"] = ORTAK + EK + TURETILEN + len(COKLU_GOREVLER)
 
 
@@ -72,20 +72,20 @@ def gozlem_boyutu(gorev: str = "odun") -> int:
 
 
 def genis_gozlem_mi(gorev: str) -> bool:
-    """Node'dan EK sayilari da isteyecek miyiz?
+    """Whether to ask Node for the EK numbers as well.
 
-    Odun gorevi varsayilan olarak DAR (16): Milestone 4'un egitilmis
-    modelleri 19 boyutlu girdi bekliyor ve onlari bozmuyoruz. Cok gorevli
-    egitim ise genisligin ortak olmasini zorunlu kildigi icin aciyor.
+    Wood defaults to the narrow observation (16): Milestone 4's trained models
+    expect a 19-wide input and we do not break them. Multi-task training turns
+    it on because it needs a shared width.
     """
     return gorev != "odun"
 
 
 def zenginlestir_coklu(ham: np.ndarray) -> np.ndarray:
-    """Cok gorevli ham gozlemi aga verilecek bicime cevirir.
+    """Converts a multi-task raw observation into the network's input format.
 
-    Girdi : [ORTAK+EK sayi] + [gorev indisi]      (= 21)
-    Cikti : [ORTAK+EK sayi] + [turetilmis 3] + [gorev one-hot 2]  (= 25)
+    In  : [ORTAK+EK numbers] + [task index]                       (= 21)
+    Out : [ORTAK+EK numbers] + [3 derived] + [task one-hot 2]      (= 25)
     """
     ham = np.asarray(ham, dtype=np.float32)
     gozlem = zenginlestir(ham[..., :-1])
@@ -95,36 +95,36 @@ def zenginlestir_coklu(ham: np.ndarray) -> np.ndarray:
 
 
 def zenginlestirici(gorev: str):
-    """Goreve uygun zenginlestirme fonksiyonu."""
+    """The enrichment function for this task."""
     return zenginlestir_coklu if gorev == "hepsi" else zenginlestir
 
 
-# Geriye donuk isimler: odun gorevinin boyutlari. Eski kod bunlari
-# dogrudan iceri aliyor (policy.py, pretrain_ppo.py).
+# Backwards-compatible names: the wood task's sizes. Older code imports these
+# directly (policy.py, pretrain_ppo.py).
 HAM_BOYUTU = HAM_BOYUTLARI["odun"]
 GOZLEM_BOYUTU = GOZLEM_BOYUTLARI["odun"]
 
 
 def zenginlestir(ham: np.ndarray) -> np.ndarray:
-    """Ham gozleme EGOSENTRIK hedef acisi ekler.
+    """Adds the egocentric target angle to a raw observation.
 
-    Ham gozlem hedefin yonunu DUNYA koordinatlarinda veriyor (dx, dy, dz) ve
-    botun bakis acisini (yaw) ayri bir sayi olarak. "Hedef sagimda mi solumda
-    mi?" sorusunun cevabi bu ikisini birlestirip atan2 hesaplamayi gerektiriyor
-    — kucuk bir MLP icin zor bir dogrusal olmayan islem.
+    The raw observation gives the target direction in world coordinates
+    (dx, dy, dz) and the bot's yaw as a separate number. Answering "is the
+    target to my left or my right" means combining them through an atan2,
+    a hard nonlinearity for a small MLP.
 
-    Uzmanin donme karari DOGRUDAN bu aciya bagli. Aciyi hazir verince karar
-    tek bir sayinin isaretinden okunabilir hale geliyor. Olctuk: taklit
-    dogrulugu belirgin sekilde artiyor.
+    The expert's turn decision depends directly on that angle. Handing it over
+    ready-made makes the decision readable from the sign of a single number,
+    and measured BC accuracy goes up clearly.
 
-    Bu bilgi ham gozlemin icinde zaten var; yeni bir sey olcmuyoruz, sadece
-    agin kolay kullanabilecegi bicime ceviriyoruz. Bu yuzden eski kayitli
-    veriye de geriye donuk uygulanabiliyor.
+    The information is already in the raw observation; nothing new is measured,
+    it is only reshaped into something the net can use. That is why it can be
+    applied retroactively to old recorded data.
 
-    Eklenen 3 sayi:
-      - aci / pi        : isaretli fark, -1..1 (sol pozitif)
-      - sin(aci)        : acinin surekli gosterimi (±pi sinirinda sicrama yok)
-      - cos(aci)        : 1 = tam onumde, -1 = tam arkamda
+    The 3 added numbers:
+      - angle / pi      : signed difference, -1..1 (left positive)
+      - sin(angle)      : continuous form of the angle (no jump at +-pi)
+      - cos(angle)      : 1 = straight ahead, -1 = straight behind
     """
     ham = np.asarray(ham, dtype=np.float32)
     dx, dz = ham[..., 0], ham[..., 2]
@@ -132,17 +132,17 @@ def zenginlestir(ham: np.ndarray) -> np.ndarray:
 
     hedef_yaw = np.arctan2(-dx, -dz)
     fark = hedef_yaw - yaw
-    fark = (fark + np.pi) % (2 * np.pi) - np.pi  # -pi..pi araligina indirge
+    fark = (fark + np.pi) % (2 * np.pi) - np.pi  # wrap into -pi..pi
 
     ek = np.stack([fark / np.pi, np.sin(fark), np.cos(fark)], axis=-1)
     return np.concatenate([ham, ek.astype(np.float32)], axis=-1)
 
-# Aksiyonlar — bot/bridge/protocol.md ile ayni sirada.
+# Actions, in the same order as bot/bridge/protocol.md.
 #
-# NOT: Eskiden bir "agaca_yaklas" aksiyonu vardi; pathfinder'i cagirip
-# navigasyonun tamamini tek adimda yapiyordu. Ajan bunu kesfettigi anda
-# yurumeyi ogrenmeyi birakip hep ona basacagi icin kaldirildi. Ayrintili
-# gerekce: docs/architecture.md
+# There used to be an "agaca_yaklas" action that called the pathfinder and did
+# the whole navigation in one step. It was removed because once the agent finds
+# it, it stops learning to walk and just presses that. Full reasoning:
+# docs/architecture.md
 AKSIYONLAR = [
     "ileri_yuru",
     "saga_don",
@@ -153,7 +153,7 @@ AKSIYONLAR = [
 
 
 class MinecraftEnv(gym.Env):
-    """Mineflayer botunu bir RL environment'i gibi gosterir."""
+    """Presents the Mineflayer bot as an RL environment."""
 
     metadata = {"render_modes": ["human"], "render_fps": 2}
 
@@ -166,8 +166,8 @@ class MinecraftEnv(gym.Env):
         self.gorev = gorev
         super().__init__()
 
-        # Node'dan EK sayilari da isteyecek miyiz? None = gorevin varsayilani.
-        # Cok gorevli sarmalayici (coklu.py) bunu acikca True yapiyor.
+        # Whether to ask Node for the EK numbers. None = the task's default.
+        # The multi-task wrapper (coklu.py) sets it to True explicitly.
         self.genis_gozlem = (
             genis_gozlem_mi(gorev) if genis_gozlem is None else genis_gozlem
         )
@@ -183,14 +183,13 @@ class MinecraftEnv(gym.Env):
         self.bridge = BridgeClient(url)
         self._son_info: Dict[str, Any] = {}
 
-        # HAM gozlem (Node'un gonderdigi 16 sayi), zenginlestirilmeden once.
+        # Raw observation (the 16 numbers Node sends), before enrichment.
         #
-        # Demo kaydinda ham hali saklamak gerekiyor: `zenginlestir` ham
-        # gozlemin saf bir fonksiyonu, yani ilerde turetilmis alanlari
-        # degistirirsek eski demolardan yeniden hesaplayabiliyoruz.
-        # Zenginlestirilmis hali saklarsak o esneklik kayboluyor -- ve
-        # bir kez kaybolmakla kalmadi, egitim tarafi ikinci kez
-        # zenginlestirip 19+3=22 boyutlu bir girdi uretti ve ag coktu.
+        # Demos must store the raw form: `zenginlestir` is a pure function of
+        # it, so changing the derived fields later can be recomputed from old
+        # demos. Storing the enriched form loses that, and it already cost us
+        # once: the training side enriched a second time, produced a
+        # 19+3=22-wide input and the net crashed.
         self.son_ham_gozlem: np.ndarray | None = None
         self.son_uzman_sebep = "?"
         self.son_uzman_tani: Dict[str, Any] = {}
@@ -204,20 +203,20 @@ class MinecraftEnv(gym.Env):
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed)
-        # Gorevi HER reset'te bildiriyoruz. Node tarafi degismediyse
-        # hicbir sey yapmiyor; degistiyse gecis bolum basinda oluyor.
-        # Cok gorevli egitimde bolumden bolume gorev degistirmek boylece
-        # ek bir protokol gerektirmiyor.
+        # The task is sent on every reset. If Node's task did not change this
+        # is a no-op; if it did, the switch happens at an episode boundary. So
+        # changing task per episode in multi-task training needs no extra
+        # protocol.
         cevap = self.bridge.reset(self.gorev, self.genis_gozlem)
         self._son_info = cevap.get("info", {})
         self.son_ham_gozlem = np.asarray(cevap["obs"], dtype=np.float32)
         return self._obs(cevap["obs"]), self._son_info
 
     def uzman_aksiyonu(self) -> int:
-        """Uzman politikanin bu durumda sececeği aksiyon (Milestone 3).
+        """The action the expert policy would pick here (Milestone 3).
 
-        Ogrenme yok — elle yazilmis kurallar. Amaci taklit edilecek ornegi
-        uretmek. Bkz. bot/bridge/expert.js
+        No learning, just hand-written rules. Its job is to produce examples to
+        imitate. See bot/bridge/expert.js
         """
         cevap = self.bridge.expert()
         self.son_uzman_sebep = cevap.get("sebep", "?")
@@ -228,25 +227,24 @@ class MinecraftEnv(gym.Env):
         cevap = self.bridge.step(int(action))
         self._son_info = cevap.get("info", {})
 
-        # HAM GOZLEMI BURADA DA GUNCELLE.
+        # Update the raw observation here too.
         #
-        # Bu satir bir sure eksikti ve iki demo toplama turunu (toplam
-        # ~45 dakika) cope attirdi. `son_ham_gozlem` sadece `reset()`te
-        # yaziliyordu, yani BOLUM BOYUNCA reset anindaki degerde
-        # donuyordu. `collect_demos.py` her adimda onu kaydettigi icin
-        # bir bolumun butun ornekleri AYNI gozleme, farkli aksiyonlara
-        # sahip oluyordu.
+        # This line was missing for a while and threw away two demo collection
+        # runs (~45 minutes). `son_ham_gozlem` was only written in `reset()`,
+        # so it stayed frozen at the reset value for the whole episode. Since
+        # `collect_demos.py` records it every step, all samples of an episode
+        # had the same observation with different actions.
         #
-        # Olcum: 4498 ornekte sadece 30 benzersiz gozlem satiri vardi --
-        # tam olarak bolum sayisi kadar. Orneklerin %100'u celiskiliydi.
-        # Boyle bir veriyle ulasilabilecek en iyi dogruluk cogunluk
-        # sinifi (%33.2); taklit egitimi %30.7 aliyordu ve kayip tam
-        # ln(4)=1.386'da duruyordu -- yani ag dort aksiyona esit
-        # olasilik dagitmayi ogrenmisti, baska bir sey degil.
+        # Measured: 4498 samples contained only 30 unique observation rows,
+        # exactly the episode count. 100% of the samples were contradictory.
+        # The best accuracy reachable on such data is the majority class
+        # (33.2%); BC training got 30.7% and the loss sat exactly at
+        # ln(4)=1.386, meaning the net had learned to spread equal probability
+        # over four actions and nothing else.
         #
-        # Ders: "ag ogrenemiyor" dendiginde once VERIYE bakilir. Ozellik
-        # eklemek makul bir hipotezdi ama olculmemisti ve bir tur daha
-        # veri toplamaya mal oldu. Veriyi acmak iki dakika surdu.
+        # Lesson: when the net will not learn, look at the data first. Adding
+        # features was a reasonable hypothesis but unmeasured, and it cost
+        # another collection run. Opening the data took two minutes.
         self.son_ham_gozlem = np.asarray(cevap["obs"], dtype=np.float32)
 
         return (
@@ -265,7 +263,7 @@ class MinecraftEnv(gym.Env):
     def close(self) -> None:
         self.bridge.close()
 
-    # ------------------------------------------------------------ yardimci
+    # ------------------------------------------------------------ helpers
 
     def _obs(self, ham) -> np.ndarray:
         dizi = np.asarray(ham, dtype=np.float32)

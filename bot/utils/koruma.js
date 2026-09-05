@@ -1,13 +1,14 @@
 'use strict'
 
 /**
- * KORUMA BÖLGELERİ — botun asla blok kırmayacağı alanlar.
+ * Protected regions: areas where the bot never breaks a block.
  *
- * Doğal ağaç tespiti sezgisel kurallara dayanıyor (yaprak var mı, duvar mı,
- * soyulmuş mu). Sezgiseller bir gün yanılır. Oyuncunun evi buna güvenmemeli.
+ * Natural-tree detection runs on heuristics (are there leaves, is it a wall,
+ * is it stripped). Heuristics get it wrong eventually, and a player's house
+ * should not depend on one.
  *
- * Bu yüzden ikinci bir güvenlik ağı: oyuncunun elle işaretlediği, botun
- * kesinlikle dokunmadığı bölgeler. Diske yazılır, bot yeniden başlasa da durur.
+ * Hence a second safety net: regions the player marks by hand that the bot
+ * never touches. Written to disk, so it survives a restart.
  */
 
 const fs = require('fs')
@@ -21,7 +22,7 @@ function yukle () {
   try {
     bolgeler = JSON.parse(fs.readFileSync(DOSYA, 'utf8'))
   } catch (err) {
-    bolgeler = [] // dosya yoksa sorun değil
+    bolgeler = [] // no file is fine
   }
   return bolgeler
 }
@@ -36,7 +37,7 @@ function kaydet () {
   }
 }
 
-/** Merkez ve yarıçapla yeni bir koruma bölgesi ekle */
+/** Add a protected region from a centre point and a radius */
 function ekle (konum, yaricap, ad = '') {
   bolgeler.push({
     x: Math.floor(konum.x),
@@ -61,8 +62,8 @@ function liste () {
 }
 
 /**
- * Bu konum korumalı bir bölgenin içinde mi?
- * Yatayda daire, dikeyde bolca pay bırakıyoruz — evler yüksek olabilir.
+ * Is this position inside a protected region?
+ * A circle horizontally, with generous vertical slack: houses can be tall.
  */
 function korumaliMi (konum) {
   if (!konum || bolgeler.length === 0) return false

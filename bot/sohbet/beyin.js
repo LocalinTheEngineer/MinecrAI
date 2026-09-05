@@ -1,26 +1,25 @@
 'use strict'
 
 /**
- * SOHBET KATMANI — doğal dili mevcut komutlara çevirir.
+ * Chat layer: maps natural language onto the existing commands.
  *
  * "bana bir taş kazma yapar mısın" -> uret tas kazma
  * "3 tane daha kes"                -> kes 3
  * "ne var envanterinde"            -> envanter
- * "naber"                          -> düz metin cevap, komut yok
+ * "naber"                          -> plain text reply, no command
  *
- * MİMARİDEKİ YERİ: bu katman botun YAPABİLECEKLERİNİ genişletmiyor,
- * sadece nasıl istendiğini genişletiyor. Model sabit bir listeden komut
- * seçiyor (bkz. araclar.js), çalıştıran yine `bot/index.js` içindeki
- * mevcut ve test edilmiş yönlendirici.
+ * This layer widens how the bot is asked for things, not what it can do. The
+ * model picks a command from a fixed list (see araclar.js) and the existing,
+ * tested router in `bot/index.js` runs it.
  *
- * Projedeki üç karar katmanı böylece ayrışıyor:
- *   beceriler  — elle yazılmış, deterministik  (bot/skills/)
- *   RL ajanı   — öğrenilmiş düşük seviye kontrol (bot/bridge/)
- *   sohbet     — dil ile niyet          (burası)
+ * That keeps the project's three decision layers apart:
+ *   skills   — hand-written, deterministic     (bot/skills/)
+ *   RL agent — learned low-level control       (bot/bridge/)
+ *   chat     — intent from language            (here)
  *
- * ANAHTAR YOKSA SESSİZCE KAPALI. Bot tam komutlarla çalışmaya devam
- * eder; sohbet bir ek, bağımlılık değil. Projeyi klonlayan birinin
- * API anahtarı olmadan da her şeyi çalıştırabilmesi gerekiyor.
+ * With no key the layer is silently off. The bot keeps working with exact
+ * commands; chat is an addition, not a dependency, and cloning the project
+ * has to be enough to run everything without an API key.
  */
 
 const fs = require('fs')
@@ -30,11 +29,11 @@ const log = require('../utils/log')
 const { aracTanimi, komutSatirlari } = require('./araclar')
 const saglayicilar = require('./saglayici')
 
-// Oyuncu başına son mesajlar. Bağlam olmadan "3 tane daha" anlamsız.
+// Recent messages per player. Without context "three more" means nothing.
 const gecmisler = new Map()
-const GECMIS_SINIRI = 6      // 3 tur (soru + cevap)
+const GECMIS_SINIRI = 6      // 3 turns (question + answer)
 
-// Oyuncu başına son çağrı zamanı — chat'i spam'leyen biri fatura üretmesin
+// Last call time per player, so someone spamming chat cannot run up a bill
 const sonCagri = new Map()
 
 // PER-ATTEMPT timeout.
@@ -48,7 +47,7 @@ const ZAMAN_ASIMI_MS = 15000
 // Budget for the whole walk. A chat reply that takes a minute is not a reply.
 const TOPLAM_SURE_MS = 30000
 
-/** Hangi sağlayıcı kullanılacak? Anahtar yoksa null. */
+/** Provider to use, or null when there is no key. */
 function saglayici () {
   try {
     return saglayicilar.sec(config)
@@ -62,7 +61,7 @@ function acik () {
   return saglayici() !== null
 }
 
-/** Botun o anki durumu — modelin körlemesine cevap vermemesi için. */
+/** Current bot state, so the model does not answer blind. */
 function durumOzeti (bot) {
   try {
     const p = bot.entity?.position
@@ -96,19 +95,19 @@ KURALLAR:
 }
 
 /**
- * Oyuncunun mesajını yorumlar.
+ * Interprets the player's message.
  * @returns {Promise<{komutlar?: string[], cevap?: string} | null>}
- *          null = katman kapalı ya da çağrı başarısız (çağıran sessizce geçmeli)
+ *          null = layer off or the call failed (caller should move on quietly)
  */
 async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   const s = saglayici()
   if (!s) return null
 
-  // Aşırı uzun mesaj = aşırı token. Kes.
+  // A very long message is a lot of tokens. Truncate it.
   const temiz = String(mesaj).trim().slice(0, 200)
   if (!temiz) return null
 
-  // Hız sınırı: oyuncu başına 2 saniyede bir
+  // Rate limit: one call per player per 2 seconds
   const simdi = Date.now()
   if (simdi - (sonCagri.get(oyuncu) || 0) < 2000) return null
   sonCagri.set(oyuncu, simdi)
@@ -116,9 +115,9 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   const gecmis = gecmisler.get(oyuncu) || []
   const mesajlar = [...gecmis, { rol: 'oyuncu', metin: temiz }]
 
-  // İstek SAĞLAYICIDAN BAĞIMSIZ biçimde kuruluyor; her sağlayıcı onu
-  // kendi API'sinin şekline çeviriyor (bkz. saglayici/). Böylece
-  // sistem metni, araç tanımı ve geçmiş mantığı tek yerde kalıyor.
+  // The request is built provider-independently and each provider reshapes it
+  // for its own API (see saglayici/), which keeps the system text, the tool
+  // definition and the history logic in one place.
   const istek = {
     maksToken: 300,
     sistem: sistemMetni(bot, secenekler.mesgul),
@@ -138,8 +137,8 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   const arac = cozulmus?.arac || null
   const metin = (cozulmus?.metin || '').trim()
 
-  // Geçmişi güncelle (sadece metin — araç bloklarını saklamak protokolü
-  // karmaşıklaştırır ve bağlam için metin yeterli)
+  // Update history, text only: keeping tool blocks complicates the protocol
+  // and text is enough for context
   const yeniGecmis = [...mesajlar]
   if (metin || arac) {
     yeniGecmis.push({
@@ -152,7 +151,7 @@ async function yorumla (bot, oyuncu, mesaj, secenekler = {}) {
   if (arac) {
     const komutlar = komutSatirlari(arac)
     if (komutlar.length > 0) return { komutlar, cevap: metin || null }
-    // Model listede olmayan bir şey istedi — reddet, sessizce yutma
+    // Model asked for something not on the list: reject it, do not swallow it
     log.uyari(`Sohbet katmanı geçersiz komut önerdi: ${JSON.stringify(arac)}`)
     return { cevap: 'Onu yapamam. Neler yapabildiğimi görmek için "komut" yaz.' }
   }
@@ -240,7 +239,7 @@ function tercihiOku () {
   try {
     const kayit = JSON.parse(fs.readFileSync(TERCIH_DOSYASI, 'utf8'))
     if (kayit && kayit.model && kayit.tasiyici) return kayit
-  } catch { /* dosya yok ya da bozuk — onemli degil */ }
+  } catch { /* missing or corrupt file, does not matter */ }
   return null
 }
 
@@ -260,7 +259,7 @@ function tercihiYaz (deneme) {
 function sirala (liste) {
   const tercih = sonCalisan || tercihiOku()
   if (!tercih) return liste
-  const ad = tercih.tasiyici.ad || tercih.tasiyici   // bellek | dosya
+  const ad = tercih.tasiyici.ad || tercih.tasiyici   // memory | file
   const i = liste.findIndex((d) => d.model === tercih.model && d.tasiyici.ad === ad)
   if (i <= 0) return liste
   return [liste[i], ...liste.slice(0, i), ...liste.slice(i + 1)]
@@ -277,7 +276,7 @@ function sirala (liste) {
  * 4xx other than 404/429 stops the walk — that is our request being wrong,
  * and another model will fail the same way.
  *
- * TOPLAM SURE SINIRI: a chat reply that takes a minute is not a reply. The
+ * Total time budget: a chat reply that takes a minute is not a reply. The
  * walk gives up once the budget is spent, even with combinations left.
  */
 async function apiCagir (s, istek) {
@@ -304,7 +303,7 @@ async function apiCagir (s, istek) {
       if (!gecici) throw err
       if (sonCalisan && sonCalisan.model === deneme.model &&
           sonCalisan.tasiyici.ad === deneme.tasiyici.ad) {
-        sonCalisan = null // artik calismiyor, tercihi birak
+        sonCalisan = null // no longer working, drop the preference
       }
       log.uyari(`${deneme.model}/${deneme.tasiyici.ad} olmadi (${err.durum || 'zaman asimi'})`)
     }
@@ -324,7 +323,7 @@ function hizSinirlariniSifirla () { sonCagri.clear() }
 /** Tests reset the remembered choice. */
 function tercihiSifirla () {
   sonCalisan = null
-  try { fs.unlinkSync(TERCIH_DOSYASI) } catch { /* zaten yok */ }
+  try { fs.unlinkSync(TERCIH_DOSYASI) } catch { /* already gone */ }
 }
 
 function gecmisiSil (oyuncu) {

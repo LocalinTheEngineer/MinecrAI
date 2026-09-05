@@ -11,20 +11,20 @@ const { erit } = require('./erit')
 const { sutunaCik, sutundanIn, yuzeyeSutunla } = require('./sutun')
 
 /**
- * TEMEL MALZEME TEDARİKÇİSİ
+ * Base material supplier.
  *
- * `uret` tarif ağacını çözerken yaprağa varıyor: kütük, taş, demir cevheri.
- * Bunlar üretilemez, TOPLANIR. Toplamayı `kaz` ve `chopTrees` biliyor.
+ * Resolving the recipe tree, `uret` ends up at leaves: logs, stone, iron ore.
+ * Those are not crafted, they are gathered, and `kaz` and `chopTrees` know how.
  *
- * Peki `uret` neden doğrudan onları çağırmıyor? Çünkü `kaz` da kazma yapmak
- * için `uret`i çağırıyor. İki dosya birbirini require ederse Node döngüsel
- * bağımlılıkta birine yarım modül verir ve hata çalışma zamanında,
- * anlaşılmaz bir yerde patlar. (Aynı sebeple environment.js ile expert.js
- * arasına sabitler.js koymuştuk.)
+ * Why doesn't `uret` call them directly? Because `kaz` calls `uret` to make a
+ * pickaxe. If the two files require each other, Node hands one of them a half
+ * built module on the circular edge and the failure surfaces at runtime
+ * somewhere unrelated. (Same reason sabitler.js sits between environment.js
+ * and expert.js.)
  *
- * Çözüm: `uret` "nasıl toplanır" bilmiyor, sadece "toplanabilir mi" diye
- * soruyor. Cevabı buradan, dışarıdan enjekte ediyoruz. Bağımlılık tek yönlü
- * kalıyor: index.js -> uret, index.js -> kaz.
+ * So `uret` does not know how to gather, only whether something is gatherable,
+ * and the answer is injected from here. Dependencies stay one-way:
+ * index.js -> uret, index.js -> kaz.
  */
 const ESYA_KAYNAGI = {
   raw_iron: 'demir',
@@ -47,23 +47,23 @@ const ESYA_KAYNAGI = {
 }
 
 /**
- * KAYNAK SINIFI: "hangi tür kütük" değil, "kütük".
+ * Resource class: "log", not "which kind of log".
  *
- * Botun sonsuz ağaç kesmesinin sebebi buydu. Çubuğun ~12 tarifi var,
- * her ağaç türü için bir tane. `uret` sırayla hepsini deniyordu:
+ * This is why the bot chopped trees forever. A stick has ~12 recipes, one per
+ * wood type, and `uret` tried them in order:
  *
- *   spruce_planks <- spruce_log  -> tedarikçi: AĞAÇ KES
- *   birch_planks  <- birch_log   -> tedarikçi: AĞAÇ KES
- *   jungle_planks <- jungle_log  -> tedarikçi: AĞAÇ KES
- *   ... 12 kez
+ *   spruce_planks <- spruce_log  -> supplier: chop a tree
+ *   birch_planks  <- birch_log   -> supplier: chop a tree
+ *   jungle_planks <- jungle_log  -> supplier: chop a tree
+ *   ... 12 times
  *
- * Her seferinde eline meşe geçiyor, istenen tür gelmiyor, sıradaki
- * tarife geçiliyor ve TEKRAR ağaç kesiliyordu. Log'da bunu gördük:
- * tek bir "uret tas kazma" komutu 4 ağaç kesti ve hâlâ bitmemişti.
+ * Every time it got oak, never the requested type, moved on to the next recipe
+ * and chopped again. The log showed it: a single "uret tas kazma" command
+ * felled 4 trees and still was not done.
  *
- * Çözüm: tedarikçi eşya adına değil KAYNAK SINIFINA bakıyor. Bir kez
- * odun getirdiyse, bu komut boyunca bir daha ağaç kesmiyor — envanterde
- * zaten odun var, `uret`in yeniden puanlaması doğru türü seçecek.
+ * Fix: the supplier keys on the resource class, not the item name. Once it has
+ * fetched wood it does not chop again for the rest of the command — there is
+ * wood in the inventory and the rescoring in `uret` picks the right type.
  */
 function kaynakSinifi (ad) {
   if (/_log$|_stem$/.test(ad)) return 'odun'
@@ -71,29 +71,28 @@ function kaynakSinifi (ad) {
 }
 
 /**
- * Her komut için YENİ bir tedarikçi üretir.
+ * Builds a fresh supplier for every command.
  *
- * Neden fabrika? "Bu komutta zaten odun topladım" hafızasının komut
- * bitince sıfırlanması gerekiyor. Modül seviyesinde tek bir Set tutmak,
- * ikinci komutta botun hiç ağaç kesmemesine yol açardı.
+ * Why a factory: the "already gathered wood in this command" memory has to
+ * reset when the command ends. One Set at module level would leave the bot
+ * never chopping a tree on the second command.
  */
 function tedarikciYap () {
-  // BAŞARISIZLIĞI DA HATIRLA.
+  // Failures are remembered too.
   //
-  // Önceki hâlde sadece BAŞARILI toplamalar not ediliyordu. Bot yerin
-  // altındayken odun istendiğinde ağaç bulamıyor, not düşülmüyor, ve
-  // `uret` bir sonraki ağaç türü için tekrar soruyordu. Log'da sonucu
-  // gördük: aynı saniyede 48 kez "64 blok içinde doğal ağaç bulamadım".
-  // Sonuç ne olursa olsun, bir komutta bir kaynak sınıfı BİR KEZ denenir.
-  const denenen = new Set() // bu komutta denenmiş kaynak sınıfları
-  const yol = new Set() // şu an toplanmakta olanlar (döngü koruması)
+  // The old version only noted successful gathers. Underground the bot found
+  // no tree, nothing was noted, and `uret` asked again for the next wood type.
+  // The log showed 48 "no natural tree within 64 blocks" lines in the same
+  // second. Whatever the outcome, a resource class is tried once per command.
+  const denenen = new Set() // resource classes tried in this command
+  const yol = new Set() // currently being gathered (loop guard)
 
   return async function tedarikci (bot, kontrol, ad, adet) {
     const sinif = kaynakSinifi(ad)
     if (!sinif) return false
-    if (denenen.has(sinif)) return false // bu komutta zaten denedik
-    if (yol.has(sinif)) return false // şu an topluyoruz, tekrar girme
-    if (yol.size > 3) return false // zincir çok derinleşti
+    if (denenen.has(sinif)) return false // already tried in this command
+    if (yol.has(sinif)) return false // gathering it right now, do not re-enter
+    if (yol.size > 3) return false // chain got too deep
 
     yol.add(sinif)
     denenen.add(sinif)
@@ -110,14 +109,14 @@ function tedarikciYap () {
   }
 }
 
-/** `uret`i taze bir tedarikçiyle çağıran kısayol — komutlar bunu kullanır */
+/** Calls `uret` with a fresh supplier; this is what the commands use */
 function getir (bot, kontrol, istek, adet = 1) {
   return uret(bot, kontrol, istek, adet, { tedarikci: tedarikciYap() })
 }
 
 /**
- * Bütün "skill"ler (botun yapabildiği işler) buradan dışa açılır.
- * Yeni bir yetenek eklediğinde sadece buraya bir satır ekleyeceksin.
+ * Every skill (a thing the bot can do) is exported from here.
+ * A new ability means one more line in this list.
  */
 module.exports = {
   chopTree,
